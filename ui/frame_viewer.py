@@ -775,25 +775,6 @@ class FrameViewer(tk.Toplevel):
         super().destroy()
 
 
-# 简化版本：用于快速查看
-class SimpleFrameViewer:
-    """简化版帧查看器（用于调试）"""
-
-    @staticmethod
-    def show_frame(extractor, video_path, rois, timestamp):
-        """显示指定时间戳的帧（使用OpenCV窗口）"""
-        frame = extractor.get_frame_with_rois(video_path, timestamp, rois)
-        if frame is not None:
-            # 添加标题
-            cv2.putText(frame, f"Time: {timestamp:.3f}s", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-
-            cv2.imshow("Frame Viewer", frame)
-            print("按任意键关闭窗口...")
-            cv2.waitKey(0)
-            cv2.destroyWindow("Frame Viewer")
-
-
 if __name__ == "__main__":
     # 测试代码
     root = tk.Tk()

@@ -305,7 +305,7 @@ class MainWindow(tk.Tk):
                 if digit in [0, 8]:
                     temp1_normal_text = result.get('temp1_normal', '')
                     if temp1_normal_text and len(temp1_normal_text) >= 3:
-                        result['temp1_full'] = temp1_normal_text[:3] + str(digit)
+                        result['temp1_full'] = temp1_normal_text + "." + str(digit)
                         result['quality'] = 'high'
 
                 # 更新表格显示
@@ -383,7 +383,7 @@ class MainWindow(tk.Tk):
         if digit in [0, 8]:
             temp1_normal_text = result.get('temp1_normal', '')
             if temp1_normal_text and len(temp1_normal_text) >= 3:
-                result['temp1_full'] = temp1_normal_text[:3] + str(digit)
+                result['temp1_full'] = temp1_normal_text + "." + str(digit)
                 result['quality'] = 'high'
 
         # 更新表格显示
@@ -431,7 +431,7 @@ class MainWindow(tk.Tk):
         if new_digit in [0, 8]:
             temp1_normal_text = result.get('temp1_normal', '')
             if temp1_normal_text and len(temp1_normal_text) >= 3:
-                result['temp1_full'] = temp1_normal_text[:3] + str(new_digit)
+                result['temp1_full'] = temp1_normal_text + "." + str(new_digit)
                 result['quality'] = 'high'
         elif new_digit == -2:
             # 恢复为未知
@@ -1093,7 +1093,7 @@ class MainWindow(tk.Tk):
                 elif faulty_digit_result != -1:
                     # 成功识别数字
                     faulty_digit = faulty_digit_result
-                    temp1_full = temp1_normal_text[:3] + str(faulty_digit)
+                    temp1_full = temp1_normal_text + "." + str(faulty_digit)
                     quality = 'high'
                     self.log(f"成功组合完整温度: {temp1_full}")
                 else:

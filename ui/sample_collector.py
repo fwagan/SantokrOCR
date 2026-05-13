@@ -630,20 +630,6 @@ class SampleCollector(tk.Toplevel):
         self.bind('<Key-t>', lambda e: self.train_classifier())
 
 
-# 简单版本，用于快速测试
-class SimpleSampleCollector:
-    """简化版样本收集器（复用原有逻辑）"""
-
-    @staticmethod
-    def collect_samples(extractor, video_path, faulty_roi, start_frame=0, num_samples=50):
-        """
-        使用原有OpenCV窗口收集样本
-        返回: 收集到的样本列表
-        """
-        # 直接调用extractor的collect_faulty_samples方法
-        return extractor.collect_faulty_samples(video_path, faulty_roi, start_frame, num_samples)
-
-
 if __name__ == "__main__":
     # 测试代码
     root = tk.Tk()

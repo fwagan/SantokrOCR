@@ -7,7 +7,6 @@
 
 import threading
 import time
-import queue
 
 
 class Signal:
@@ -132,109 +131,6 @@ class ProcessingThread(threading.Thread):
     def is_stopped(self):
         """检查是否停止"""
         return self._stop_event.is_set()
-
-
-class BatchProcessingQueue:
-    """批量处理队列"""
-
-    def __init__(self, max_workers=1):
-        self.queue = queue.Queue()
-        self.max_workers = max_workers
-        self.workers = []
-        self.running = False
-
-        # 信号
-        self.queue_progress_signal = Signal()  # (current, total)
-        self.queue_status_signal = Signal()    # (message)
-        self.queue_finished_signal = Signal()  # (success, message)
-
-    def add_task(self, video_path, rois, start_frame=0, interval=0.25):
-        """添加处理任务"""
-        task = {
-            'video_path': video_path,
-            'rois': rois,
-            'start_frame': start_frame,
-            'interval': interval,
-            'status': 'pending'
-        }
-        self.queue.put(task)
-        return task
-
-    def start(self, extractor_factory):
-        """开始处理队列"""
-        if self.running:
-            return
-
-        self.running = True
-        self.queue_status_signal.emit("开始批量处理")
-
-        # 创建工作线程
-        for i in range(self.max_workers):
-            worker = threading.Thread(target=self._worker_func,
-                                     args=(extractor_factory,),
-                                     daemon=True)
-            worker.start()
-            self.workers.append(worker)
-
-    def stop(self):
-        """停止所有处理"""
-        self.running = False
-        self.queue_status_signal.emit("正在停止批量处理...")
-
-        # 清空队列
-        while not self.queue.empty():
-            try:
-                self.queue.get_nowait()
-            except queue.Empty:
-                break
-
-        # 等待工作线程结束
-        for worker in self.workers:
-            worker.join(timeout=1)
-
-        self.workers.clear()
-        self.queue_status_signal.emit("批量处理已停止")
-
-    def _worker_func(self, extractor_factory):
-        """工作线程函数"""
-        while self.running and not self.queue.empty():
-            try:
-                task = self.queue.get_nowait()
-            except queue.Empty:
-                break
-
-            # 更新任务状态
-            task['status'] = 'processing'
-            self.queue_status_signal.emit(f"开始处理: {task['video_path']}")
-
-            # 创建extractor并处理
-            extractor = extractor_factory()
-            try:
-                # 这里可以调用异步处理方法
-                # 简化处理：直接使用同步方法
-                results = extractor.process_video(
-                    video_path=task['video_path'],
-                    rois=task['rois'],
-                    start_frame=task['start_frame'],
-                    interval=task['interval']
-                )
-
-                task['status'] = 'completed'
-                task['results'] = results
-                self.queue_status_signal.emit(f"完成处理: {task['video_path']}")
-
-            except Exception as e:
-                task['status'] = 'failed'
-                task['error'] = str(e)
-                self.queue_status_signal.emit(f"处理失败: {task['video_path']}")
-
-            finally:
-                self.queue.task_done()
-
-        # 检查队列是否已空
-        if self.queue.empty() and self.running:
-            self.running = False
-            self.queue_finished_signal.emit(True, "批量处理完成")
 
 
 if __name__ == "__main__":
