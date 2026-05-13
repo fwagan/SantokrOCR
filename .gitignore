@@ -1,0 +1,5 @@
+Development/
+__pycache__/
+*.pyc
+*.lnk
+.claude/

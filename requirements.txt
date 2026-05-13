@@ -1,0 +1,11 @@
+opencv-python>=4.8.0
+numpy>=1.24.0
+pandas>=2.0.0
+Pillow>=10.0.0
+PyYAML>=6.0  # 用于配置文件
+matplotlib>=3.7.0
+scipy>=1.11.0
+
+# 开发依赖（可选）
+pytest>=7.0.0
+black>=23.0.0

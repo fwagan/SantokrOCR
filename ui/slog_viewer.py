@@ -1,0 +1,447 @@
+"""
+.slog 文件查看器
+
+功能：
+1. 打开并查看.slog文件（包含results和events的JSON格式）
+2. 显示温度曲线、ROR分析、火力/风门曲线、事件标记、阶段条
+3. 支持参数调整（重采样间隔、平滑窗口等）
+4. 烘焙信息管理（豆种、产地等）
+"""
+
+# ====== Windows DPI感知（解决tkinter模糊） ======
+try:
+    from ctypes import windll
+    windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    pass
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import json
+import os
+import sys
+
+
+# 确保能导入项目模块
+def _setup_path():
+    """将项目根目录添加到 sys.path"""
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(this_dir)
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+
+_setup_path()
+from ui.statistics_panel import StatisticsPanel
+
+
+class SlogViewer(tk.Toplevel):
+    """.slog文件查看器（Toplevel版本，可嵌入或独立运行）"""
+
+    # 烘焙信息字段定义：(键, 标签文本, 是否只读)
+    ROAST_FIELDS = [
+        ('roast_date', '烘焙日期:', False),
+        ('roast_time', '烘焙时间:', False),
+        # 烘焙次序特殊处理（两个entry并排）
+        ('variety', '豆种:', True),       # 来自生豆信息，只读
+        ('process', '处理法:', True),     # 来自生豆信息，只读
+        ('origin', '产地:', True),        # 来自生豆信息，只读
+        ('altitude', '海拔(m):', True),   # 来自生豆信息，只读
+        ('density', '密度(g/L):', False),
+        ('moisture', '含水率(%):', False),
+        ('green_weight', '生豆重量:', False),
+        ('roasted_weight', '熟豆重量:', False),
+        ('weight_loss', '失重率:', True),  # 自动计算，只读
+    ]
+
+    def __init__(self, master=None, file_path=None):
+        super().__init__(master)
+
+        self.title("Slog Viewer")
+        self.minsize(900, 600)
+        self._center_window()
+
+        # 当前加载的文件路径
+        self.current_path = None
+        # 来源标识（用于默认导出文件名）
+        self.source_identity = ""
+
+        # 烘焙信息变量
+        self.roast_vars = {}
+        self._create_roast_vars()
+
+        # 创建菜单栏
+        self.create_menu()
+
+        # 创建布局
+        self._create_layout()
+
+        # 绑定快捷键
+        self.bind('<Control-o>', lambda e: self.open_slog())
+        self.bind('<Control-s>', lambda e: self.export_slog())
+        self.bind('<Control-q>', lambda e: self.destroy())
+
+        # 如果有文件路径，直接加载
+        if file_path:
+            self.load_file(file_path)
+
+        # 加载生豆信息
+        self._load_bean_info()
+
+    def _center_window(self):
+        """直接计算居中位置"""
+        w, h = 1800, 1200
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _create_roast_vars(self):
+        """创建烘焙信息的所有 StringVar"""
+        for key, _, readonly in self.ROAST_FIELDS:
+            self.roast_vars[key] = tk.StringVar(value='')
+            if key in ('green_weight', 'roasted_weight') and not readonly:
+                self.roast_vars[key].trace_add('write', lambda *_: self._update_weight_loss())
+        # 烘焙次序特殊变量
+        self.roast_vars['roast_no'] = tk.StringVar(value='')
+        self.roast_vars['roast_total'] = tk.StringVar(value='')
+        # 生豆名称（Combobox 单独管理）
+        self.bean_name_var = tk.StringVar(value='')
+
+    def _update_weight_loss(self, *args):
+        """计算失重率"""
+        try:
+            green = float(self.roast_vars['green_weight'].get() or 0)
+            roasted = float(self.roast_vars['roasted_weight'].get() or 0)
+            if green > 0 and roasted > 0:
+                loss = (green - roasted) / green * 100
+                self.roast_vars['weight_loss'].set(f"{loss:.1f}%")
+            else:
+                self.roast_vars['weight_loss'].set('')
+        except ValueError:
+            self.roast_vars['weight_loss'].set('')
+
+    def create_menu(self):
+        """创建菜单栏"""
+        menubar = tk.Menu(self)
+
+        op_menu = tk.Menu(menubar, tearoff=0)
+        op_menu.add_command(
+            label="打开", command=self.open_slog, accelerator="Ctrl+O"
+        )
+        op_menu.add_command(
+            label="另存为", command=self.export_slog, accelerator="Ctrl+S"
+        )
+        op_menu.add_command(
+            label="对比曲线", command=self.open_comparer
+        )
+        op_menu.add_separator()
+        op_menu.add_command(
+            label="退出", command=self.destroy, accelerator="Ctrl+Q"
+        )
+        menubar.add_cascade(label="操作", menu=op_menu)
+
+        self.config(menu=menubar)
+
+    def _create_layout(self):
+        """创建左右分栏布局"""
+        # 主容器
+        main_container = ttk.Frame(self)
+        main_container.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # 左侧面板（数据+控制）
+        self.left_panel = ttk.Frame(main_container, width=500)
+        self.left_panel.pack(side="left", fill="y")
+        self.left_panel.pack_propagate(False)
+
+        # 右侧面板（图表）
+        right_panel = ttk.Frame(main_container)
+        right_panel.pack(side="left", fill="both", expand=True)
+
+        # 左上：烘焙信息（占据上方剩余空间）
+        roast_container = ttk.Frame(self.left_panel)
+        roast_container.pack(fill="both", expand=True)
+        self._create_roast_info(roast_container)
+
+        # 左下：控制参数
+        self.stats_panel = StatisticsPanel(right_panel)
+        self.stats_panel.pack(fill="both", expand=True)
+        control_container = ttk.Frame(self.left_panel)
+        control_container.pack(fill="x")
+        self.stats_panel.create_controls(control_container)
+
+
+    def _create_roast_info(self, parent):
+        """创建烘焙信息面板"""
+        # 使用 Canvas + 内部 Frame 实现滚动
+        canvas = tk.Canvas(parent, highlightthickness=0, borderwidth=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw", width=canvas.winfo_reqwidth())
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # 绑定鼠标滚轮
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        # 更新内部 frame 宽度以匹配 canvas
+        def _update_inner_width(event):
+            canvas.itemconfig(1, width=event.width)
+        canvas.bind("<Configure>", _update_inner_width)
+
+        # ---- 字段创建辅助 ----
+        def _add_entry(frame, label, var, readonly=False):
+            row = ttk.Frame(frame)
+            row.pack(fill="x", padx=6, pady=2)
+            ttk.Label(row, text=label, width=12, anchor="w").pack(side="left")
+            entry = ttk.Entry(row, textvariable=var)
+            if readonly:
+                entry.configure(state="readonly")
+            entry.pack(side="left", fill="x", expand=True, padx=(0, 2))
+            return row
+
+        roast_frame = ttk.LabelFrame(inner, text="烘焙信息")
+        roast_frame.pack(fill="x", padx=5, pady=5)
+
+        # 烘焙日期
+        _add_entry(roast_frame, "烘焙日期:", self.roast_vars['roast_date'])
+        # 烘焙时间
+        _add_entry(roast_frame, "烘焙时间:", self.roast_vars['roast_time'])
+        # 烘焙次序（特殊：两个短框并排）
+        row = ttk.Frame(roast_frame)
+        row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(row, text="烘焙次序:", width=12, anchor="w").pack(side="left")
+        ttk.Label(row, text="第").pack(side="left")
+        ttk.Entry(row, textvariable=self.roast_vars['roast_no'], width=5).pack(side="left", padx=1)
+        ttk.Label(row, text="共").pack(side="left")
+        ttk.Entry(row, textvariable=self.roast_vars['roast_total'], width=5).pack(side="left", padx=1)
+        # 生豆名称（dropdown + 管理按钮）
+        row = ttk.Frame(roast_frame)
+        row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(row, text="生豆名称:", width=12, anchor="w").pack(side="left")
+        self.bean_combo = ttk.Combobox(row, textvariable=self.bean_name_var, state="readonly")
+        self.bean_combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
+        ttk.Button(row, text="管理", command=self._open_bean_manager).pack(side="left")
+        self.bean_combo.bind('<<ComboboxSelected>>', self._on_bean_selected)
+        # 剩余标准字段（跳过 roast_date, roast_time）
+        for key, label, readonly in self.ROAST_FIELDS[2:]:
+            _add_entry(roast_frame, label, self.roast_vars[key], readonly)
+        # 备注（多行）
+        row = ttk.Frame(roast_frame)
+        row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(row, text="备注:", width=12, anchor="w").pack(side="left")
+        self.roast_notes = tk.Text(row, height=4, width=20)
+        self.roast_notes.pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+    def load_file(self, file_path):
+        """从文件加载数据"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法加载文件:\n{e}")
+            return
+
+        # 校验版本
+        version = data.get('version', 0)
+        if version < 1:
+            messagebox.showwarning("警告", "文件格式版本过低，可能无法正确加载")
+
+        # 解析数据
+        results = data.get('results', [])
+        events = data.get('events', [])
+        heater_initial = data.get('heater_initial', 50.0)
+        fan_initial = data.get('fan_initial', 80.0)
+
+        if not results:
+            messagebox.showwarning("警告", "文件中没有有效的results数据")
+            return
+
+        # 更新统计面板
+        self.stats_panel.set_results(results)
+        self.stats_panel.set_events(events, heater_initial, fan_initial)
+
+        # 更新界面
+        self.current_path = file_path
+        self.source_identity = os.path.splitext(os.path.basename(file_path))[0]
+        self.title(f"Slog Viewer - {self.source_identity}")
+        self.stats_panel.status_var.set(
+            f"已加载: {os.path.basename(file_path)} "
+            f"({len(results)}条记录, {len(events)}个事件)"
+        )
+
+        # 加载烘焙信息
+        roast_info = data.get('roast_info', {})
+        for key, var in self.roast_vars.items():
+            var.set(roast_info.get(key, ''))
+        self.roast_notes.delete('1.0', tk.END)
+        self.roast_notes.insert('1.0', roast_info.get('notes', ''))
+
+        # 通过 bean_name 加载生豆信息
+        bean_name = roast_info.get('bean_name', '')
+        self.bean_name_var.set(bean_name)
+        if bean_name:
+            bean = next((b for b in self._beans_data if b['name'] == bean_name), None)
+            if bean:
+                self._apply_bean_info(bean)
+                # density/moisture override from slog
+                if roast_info.get('density'):
+                    self.roast_vars['density'].set(roast_info['density'])
+                if roast_info.get('moisture'):
+                    self.roast_vars['moisture'].set(roast_info['moisture'])
+            else:
+                messagebox.showwarning("警告", f"找不到生豆信息: {bean_name}")
+
+        self._update_weight_loss()
+
+    def _collect_roast_info(self):
+        """收集烘焙信息为 dict（含 bean_name 和 override 逻辑）"""
+        info = {'bean_name': self.bean_name_var.get()}
+        for key in ('roast_date', 'roast_time', 'roast_no', 'roast_total',
+                    'variety', 'process', 'origin', 'altitude',
+                    'green_weight', 'roasted_weight'):
+            info[key] = self.roast_vars[key].get()
+        # density/moisture: 只存 override（与 bean info 默认不同才存）
+        bean_name = info['bean_name']
+        bean = next((b for b in self._beans_data if b['name'] == bean_name), None)
+        for key in ('density', 'moisture'):
+            val = self.roast_vars[key].get()
+            default = bean.get(key, '') if bean else ''
+            info[key] = val if val != default else ''
+        info['weight_loss'] = self.roast_vars['weight_loss'].get()
+        info['notes'] = self.roast_notes.get('1.0', tk.END).strip()
+        return info
+
+    # ====== 生豆信息管理 ======
+
+    def _get_bean_json_path(self):
+        """返回 beans.json 路径"""
+        app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
+        return os.path.join(app_data, 'SantokrOCR', 'BeanInfo', 'beans.json')
+
+    def _load_bean_info(self):
+        """加载 beans.json，刷新 dropdown"""
+        path = self._get_bean_json_path()
+        self._beans_data = []
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    all_beans = json.load(f)
+                self._beans_data = [b for b in all_beans if not b.get('outOfStock', False)]
+            except Exception:
+                self._beans_data = []
+        names = [b['name'] for b in self._beans_data if b.get('name')]
+        self.bean_combo['values'] = names
+
+    def _on_bean_selected(self, event=None):
+        """下拉框选中生豆"""
+        name = self.bean_name_var.get()
+        if not name:
+            return
+        bean = next((b for b in self._beans_data if b['name'] == name), None)
+        if bean:
+            self._apply_bean_info(bean)
+
+    def _apply_bean_info(self, bean):
+        """从 bean dict 填充字段（不覆盖已存在的 density/moisture）"""
+        for key in ('variety', 'process', 'origin', 'altitude'):
+            self.roast_vars[key].set(bean.get(key, ''))
+        for key in ('density', 'moisture'):
+            if not self.roast_vars[key].get():
+                self.roast_vars[key].set(bean.get(key, ''))
+
+    def _open_bean_manager(self):
+        """打开生豆信息管理窗口"""
+        from ui.bean_manager import BeanManager
+        BeanManager(self, on_save_callback=self._refresh_bean_dropdown)
+
+    def _refresh_bean_dropdown(self):
+        """BeanManager 保存后刷新 dropdown"""
+        self._load_bean_info()
+        current = self.bean_name_var.get()
+        if current and current in self.bean_combo['values']:
+            self.bean_name_var.set(current)
+
+    def open_slog(self, event=None):
+        """打开.slog文件"""
+        file_path = filedialog.askopenfilename(
+            title="打开.slog文件",
+            filetypes=[("Slog files", "*.slog"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.load_file(file_path)
+
+    def export_slog(self, event=None):
+        """导出.slog文件"""
+        if not self.stats_panel.results:
+            messagebox.showwarning("警告", "没有可导出的数据")
+            return
+
+        default_name = self.source_identity or "export"
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".slog",
+            initialfile=f"{default_name}.slog",
+            filetypes=[("Slog files", "*.slog"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return
+
+        export = {
+            'version': 1,
+            'roast_info': self._collect_roast_info(),
+            'results': self.stats_panel.results,
+            'events': self.stats_panel.events,
+            'heater_initial': self.stats_panel.heater_initial,
+            'fan_initial': self.stats_panel.fan_initial,
+        }
+
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(export, f, indent=2, ensure_ascii=False)
+
+        self.stats_panel.status_var.set(f"数据已导出到: {file_path}")
+
+    def open_comparer(self, event=None):
+        """打开曲线对比器"""
+        if not self.current_path:
+            messagebox.showwarning("警告", "请先打开一个.slog文件")
+            return
+
+        files = filedialog.askopenfilenames(
+            title="选择对比的.slog文件",
+            filetypes=[("Slog files", "*.slog"), ("All files", "*.*")]
+        )
+        if not files:
+            return
+
+        all_files = [self.current_path] + list(files)
+        if len(all_files) > 5:
+            messagebox.showerror("错误", "最多允许5个slog参与对比")
+            return
+
+        from ui.slog_comparer import SlogComparer
+        SlogComparer(self, file_paths=all_files)
+
+
+
+def open_slog_viewer(parent, file_path=None):
+    """从父窗口打开slog viewer"""
+    return SlogViewer(parent, file_path)
+
+
+def main():
+    root = tk.Tk()
+    root.withdraw()
+    file_path = sys.argv[1] if len(sys.argv) > 1 else None
+    app = SlogViewer(root, file_path)
+    app.protocol("WM_DELETE_WINDOW", lambda: (root.quit(), root.destroy()))
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
