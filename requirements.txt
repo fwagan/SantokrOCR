@@ -5,6 +5,7 @@ Pillow>=10.0.0
 PyYAML>=6.0  # 用于配置文件
 matplotlib>=3.7.0
 scipy>=1.11.0
+PySide6>=6.6.0
 
 # 开发依赖（可选）
 pytest>=7.0.0
