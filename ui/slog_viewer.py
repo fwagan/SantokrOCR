@@ -356,16 +356,9 @@ class SlogViewer(tk.Toplevel):
                 self.roast_vars[key].set(bean.get(key, ''))
 
     def _open_bean_manager(self):
-        """打开生豆信息管理窗口（Qt 版）"""
-        from ui.qt.bean_manager import BeanManagerDialog
-        from utils.qt_compat import QtApp
-        QtApp.run_dialog(
-            dialog_factory=lambda: BeanManagerDialog(
-                on_save_callback=self._refresh_bean_dropdown
-            ),
-            tk_parent=self,
-            on_finished=self._refresh_bean_dropdown,
-        )
+        """打开生豆信息管理窗口（旧版 tkinter）"""
+        from ui.bean_manager import BeanManager
+        BeanManager(self, on_save_callback=self._refresh_bean_dropdown)
 
     def _refresh_bean_dropdown(self):
         """BeanManager 保存后刷新 dropdown"""
