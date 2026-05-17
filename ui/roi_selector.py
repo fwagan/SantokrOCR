@@ -11,6 +11,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from utils.screen_utils import center_window, calc_image_window_size
+
 
 # ROI名称 → 中文标签映射
 ROI_LABELS = {
@@ -113,6 +115,9 @@ class RoiSelector(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
+        # 按视频尺寸自适应窗口
+        self._size_and_center()
+
         # 初始绘制
         self._update_status_labels()
         self._update_hint()
@@ -120,6 +125,18 @@ class RoiSelector(tk.Toplevel):
 
         # 阻塞直到窗口关闭
         self.wait_window()
+
+    # ──────── 窗口大小 ────────
+
+    def _size_and_center(self):
+        """根据视频帧尺寸和屏幕大小设置窗口"""
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        # chrome: 窗口边框 + main padding + canvas边框/padding + gap + 右侧面板200 + 底栏
+        chrome_w = 260
+        chrome_h = 122
+        w, h = calc_image_window_size(sw, sh, self.img_w, self.img_h, chrome_w, chrome_h)
+        center_window(self, w, h)
 
     # ──────── 读取帧 ────────
 

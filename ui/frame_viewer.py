@@ -16,6 +16,8 @@ from core.digit_recognition_pipeline import DigitRecognitionPipeline
 # 仅用于SEGMENT_AREAS常量（可视化），不参与实际识别
 from core.white_led_recognizer import WhiteLEDRecognizer
 
+from utils.screen_utils import center_window, calc_image_window_size
+
 
 class FrameViewer(tk.Toplevel):
     """帧查看器窗口"""
@@ -76,8 +78,12 @@ class FrameViewer(tk.Toplevel):
 
         # 配置窗口
         self.title(f"帧查看器 - 帧 {frame_num} ({self.relative_timestamp:.3f}秒)")
-        self.geometry("1000x800")
         self.minsize(800, 700)
+
+        # 初始暂定居中（图片加载后 auto_resize_window 会再次调整）
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        center_window(self, int(sw * 0.7), int(sh * 0.75))
 
         # 绑定关闭事件
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -338,24 +344,14 @@ class FrameViewer(tk.Toplevel):
 
     def auto_resize_window(self, img_width, img_height):
         """自动调整窗口大小以适应图像尺寸（100%缩放时）"""
-        # 估算UI控件占用的额外空间
-        extra_w = 40   # 左右边距+窗口边框
-        extra_h = 310  # 控制栏+标签页头+结果面板+按钮+事件面板+边距+标题栏
-
-        target_w = img_width + extra_w
-        target_h = img_height + extra_h
-
-        # 确保不小于最小尺寸
-        target_w = max(target_w, 800)
-        target_h = max(target_h, 700)
-
-        # 不超出屏幕范围
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        target_w = min(target_w, screen_w - 80)
-        target_h = min(target_h, screen_h - 80)
-
-        self.geometry(f"{int(target_w)}x{int(target_h)}")
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        extra_w = 40
+        extra_h = 310
+        w, h = calc_image_window_size(sw, sh, img_width, img_height, extra_w, extra_h)
+        w = max(w, 800)
+        h = max(h, 700)
+        center_window(self, w, h)
 
     def update_scrollbars(self, img_width, img_height):
         """根据需要更新滚动条"""

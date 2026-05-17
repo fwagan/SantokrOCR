@@ -22,6 +22,7 @@ from ui.async_worker import ProcessingThread
 from ui.frame_viewer import FrameViewer
 from ui.sample_collector import SampleCollector
 from utils.cache_manager import get_cache_manager
+from utils.screen_utils import center_window
 
 
 class MainWindow(tk.Tk):
@@ -42,8 +43,14 @@ class MainWindow(tk.Tk):
 
         # 配置窗口
         self.title("SantokrOCR - 视频数字提取工具")
-        self.geometry("1400x800")
         self.minsize(1100, 600)
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        w = max(int(sw * 0.85), 1100)
+        h = max(int(sh * 0.85), 600)
+        w = min(w, sw - 40)
+        h = min(h, sh - 40)
+        center_window(self, w, h)
 
         # 设置图标（如果有）
         try:
