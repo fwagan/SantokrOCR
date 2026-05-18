@@ -9,19 +9,16 @@ SantokrOCR GUI 主程序入口
 import sys
 import os
 
+# ====== 限制 MKL 线程数（减少启动开销） ======
+os.environ['MKL_NUM_THREADS'] = '4'
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
 # ====== Windows DPI感知（解决tkinter模糊） ======
 try:
     from ctypes import windll
     windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
-
-# ====== 修复PaddleOCR错误：禁用oneDNN优化 ======
-# 解决"ConvertPirAttribute2RuntimeAttribute not support"错误
-os.environ['FLAGS_enable_pir_api'] = '0'  
-os.environ['FLAGS_use_mkldnn'] = '0'      # 禁用MKLDNN
-os.environ['FLAGS_use_onednn'] = '0'     # 禁用OneDNN
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1' # 强制使用CPU
 
 # 添加项目根目录到Python路径，确保模块导入正常
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +35,11 @@ def main():
         print(f"程序启动失败: {e}")
         import traceback
         traceback.print_exc()
-        input("按回车键退出...")
+        try:
+            from tkinter import messagebox
+            messagebox.showerror("启动失败", str(e))
+        except Exception:
+            input("按回车键退出...")
 
 if __name__ == "__main__":
     main()

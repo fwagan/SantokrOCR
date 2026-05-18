@@ -198,6 +198,38 @@ class DataTable(ttk.Frame):
         # 更新treeview项
         self.tree.item(item, values=values, tags=tuple(tags))
 
+    def load_all(self, results):
+        """批量加载所有结果到表格（一次性插入）"""
+        self.clear()
+        for data in results:
+            values = []
+            for col_id, _, _ in self.columns:
+                value = data.get(col_id, "")
+                if isinstance(value, (int, float)):
+                    value = str(value)
+                values.append(value)
+
+            tags = []
+            abnormal_category = data.get('abnormal_category')
+            if abnormal_category == 'temperature_diff':
+                tags.append('abnormal_black')
+            else:
+                faulty_digit = data.get('temp1_faulty_digit')
+                if faulty_digit == -1:
+                    tags.append('failed_red')
+                elif faulty_digit == -2:
+                    inference_category = data.get('inference_category')
+                    if inference_category == 'determined':
+                        tags.append('determined_green')
+                    elif inference_category == 'inconsistent':
+                        tags.append('inconsistent_red')
+                    elif inference_category == 'ambiguous':
+                        tags.append('ambiguous_yellow')
+                    if data.get('is_editable', False):
+                        tags.append('editable')
+
+            self.tree.insert("", "end", values=values, tags=tuple(tags))
+
     def clear(self):
         """清空所有数据"""
         for item in self.tree.get_children():

@@ -9,7 +9,6 @@ __all__ = [
     'frame_viewer',
     'async_worker',
     'roi_selector',
-    'sample_collector',
     'statistics_panel',
     'slog_viewer',
     'slog_comparer',

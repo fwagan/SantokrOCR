@@ -10,7 +10,6 @@
 
 import cv2
 import numpy as np
-import pandas as pd
 from .digit_recognizer import DigitRecognizer
 import tkinter as tk
 from tkinter import filedialog, messagebox
@@ -92,7 +91,7 @@ class VideoDigitExtractor:
     """视频数字提取器主类"""
 
     def __init__(self):
-        self.digit_recognizer = None  # 替代PaddleOCR的数字识别器
+        self.digit_recognizer = None  # OpenCV数字识别器
         self.faulty_classifier = LEDDigitClassifier()
         self.rois = {}  # 存储三个ROI区域
         self.start_frame = 0
@@ -356,7 +355,7 @@ class VideoDigitExtractor:
                         temp2_text = "????"
                         temp2_conf = 0.0
 
-                    # 故障位数字识别（集成PaddleOCR和分类器）
+                    # 故障位数字识别
                     faulty_digit_result, method, is_suspicious = self.recognize_faulty_digit(temp1_faulty_img)
 
                     # 初始化完整温度值
@@ -415,11 +414,13 @@ class VideoDigitExtractor:
                     if progress_callback:
                         progress_callback(len(results), total_time_points)
 
-                    # 跳转到下一个要处理的帧（跳过中间不需要的帧）
+                    # 连续读取跳过中间帧（比 cap.set() 快 10 倍以上）
                     frame_count += frame_interval
                     if frame_count >= total_frames:
                         break
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_count)
+                    for _ in range(frame_interval - 1):
+                        if not cap.grab():
+                            break
 
                 cap.release()
 
@@ -427,7 +428,6 @@ class VideoDigitExtractor:
                 self.processing_stats['current_status'] = 'completed'
                 if status_callback:
                     status_callback(f"处理完成，共处理 {len(results)} 个时间点")
-
                 return results
 
             except Exception as e:
@@ -862,32 +862,6 @@ class VideoDigitExtractor:
             'temp2_normal_lastdigit': (255, 200, 0)  # 橙黄色
         }
         return colors.get(roi_name, (255, 255, 255))  # 默认白色
-
-    def export_to_csv(self, results, video_path):
-        """导出结果到CSV"""
-        df = pd.DataFrame(results)
-
-        # 添加时间列（秒转换为mm:ss:xxx格式，负时间戳显示'-'）
-        df['time_str'] = df['timestamp'].apply(
-            lambda x: f"{int(x//60):02d}:{int(x%60):02d}:{int((x%1)*1000):03d}" if x >= 0 else '-'
-        )
-
-        # 重新排列列
-        columns = ['frame', 'timestamp', 'original_timestamp', 'time_str', 'timer', 'temp1_full',
-                   'temp1_normal', 'temp1_faulty_digit', 'temp2', 'quality']
-        df = df[columns]
-
-        # 生成输出路径
-        output_path = os.path.splitext(video_path)[0] + '_extracted.csv'
-        df.to_csv(output_path, index=False, encoding='utf-8-sig')
-
-        print(f"\n处理完成！")
-        print(f"总记录数: {len(results)}")
-        print(f"高质量数据: {len(df[df['quality']=='high'])}")
-        print(f"低质量数据: {len(df[df['quality']=='low'])}")
-        print(f"结果已保存到: {output_path}")
-
-        return output_path
 
     def recognize_faulty_digit(self, faulty_roi_image, prev_temp_full=None, next_temp_full=None):
         """

@@ -20,7 +20,6 @@ from core.video_extractor import VideoDigitExtractor
 from ui.data_table import DataTable
 from ui.async_worker import ProcessingThread
 from ui.frame_viewer import FrameViewer
-from ui.sample_collector import SampleCollector
 from utils.cache_manager import get_cache_manager
 from utils.screen_utils import center_window
 
@@ -54,7 +53,13 @@ class MainWindow(tk.Tk):
 
         # 设置图标（如果有）
         try:
-            self.iconbitmap(default='icon.ico')
+            if getattr(sys, 'frozen', False):
+                base_path = sys._MEIPASS
+            else:
+                base_path = os.path.dirname(os.path.abspath(__file__))
+            icon_path = os.path.join(base_path, 'icon.ico')
+            if os.path.exists(icon_path):
+                self.iconbitmap(default=icon_path)
         except:
             pass
 
@@ -82,8 +87,6 @@ class MainWindow(tk.Tk):
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="打开视频", command=self.open_video, accelerator="Ctrl+O")
         file_menu.add_separator()
-        file_menu.add_command(label="导出CSV", command=self.export_csv, accelerator="Ctrl+S")
-        file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.on_closing, accelerator="Ctrl+Q")
         menubar.add_cascade(label="文件", menu=file_menu)
 
@@ -104,7 +107,6 @@ class MainWindow(tk.Tk):
 
         # 绑定快捷键
         self.bind('<Control-o>', lambda e: self.open_video())
-        self.bind('<Control-s>', lambda e: self.export_csv())
         self.bind('<Control-q>', lambda e: self.on_closing())
 
     def create_top_panel(self, parent=None):
@@ -193,8 +195,6 @@ class MainWindow(tk.Tk):
         self.stop_button = ttk.Button(control_row, text="停止", command=self.stop_processing,
                                      state="disabled")
         self.stop_button.pack(side="left", padx=5)
-
-        ttk.Button(control_row, text="样本收集模式", command=self.open_sample_collector).pack(side="left", padx=5)
 
         # 推断控制行
         inference_row = ttk.Frame(top_frame)
@@ -742,10 +742,6 @@ class MainWindow(tk.Tk):
         self.progress_label = ttk.Label(bottom_frame, text="0/0")
         self.progress_label.pack(side="left", padx=10, pady=5)
 
-        # 已处理帧数
-        self.processed_label = ttk.Label(bottom_frame, text="已处理: 0")
-        self.processed_label.pack(side="right", padx=10, pady=5)
-
     # ===== 事件处理方法 =====
 
     def open_video(self):
@@ -1094,9 +1090,7 @@ class MainWindow(tk.Tk):
             self.log(f"结果已添加到表格，共 {len(self.results)} 条记录")
 
             # 更新UI状态
-            self.progress_var.set(100)
             self.progress_label.config(text="1/1")
-            self.processed_label.config(text="已处理: 1")
             self.update_status("测试模式处理完成")
 
             cap.release()
@@ -1181,9 +1175,9 @@ class MainWindow(tk.Tk):
         self.stop_button.config(state="normal")
 
         # 重置进度
+        self._last_progress_pct = -1
         self.progress_var.set(0)
         self.progress_label.config(text="0/0")
-        self.processed_label.config(text="已处理: 0")
 
         # 清空之前的结果
         self.results = []
@@ -1269,10 +1263,13 @@ class MainWindow(tk.Tk):
             self.update_status("正在停止处理...")
 
     def on_processing_progress(self, processed, total):
-        """处理进度更新回调"""
-        self.progress_var.set(processed / total * 100 if total > 0 else 0)
+        """处理进度更新回调（降频更新）"""
+        pct = int(processed / max(total, 1) * 100)
+        if pct == getattr(self, '_last_progress_pct', -1):
+            return
+        self._last_progress_pct = pct
+        self.progress_var.set(pct)
         self.progress_label.config(text=f"{processed}/{total}")
-        self.processed_label.config(text=f"已处理: {processed}")
 
     def on_processing_status(self, message):
         """处理状态更新回调"""
@@ -1280,89 +1277,46 @@ class MainWindow(tk.Tk):
         self.log(f"状态: {message}")
 
     def on_processing_result(self, result):
-        """处理结果回调（单条记录）"""
+        """处理结果回调（单条记录）—— 只存数据，不实时插入表格"""
         self.results.append(result)
-        self.data_table.add_row(result)
 
     def on_processing_finished(self, success, message):
         """处理完成回调"""
         if success:
-            self.update_status("处理完成")
-            self.log(f"处理完成，共处理 {len(self.results)} 条记录")
-            messagebox.showinfo("完成", f"处理完成！\n共处理 {len(self.results)} 条记录")
-
-            # 保存结果到缓存
-            try:
-                if self.video_path and self.results:
-                    video_hash = self.cache_manager.compute_video_hash(self.video_path)
-                    self.cache_manager.save_results(video_hash, self.results)
-                    self.log(f"识别结果已保存到缓存 (hash: {video_hash}, 记录数: {len(self.results)})")
-            except Exception as e:
-                self.log(f"保存结果到缓存失败: {e}")
-
+            # 在主线程中加载结果到表格（避免后台线程逐行刷新）
+            self.after_idle(self._finish_loading)
         else:
             self.update_status("处理失败")
             self.log(f"处理失败: {message}")
             messagebox.showerror("错误", f"处理失败:\n{message}")
+            self.start_button.config(state="normal")
+            self.pause_button.config(state="disabled")
+            self.stop_button.config(state="disabled")
+            self.pause_button.config(text="暂停", command=self.pause_processing)
+
+    def _finish_loading(self):
+        """在主线程中加载结果并完成处理（被 on_processing_finished 用 after_idle 调用）"""
+        self.update_status("正在加载结果...")
+        self.data_table.load_all(self.results)
+
+        self.update_status("处理完成")
+        self.log(f"处理完成，共处理 {len(self.results)} 条记录")
+        messagebox.showinfo("完成", f"处理完成！\n共处理 {len(self.results)} 条记录")
+
+        # 保存结果到缓存
+        try:
+            if self.video_path and self.results:
+                video_hash = self.cache_manager.compute_video_hash(self.video_path)
+                self.cache_manager.save_results(video_hash, self.results)
+                self.log(f"识别结果已保存到缓存 (hash: {video_hash}, 记录数: {len(self.results)})")
+        except Exception as e:
+            self.log(f"保存结果到缓存失败: {e}")
 
         # 重置按钮状态
         self.start_button.config(state="normal")
         self.pause_button.config(state="disabled")
         self.stop_button.config(state="disabled")
         self.pause_button.config(text="暂停", command=self.pause_processing)
-
-    def export_csv(self):
-        """导出CSV结果"""
-        if not self.results:
-            messagebox.showwarning("警告", "没有可导出的数据")
-            return
-
-        output_path = filedialog.asksaveasfilename(
-            title="保存CSV文件",
-            defaultextension=".csv",
-            filetypes=[("CSV文件", "*.csv"), ("所有文件", "*.*")]
-        )
-
-        if output_path:
-            try:
-                # 使用extractor的导出方法
-                self.extractor.export_to_csv(self.results, output_path)
-                self.update_status(f"结果已导出到: {os.path.basename(output_path)}")
-                self.log(f"导出完成: {output_path}")
-                messagebox.showinfo("导出成功", f"结果已导出到:\n{output_path}")
-            except Exception as e:
-                messagebox.showerror("导出失败", f"导出过程中出错:\n{e}")
-
-    def open_sample_collector(self):
-        """打开样本收集器"""
-        if not self.video_path:
-            messagebox.showwarning("警告", "请先选择视频文件")
-            return
-
-        if not self.rois or 'temp1_faulty' not in self.rois:
-            messagebox.showwarning("警告", "请先配置ROI区域（特别是故障位区域）")
-            return
-
-        try:
-            # 获取故障位ROI
-            faulty_roi = self.rois['temp1_faulty']
-
-            # 创建样本收集器窗口
-            collector = SampleCollector(
-                parent=self,
-                extractor=self.extractor,
-                video_path=self.video_path,
-                faulty_roi=faulty_roi,
-                start_frame=0,  # 从第0帧开始
-                num_samples=50  # 默认收集50个样本
-            )
-
-            self.log(f"打开样本收集器: 故障位ROI={faulty_roi}")
-
-        except Exception as e:
-            error_msg = f"打开样本收集器失败: {e}"
-            messagebox.showerror("错误", error_msg)
-            self.log(error_msg)
 
     def toggle_log_display(self):
         """切换日志显示"""
@@ -1386,11 +1340,9 @@ class MainWindow(tk.Tk):
 3. 设置参数：调整采样间隔（默认0.25秒）
 4. 开始处理：点击"开始处理"按钮开始异步处理
 5. 查看结果：在数据表格中查看识别结果，双击行可查看对应帧截图
-6. 导出结果：点击"导出CSV"保存结果
 
 快捷键：
 - Ctrl+O: 打开视频
-- Ctrl+S: 导出CSV
 - Ctrl+Q: 退出程序"""
         messagebox.showinfo("使用说明", help_text)
 
@@ -1400,14 +1352,14 @@ class MainWindow(tk.Tk):
 
 版本: 1.0.0
 作者: SantokrOCR Team
-描述: 基于PaddleOCR和自定义分类器的视频数字提取工具
+描述: 基于OpenCV和自定义分类器的视频数字提取工具
 
 功能：
 - 视频选择与ROI框选
 - 异步视频处理
 - 数据表格预览与验证
 - 故障位LED数字识别
-- 结果导出为CSV格式"""
+- 结果导出为.slog格式"""
         messagebox.showinfo("关于", about_text)
 
     def on_closing(self):
