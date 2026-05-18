@@ -20,16 +20,18 @@ class MultiDigitRecognizer:
     """多数字识别器"""
 
     def __init__(self, segmenter=None,
-                 classifier: Optional[LEDDigitClassifier] = None):
+                 classifier: Optional[LEDDigitClassifier] = None,
+                 rotate_angle: float = 5):
         """
         初始化识别器
 
         Args:
             segmenter: 数字分割器实例，如果为None则创建默认ProjectionSegmenter实例
             classifier: 数字分类器实例，如果为None则创建默认实例
+            rotate_angle: 旋转角度（正数=逆时针，0=不旋转），传递给ProjectionSegmenter
         """
         if segmenter is None:
-            self.segmenter = ProjectionSegmenter()
+            self.segmenter = ProjectionSegmenter(rotate_angle=rotate_angle)
         else:
             # 用户提供了分割器
             self.segmenter = segmenter

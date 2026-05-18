@@ -29,7 +29,8 @@ class FrameViewer(tk.Toplevel):
 
     def __init__(self, parent, extractor, video_path, rois, frame_num, timestamp,
                  results=None, events=None, on_mark_event_callback=None,
-                 heater_initial=50.0, fan_initial=80.0):
+                 heater_initial=50.0, fan_initial=80.0,
+                 rotate_angle: float = 5):
         """
         初始化帧查看器
         Args:
@@ -44,6 +45,7 @@ class FrameViewer(tk.Toplevel):
             on_mark_event_callback: 标记事件回调函数
             heater_initial: 初始火力值
             fan_initial: 初始风门值
+            rotate_angle: 旋转角度（正数=逆时针，0=不旋转）
         """
         super().__init__(parent)
 
@@ -71,7 +73,7 @@ class FrameViewer(tk.Toplevel):
         self._debug_generating = False  # 防止重复生成
 
         # 统一识别管道（debug模式开启，记录中间数据供可视化）
-        self._pipeline = DigitRecognitionPipeline(is_debug=True)
+        self._pipeline = DigitRecognitionPipeline(is_debug=True, rotate_angle=rotate_angle)
 
         # 自动调整大小标记
         self._has_auto_resized = False

@@ -18,15 +18,16 @@ from .led_classifier import LEDDigitClassifier
 class DigitRecognitionPipeline:
     """统一的数字识别管道"""
 
-    def __init__(self, is_debug: bool = False):
+    def __init__(self, is_debug: bool = False, rotate_angle: float = 5):
         """
         初始化识别管道
 
         Args:
             is_debug: 是否记录调试数据（中间图像、7段向量等）
+            rotate_angle: 旋转角度（正数=逆时针，0=不旋转），传递给ProjectionSegmenter
         """
         self.is_debug = is_debug
-        self._segmenter = ProjectionSegmenter()
+        self._segmenter = ProjectionSegmenter(rotate_angle=rotate_angle)
         self._classifier = LEDDigitClassifier()
         self._debug_data = {}  # {roi_name: {step: data}}
 

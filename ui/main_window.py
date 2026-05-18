@@ -174,6 +174,11 @@ class MainWindow(tk.Tk):
         self.test_checkbox = ttk.Checkbutton(params_row, variable=self.test_mode_var)
         self.test_checkbox.pack(side="left")
 
+        # 旋转角度输入
+        ttk.Label(params_row, text="旋转角度(°):").pack(side="left", padx=(20, 5))
+        self.rotation_angle_var = tk.StringVar(value="5")
+        ttk.Entry(params_row, textvariable=self.rotation_angle_var, width=6).pack(side="left", padx=5)
+
         # 处理控制按钮
         control_row = ttk.Frame(top_frame)
         control_row.pack(fill="x", pady=10)
@@ -902,7 +907,8 @@ class MainWindow(tk.Tk):
                 rois=self.rois,
                 frame_num=0,  # 第一帧
                 timestamp=0.0,
-                results={}  # 不需要OCR结果
+                results={},  # 不需要OCR结果
+                rotate_angle=float(self.rotation_angle_var.get())
             )
             viewer.title("ROI预览 - 第一帧")
             self.log("打开ROI预览窗口")
@@ -1110,6 +1116,16 @@ class MainWindow(tk.Tk):
         except ValueError as e:
             messagebox.showerror("错误", f"参数错误: {e}")
             return
+
+        # 更新旋转角度到提取器
+        try:
+            self.extractor.rotation_angle = float(self.rotation_angle_var.get())
+        except ValueError:
+            self.log(f"无效的旋转角度: {self.rotation_angle_var.get()}，使用默认值5")
+            self.extractor.rotation_angle = 5
+        # 重置懒加载识别器，确保新角度生效
+        self.extractor.digit_recognizer = None
+        self.extractor._pipeline = None
 
         # 测试模式：只处理一帧
         if self.test_mode_var.get():
@@ -1486,7 +1502,8 @@ class MainWindow(tk.Tk):
                 events=self.events,
                 on_mark_event_callback=self.on_event_marked,
                 heater_initial=self.heater_initial_var.get(),
-                fan_initial=self.fan_initial_var.get()
+                fan_initial=self.fan_initial_var.get(),
+                rotate_angle=float(self.rotation_angle_var.get())
             )
             self.log(f"打开帧查看器: 帧号={frame_num}, 原始时间戳={timestamp}")
         except Exception as e:

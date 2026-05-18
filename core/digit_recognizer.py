@@ -16,7 +16,8 @@ from .multi_digit_recognizer import MultiDigitRecognizer
 class DigitRecognizer:
     """替代OCREngine的OpenCV数字识别器"""
 
-    def __init__(self, use_gpu=False, lang='ch', show_log=False):
+    def __init__(self, use_gpu=False, lang='ch', show_log=False,
+                 rotate_angle: float = 5):
         """
         初始化数字识别器
 
@@ -26,13 +27,15 @@ class DigitRecognizer:
             use_gpu: 是否使用GPU (已弃用，保留参数用于兼容性)
             lang: 语言 (已弃用，保留参数用于兼容性)
             show_log: 是否显示日志 (已弃用，保留参数用于兼容性)
+            rotate_angle: 旋转角度（正数=逆时针，0=不旋转）
         """
         # 初始化各个组件
         self.feature_extractor = FeatureExtractor()
         self.led_classifier = LEDDigitClassifier()
         self.multi_digit_recognizer = MultiDigitRecognizer(
             segmenter=None,  # 传入None，让MultiDigitRecognizer创建默认ProjectionSegmenter
-            classifier=self.led_classifier
+            classifier=self.led_classifier,
+            rotate_angle=rotate_angle
         )
         # 删除digit_segmenter属性，不再需要
 

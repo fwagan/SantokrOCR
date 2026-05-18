@@ -104,18 +104,19 @@ class VideoDigitExtractor:
             'start_time': None,
             'elapsed_time': 0
         }
+        self.rotation_angle = 5  # 旋转角度，0=不旋转
 
     def _get_digit_recognizer(self):
         """获取数字识别器实例（懒加载）"""
         if self.digit_recognizer is None:
-            self.digit_recognizer = DigitRecognizer()
+            self.digit_recognizer = DigitRecognizer(rotate_angle=self.rotation_angle)
         return self.digit_recognizer
 
     def _get_recognition_pipeline(self):
         """获取统一识别管道实例（懒加载）"""
         if self._pipeline is None:
             from .digit_recognition_pipeline import DigitRecognitionPipeline
-            self._pipeline = DigitRecognitionPipeline(is_debug=False)
+            self._pipeline = DigitRecognitionPipeline(is_debug=False, rotate_angle=self.rotation_angle)
         return self._pipeline
 
     def select_video(self):
