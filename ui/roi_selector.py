@@ -29,7 +29,7 @@ ROI_COLORS_BGR = {
     'temp1_normal': (255, 0, 0),    # 蓝色
     'temp1_faulty': (0, 0, 255),    # 红色
     'temp2_normal_3digits': (255, 255, 0),   # 黄色
-    'temp2_normal_lastdigit': (255, 200, 0), # 橙黄色
+    'temp2_normal_lastdigit': (255, 0, 255), # 紫色
 }
 
 # BGR → tkinter hex

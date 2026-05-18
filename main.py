@@ -25,21 +25,32 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ui.main_window import MainWindow
 
+
 def main():
     """主函数"""
     try:
-        # 创建并运行主窗口
-        app = MainWindow()
-        app.mainloop()
+        # 如果传入了 .slog 文件参数（文件关联双击），直接启动 SlogViewer
+        if len(sys.argv) > 1 and sys.argv[1].lower().endswith('.slog'):
+            import tkinter as tk
+            from ui.slog_viewer import SlogViewer
+
+            root = tk.Tk()
+            root.withdraw()
+            app = SlogViewer(root, sys.argv[1])
+            app.protocol("WM_DELETE_WINDOW", lambda: (root.quit(), root.destroy()))
+            root.mainloop()
+        else:
+            app = MainWindow()
+            app.mainloop()
     except Exception as e:
-        print(f"程序启动失败: {e}")
         import traceback
         traceback.print_exc()
         try:
             from tkinter import messagebox
             messagebox.showerror("启动失败", str(e))
         except Exception:
-            input("按回车键退出...")
+            pass
+
 
 if __name__ == "__main__":
     main()

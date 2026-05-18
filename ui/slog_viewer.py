@@ -81,12 +81,12 @@ class SlogViewer(tk.Toplevel):
         self.bind_all('<Control-s>', self._on_shortcut_export)
         self.bind_all('<Control-q>', self._on_shortcut_quit)
 
+        # 加载生豆信息
+        self._load_bean_info()
+
         # 如果有文件路径，直接加载
         if file_path:
             self.load_file(file_path)
-
-        # 加载生豆信息
-        self._load_bean_info()
 
     def _center_window(self):
         """直接计算居中位置"""
@@ -501,7 +501,7 @@ class SlogViewer(tk.Toplevel):
         if not files:
             return
 
-        all_files = [self.current_path] + list(files)
+        all_files = list(dict.fromkeys([self.current_path] + list(files)))
         if len(all_files) > 5:
             messagebox.showerror("错误", "最多允许5个slog参与对比")
             return

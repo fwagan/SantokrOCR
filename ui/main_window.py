@@ -43,13 +43,7 @@ class MainWindow(tk.Tk):
         # 配置窗口
         self.title("SantokrOCR - 视频数字提取工具")
         self.minsize(1100, 600)
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        w = max(int(sw * 0.85), 1100)
-        h = max(int(sh * 0.85), 600)
-        w = min(w, sw - 40)
-        h = min(h, sh - 40)
-        center_window(self, w, h)
+        center_window(self, 3200, 1900)
 
         # 设置图标（如果有）
         try:
@@ -211,13 +205,15 @@ class MainWindow(tk.Tk):
 
         ttk.Label(stats_row, text="初始火力(%):").pack(side="left", padx=(0, 2))
         self.heater_initial_var = tk.DoubleVar(value=60.0)
-        ttk.Entry(stats_row, textvariable=self.heater_initial_var, width=6).pack(side="left", padx=2)
-        self.heater_initial_var.trace('w', self.on_initial_value_changed)
+        heater_entry = ttk.Entry(stats_row, textvariable=self.heater_initial_var, width=6)
+        heater_entry.pack(side="left", padx=2)
+        heater_entry.bind('<FocusOut>', self.on_initial_value_changed)
 
         ttk.Label(stats_row, text="初始风门(%):").pack(side="left", padx=(10, 2))
         self.fan_initial_var = tk.DoubleVar(value=50.0)
-        ttk.Entry(stats_row, textvariable=self.fan_initial_var, width=6).pack(side="left", padx=2)
-        self.fan_initial_var.trace('w', self.on_initial_value_changed)
+        fan_entry = ttk.Entry(stats_row, textvariable=self.fan_initial_var, width=6)
+        fan_entry.pack(side="left", padx=2)
+        fan_entry.bind('<FocusOut>', self.on_initial_value_changed)
 
         ttk.Button(stats_row, text="绘制曲线",
                   command=self.open_slog_viewer).pack(side="left", padx=15)
@@ -1534,10 +1530,13 @@ class MainWindow(tk.Tk):
         self.refresh_events_display()
         self.update_cache()
 
-    def on_initial_value_changed(self, *args):
-        """初始火力/风门值改变时同步更新已有的事件"""
-        heater_val = self.heater_initial_var.get()
-        fan_val = self.fan_initial_var.get()
+    def on_initial_value_changed(self, event=None):
+        """初始火力/风门输入框失去焦点时，验证并同步已有的事件"""
+        try:
+            heater_val = self.heater_initial_var.get()
+            fan_val = self.fan_initial_var.get()
+        except tk.TclError:
+            return
         updated = False
         for ev in self.events:
             if ev['type'] == '调整火力' and ev['time'] == 0:
