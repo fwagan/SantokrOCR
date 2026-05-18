@@ -40,13 +40,11 @@ class SlogViewer(tk.Toplevel):
 
     # 烘焙信息字段定义：(键, 标签文本, 是否只读)
     ROAST_FIELDS = [
-        ('roast_date', '烘焙日期:', False),
-        ('roast_time', '烘焙时间:', False),
-        # 烘焙次序特殊处理（两个entry并排）
         ('variety', '豆种:', True),       # 来自生豆信息，只读
         ('process', '处理法:', True),     # 来自生豆信息，只读
         ('origin', '产地:', True),        # 来自生豆信息，只读
         ('altitude', '海拔(m):', True),   # 来自生豆信息，只读
+        ('season', '产季:', True),        # 来自生豆信息，只读
         ('density', '密度(g/L):', False),
         ('moisture', '含水率(%):', False),
         ('green_weight', '生豆重量:', False),
@@ -66,7 +64,9 @@ class SlogViewer(tk.Toplevel):
         # 来源标识（用于默认导出文件名）
         self.source_identity = ""
 
-        # 烘焙信息变量
+        # 单例子窗口引用
+        self._comparer = None
+        self._bean_manager = None
         self.roast_vars = {}
         self._create_roast_vars()
 
@@ -76,10 +76,10 @@ class SlogViewer(tk.Toplevel):
         # 创建布局
         self._create_layout()
 
-        # 绑定快捷键
-        self.bind('<Control-o>', lambda e: self.open_slog())
-        self.bind('<Control-s>', lambda e: self.export_slog())
-        self.bind('<Control-q>', lambda e: self.destroy())
+        # 绑定快捷键 (bind_all 确保在所有控件焦点下均有效)
+        self.bind_all('<Control-o>', self._on_shortcut_open)
+        self.bind_all('<Control-s>', self._on_shortcut_export)
+        self.bind_all('<Control-q>', self._on_shortcut_quit)
 
         # 如果有文件路径，直接加载
         if file_path:
@@ -95,6 +95,27 @@ class SlogViewer(tk.Toplevel):
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
 
+    # ============== 全局快捷键 ==============
+
+    def _active_for_self(self, event):
+        """检查事件是否来自本窗口"""
+        try:
+            return event.widget.winfo_toplevel() is self
+        except tk.TclError:
+            return False
+
+    def _on_shortcut_open(self, event):
+        if self._active_for_self(event):
+            self.open_slog()
+
+    def _on_shortcut_export(self, event):
+        if self._active_for_self(event):
+            self.export_slog()
+
+    def _on_shortcut_quit(self, event):
+        if self._active_for_self(event):
+            self.destroy()
+
     def _create_roast_vars(self):
         """创建烘焙信息的所有 StringVar"""
         for key, _, readonly in self.ROAST_FIELDS:
@@ -104,6 +125,12 @@ class SlogViewer(tk.Toplevel):
         # 烘焙次序特殊变量
         self.roast_vars['roast_no'] = tk.StringVar(value='')
         self.roast_vars['roast_total'] = tk.StringVar(value='')
+        # 日期/时间分解变量
+        self.roast_vars['roast_date_year'] = tk.StringVar(value='')
+        self.roast_vars['roast_date_month'] = tk.StringVar(value='')
+        self.roast_vars['roast_date_day'] = tk.StringVar(value='')
+        self.roast_vars['roast_time_hour'] = tk.StringVar(value='')
+        self.roast_vars['roast_time_minute'] = tk.StringVar(value='')
         # 生豆名称（Combobox 单独管理）
         self.bean_name_var = tk.StringVar(value='')
 
@@ -208,10 +235,24 @@ class SlogViewer(tk.Toplevel):
         roast_frame = ttk.LabelFrame(inner, text="烘焙信息")
         roast_frame.pack(fill="x", padx=5, pady=5)
 
-        # 烘焙日期
-        _add_entry(roast_frame, "烘焙日期:", self.roast_vars['roast_date'])
-        # 烘焙时间
-        _add_entry(roast_frame, "烘焙时间:", self.roast_vars['roast_time'])
+        # 烘焙日期（年/月/日分解）
+        row = ttk.Frame(roast_frame)
+        row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(row, text="烘焙日期:", width=12, anchor="w").pack(side="left")
+        ttk.Entry(row, textvariable=self.roast_vars['roast_date_year'], width=6).pack(side="left", padx=1)
+        ttk.Label(row, text="年").pack(side="left")
+        ttk.Entry(row, textvariable=self.roast_vars['roast_date_month'], width=4).pack(side="left", padx=1)
+        ttk.Label(row, text="月").pack(side="left")
+        ttk.Entry(row, textvariable=self.roast_vars['roast_date_day'], width=4).pack(side="left", padx=1)
+        ttk.Label(row, text="日").pack(side="left")
+        # 烘焙时间（时/分分解）
+        row = ttk.Frame(roast_frame)
+        row.pack(fill="x", padx=6, pady=2)
+        ttk.Label(row, text="烘焙时间:", width=12, anchor="w").pack(side="left")
+        ttk.Entry(row, textvariable=self.roast_vars['roast_time_hour'], width=4).pack(side="left", padx=1)
+        ttk.Label(row, text="时").pack(side="left")
+        ttk.Entry(row, textvariable=self.roast_vars['roast_time_minute'], width=4).pack(side="left", padx=1)
+        ttk.Label(row, text="分").pack(side="left")
         # 烘焙次序（特殊：两个短框并排）
         row = ttk.Frame(roast_frame)
         row.pack(fill="x", padx=6, pady=2)
@@ -228,8 +269,8 @@ class SlogViewer(tk.Toplevel):
         self.bean_combo.pack(side="left", fill="x", expand=True, padx=(0, 2))
         ttk.Button(row, text="管理", command=self._open_bean_manager).pack(side="left")
         self.bean_combo.bind('<<ComboboxSelected>>', self._on_bean_selected)
-        # 剩余标准字段（跳过 roast_date, roast_time）
-        for key, label, readonly in self.ROAST_FIELDS[2:]:
+        # 剩余标准字段
+        for key, label, readonly in self.ROAST_FIELDS:
             _add_entry(roast_frame, label, self.roast_vars[key], readonly)
         # 备注（多行）
         row = ttk.Frame(roast_frame)
@@ -279,6 +320,21 @@ class SlogViewer(tk.Toplevel):
         roast_info = data.get('roast_info', {})
         for key, var in self.roast_vars.items():
             var.set(roast_info.get(key, ''))
+        # 解析日期为年/月/日
+        date_str = roast_info.get('roast_date', '')
+        if date_str:
+            parts = date_str.split('-')
+            if len(parts) == 3:
+                self.roast_vars['roast_date_year'].set(parts[0])
+                self.roast_vars['roast_date_month'].set(parts[1])
+                self.roast_vars['roast_date_day'].set(parts[2])
+        # 解析时间为时/分
+        time_str = roast_info.get('roast_time', '')
+        if time_str:
+            parts = time_str.split(':')
+            if len(parts) == 2:
+                self.roast_vars['roast_time_hour'].set(parts[0])
+                self.roast_vars['roast_time_minute'].set(parts[1])
         self.roast_notes.delete('1.0', tk.END)
         self.roast_notes.insert('1.0', roast_info.get('notes', ''))
 
@@ -302,8 +358,17 @@ class SlogViewer(tk.Toplevel):
     def _collect_roast_info(self):
         """收集烘焙信息为 dict（含 bean_name 和 override 逻辑）"""
         info = {'bean_name': self.bean_name_var.get()}
-        for key in ('roast_date', 'roast_time', 'roast_no', 'roast_total',
-                    'variety', 'process', 'origin', 'altitude',
+        # 组合日期
+        year = self.roast_vars['roast_date_year'].get()
+        month = self.roast_vars['roast_date_month'].get()
+        day = self.roast_vars['roast_date_day'].get()
+        info['roast_date'] = f"{year}-{month}-{day}" if year and month and day else ''
+        # 组合时间
+        hour = self.roast_vars['roast_time_hour'].get()
+        minute = self.roast_vars['roast_time_minute'].get()
+        info['roast_time'] = f"{hour}:{minute}" if hour or minute else ''
+        for key in ('roast_no', 'roast_total',
+                    'variety', 'process', 'origin', 'altitude', 'season',
                     'green_weight', 'roasted_weight'):
             info[key] = self.roast_vars[key].get()
         # density/moisture: 只存 override（与 bean info 默认不同才存）
@@ -349,16 +414,24 @@ class SlogViewer(tk.Toplevel):
 
     def _apply_bean_info(self, bean):
         """从 bean dict 填充字段（不覆盖已存在的 density/moisture）"""
-        for key in ('variety', 'process', 'origin', 'altitude'):
+        for key in ('variety', 'process', 'origin', 'altitude', 'season'):
             self.roast_vars[key].set(bean.get(key, ''))
         for key in ('density', 'moisture'):
             if not self.roast_vars[key].get():
                 self.roast_vars[key].set(bean.get(key, ''))
 
     def _open_bean_manager(self):
-        """打开生豆信息管理窗口（旧版 tkinter）"""
+        """打开生豆信息管理窗口（单例，重复点击激活已有窗口）"""
+        if self._bean_manager is not None:
+            try:
+                if self._bean_manager.winfo_exists():
+                    self._bean_manager.lift()
+                    self._bean_manager.focus_set()
+                    return
+            except tk.TclError:
+                pass
         from ui.bean_manager import BeanManager
-        BeanManager(self, on_save_callback=self._refresh_bean_dropdown)
+        self._bean_manager = BeanManager(self, on_save_callback=self._refresh_bean_dropdown)
 
     def _refresh_bean_dropdown(self):
         """BeanManager 保存后刷新 dropdown"""
@@ -407,7 +480,16 @@ class SlogViewer(tk.Toplevel):
         self.stats_panel.status_var.set(f"数据已导出到: {file_path}")
 
     def open_comparer(self, event=None):
-        """打开曲线对比器"""
+        """打开曲线对比器（单例，重复点击激活已有窗口）"""
+        if self._comparer is not None:
+            try:
+                if self._comparer.winfo_exists():
+                    self._comparer.lift()
+                    self._comparer.focus_set()
+                    return
+            except tk.TclError:
+                pass
+
         if not self.current_path:
             messagebox.showwarning("警告", "请先打开一个.slog文件")
             return
@@ -425,7 +507,7 @@ class SlogViewer(tk.Toplevel):
             return
 
         from ui.slog_comparer import SlogComparer
-        SlogComparer(self, file_paths=all_files)
+        self._comparer = SlogComparer(self, file_paths=all_files)
 
 
 

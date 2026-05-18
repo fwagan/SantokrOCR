@@ -349,50 +349,6 @@ class CacheManager:
             logger.error(f"加载事件失败: {events_path}, 错误: {e}")
             return None
 
-    def save_timer_start_offset(self, video_hash: str, offset: float) -> str:
-        """
-        保存计时起点偏移量
-
-        Args:
-            video_hash: 视频hash值
-            offset: 计时起点偏移量（秒）
-
-        Returns:
-            保存的文件路径
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        offset_path = os.path.join(cache_dir, 'timer_start_offset.json')
-
-        with open(offset_path, 'w', encoding='utf-8') as f:
-            json.dump({'timer_start_offset': offset}, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"计时起点偏移量已保存: {offset_path} (offset={offset})")
-        return offset_path
-
-    def load_timer_start_offset(self, video_hash: str) -> float:
-        """
-        加载计时起点偏移量
-
-        Args:
-            video_hash: 视频hash值
-
-        Returns:
-            偏移量（秒），默认0.0
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        offset_path = os.path.join(cache_dir, 'timer_start_offset.json')
-
-        if not os.path.exists(offset_path):
-            return 0.0
-
-        try:
-            with open(offset_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return float(data.get('timer_start_offset', 0.0))
-        except Exception as e:
-            logger.error(f"加载计时起点偏移量失败: {offset_path}, 错误: {e}")
-            return 0.0
-
     def load_results(self, video_hash: str) -> Optional[List[Dict]]:
         """
         加载识别结果

@@ -36,9 +36,9 @@ class MainWindow(tk.Tk):
         self.rois = None
         self.results = []
         self.events = []            # 用户标记的事件列表
-        self.timer_start_offset = 0.0  # 计时起点偏移量
         self.processing_thread = None
         self.extractor = VideoDigitExtractor()
+        self._slog_viewer = None  # 单例slog viewer窗口
         self.cache_manager = get_cache_manager()
 
         # 配置窗口
@@ -581,7 +581,20 @@ class MainWindow(tk.Tk):
             should_show = False
 
             if selected_filter == "黑色-温差异常":
-                should_show = result.get('abnormal_category') == 'temperature_diff'
+                if filtered_count == 0:
+                    # 只执行一次：收集异常记录的前后索引，保留上下文
+                    abnormal_indices = set()
+                    for idx, r in enumerate(self.results):
+                        if r.get('abnormal_category') == 'temperature_diff':
+                            abnormal_indices.add(idx)
+                            if idx > 0:
+                                abnormal_indices.add(idx - 1)
+                            if idx < len(self.results) - 1:
+                                abnormal_indices.add(idx + 1)
+                    for idx in sorted(abnormal_indices):
+                        self.data_table.add_row(self.results[idx])
+                    filtered_count = len(abnormal_indices)
+                continue  # 跳过通用添加逻辑
             elif selected_filter == "红色-识别失败":
                 should_show = result.get('temp1_faulty_digit') == -1
             elif selected_filter == "绿色-可确定":
@@ -668,62 +681,6 @@ class MainWindow(tk.Tk):
         except Exception as e:
             self.log(f"更新缓存失败: {e}")
 
-    def on_timer_start(self, frame, original_timestamp):
-        """
-        将指定行设为计时起点，所有行的时间戳重新计算为相对值
-
-        Args:
-            frame: 选中行的帧号
-            original_timestamp: 选中行的原始时间戳
-        """
-        offset = round(-original_timestamp, 3)
-        self.timer_start_offset = offset
-
-        self.log(f"设置计时起点: 帧号={frame}, 原始时间戳={original_timestamp}s, "
-                 f"偏移量={offset}s")
-
-        # 更新所有结果行的相对时间戳
-        for result in self.results:
-            rel_ts = round(result['original_timestamp'] + offset, 3)
-            result['timestamp'] = rel_ts
-
-            # 时间字符串：仅对非负时间戳计算
-            if rel_ts >= 0:
-                mins = int(rel_ts // 60)
-                secs = int(rel_ts % 60)
-                millis = int((rel_ts % 1) * 1000)
-                result['time_str'] = f"{mins:02d}:{secs:02d}:{millis:03d}"
-            else:
-                result['time_str'] = '-'
-
-        # 将初始事件（frame=0, time=0.0 的火力/风门）绑定到计时起点行
-        for ev in self.events:
-            if ev.get('frame') == 0 and ev.get('time') == 0.0:
-                ev['frame'] = frame
-                ev['time'] = round(original_timestamp, 1)
-                self.log(f"已绑定初始事件 '{ev['type']}' 到帧 {frame}")
-
-        # 重新加载数据表格
-        self.data_table.clear()
-        for result in self.results:
-            self.data_table.add_row(result)
-
-        # 刷新事件显示
-        self.refresh_events_display()
-
-        # 保存偏移量到缓存
-        try:
-            if self.video_path:
-                video_hash = self.cache_manager.compute_video_hash(self.video_path)
-                self.cache_manager.save_timer_start_offset(video_hash, offset)
-        except Exception as e:
-            self.log(f"保存计时起点偏移量到缓存失败: {e}")
-
-        # 更新缓存
-        self.update_cache()
-
-        self.log(f"计时起点设置完成，共更新 {len(self.results)} 条记录")
-
     def create_center_panel(self):
         """创建中心展示面板"""
         center_frame = ttk.Frame(self)
@@ -765,8 +722,6 @@ class MainWindow(tk.Tk):
         self.data_table.set_cell_edited_callback(self.on_cell_edited)
         # 设置行删除回调
         self.data_table.set_rows_deleted_callback(self.on_rows_deleted)
-        # 设置计时起点回调
-        self.data_table.set_timer_start_callback(self.on_timer_start)
 
     def create_bottom_panel(self):
         """创建底部状态栏"""
@@ -837,17 +792,16 @@ class MainWindow(tk.Tk):
                                 self.log(f"从缓存加载识别结果: {len(cached_results)}条记录")
                                 self.update_status(f"已从缓存加载{len(cached_results)}条记录")
 
-                                # 加载计时起点偏移量
-                                self.timer_start_offset = self.cache_manager.load_timer_start_offset(video_hash)
-                                if self.timer_start_offset != 0:
-                                    self.log(f"从缓存加载计时起点偏移量: {self.timer_start_offset}")
-
                                 # 从缓存加载事件
                                 cached_events = self.cache_manager.load_events(video_hash)
                                 if cached_events:
                                     self.events = cached_events
                                     self.log(f"从缓存加载事件: {len(cached_events)}条")
                                     self.refresh_events_display()
+
+                                # 启用异常检测相关控件
+                                self.temp_diff_entry.config(state="normal")
+                                self.detect_abnormal_button.config(state="normal")
 
                         # 启用开始处理按钮和ROI按钮
                         self.start_button.config(state="normal")
@@ -1470,10 +1424,20 @@ class MainWindow(tk.Tk):
             sys.exit(0)
 
     def open_slog_viewer(self):
-        """打开slog viewer显示曲线"""
+        """打开slog viewer显示曲线（单例，重复点击激活已有窗口）"""
         if not self.results:
             self.log("没有数据，无法绘制曲线")
             return
+
+        # 检查是否已有打开的viewer
+        if self._slog_viewer is not None:
+            try:
+                if self._slog_viewer.winfo_exists():
+                    self._slog_viewer.lift()
+                    self._slog_viewer.focus_set()
+                    return
+            except tk.TclError:
+                pass  # 窗口已销毁，重新创建
 
         import tempfile
         import json
@@ -1499,7 +1463,7 @@ class MainWindow(tk.Tk):
             json.dump(data, f, indent=2, ensure_ascii=False)
 
         self.log(f"生成临时数据文件: {path}")
-        open_slv(self, path)
+        self._slog_viewer = open_slv(self, path)
 
     # ===== 工具方法 =====
 
@@ -1543,7 +1507,6 @@ class MainWindow(tk.Tk):
         self.rois = None
         self.results = []
         self.events = []
-        self.timer_start_offset = 0.0
         self.roi_status_label.config(text="未配置")
         self.data_table.clear()
         self.refresh_events_display()
@@ -1685,7 +1648,6 @@ class MainWindow(tk.Tk):
 
         for ev in sorted(self.events, key=lambda x: x.get('time', 0)):
             orig_t = ev.get('time', 0)
-            rel_t = orig_t + self.timer_start_offset
 
             # 原始时间戳（MM:SS）
             orig_mins = int(orig_t // 60)
@@ -1693,13 +1655,13 @@ class MainWindow(tk.Tk):
             orig_time_str = f"{orig_mins:02d}:{orig_secs:02d}"
 
             # 相对时间戳（MM:SS）
-            rel_mins = int(rel_t // 60)
-            rel_secs = int(rel_t % 60)
+            rel_mins = int(orig_t // 60)
+            rel_secs = int(orig_t % 60)
             rel_time_str = f"{rel_mins:02d}:{rel_secs:02d}"
 
             # 时间字符串（仅非负相对时间戳）
-            if rel_t >= 0:
-                display_time_str = f"{rel_mins:02d}:{rel_secs:02d}:{int((rel_t % 1) * 1000):03d}"
+            if orig_t >= 0:
+                display_time_str = f"{rel_mins:02d}:{rel_secs:02d}:{int((orig_t % 1) * 1000):03d}"
             else:
                 display_time_str = '-'
 

@@ -22,6 +22,7 @@ BEAN_FIELDS = [
     ('altitude', '海拔(m):'),
     ('density', '密度(g/L):'),
     ('moisture', '含水率(%):'),
+    ('season', '产季:'),
 ]
 
 
@@ -275,7 +276,7 @@ class BeanManager(tk.Toplevel):
         if idx is None:
             return
         bean = self._beans[idx]
-        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture'):
+        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture', 'season'):
             bean[field_name] = self._field_vars[field_name].get()
         bean['outOfStock'] = self._outofstock_var.get()
 
@@ -283,7 +284,7 @@ class BeanManager(tk.Toplevel):
         """加载指定索引的生豆数据到右侧字段"""
         self._loading_detail = True
         bean = self._beans[idx]
-        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture'):
+        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture', 'season'):
             self._field_vars[field_name].set(bean.get(field_name, ''))
         self._outofstock_var.set(bean.get('outOfStock', False))
         self._loading_detail = False
@@ -348,7 +349,7 @@ class BeanManager(tk.Toplevel):
         orig = self._original[idx] if idx < len(self._original) else {}
         bean = self._beans[idx]
 
-        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture'):
+        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture', 'season'):
             entry = self._field_entries[field_name]
             curr_val = bean.get(field_name, '')
             orig_val = orig.get(field_name, '') if orig else ''
@@ -384,6 +385,7 @@ class BeanManager(tk.Toplevel):
             'altitude': '',
             'density': '',
             'moisture': '',
+            'season': '',
             'outOfStock': False,
         })
         self._new_indices.add(new_idx)

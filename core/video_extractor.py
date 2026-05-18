@@ -288,6 +288,11 @@ class VideoDigitExtractor:
                     if not ret:
                         break
 
+                    # 校对帧号：检查实际读取的帧是否和软件计数器一致
+                    actual_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                    if actual_pos != frame_count + 1:
+                        print(f"[帧号偏差] 期望下一帧={frame_count + 1}, 实际={actual_pos}, 存储帧号={frame_count}")
+
                     timestamp = frame_count / fps
 
                     # 提取ROI

@@ -203,8 +203,9 @@ class StatisticsPanel(ttk.Frame):
         options_frame.pack(fill="x", padx=8, pady=(0, 6))
 
         self.show_raw_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(options_frame, text="显示原曲线", variable=self.show_raw_var,
-                       command=self.recalculate).pack(anchor="w", pady=1)
+        self.show_raw_checkbtn = ttk.Checkbutton(options_frame, text="显示原曲线", variable=self.show_raw_var,
+                       command=self.recalculate)
+        self.show_raw_checkbtn.pack(anchor="w", pady=1)
 
         self.show_hf_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame, text="显示火力/风门", variable=self.show_hf_var,
@@ -219,6 +220,7 @@ class StatisticsPanel(ttk.Frame):
                        command=self.recalculate).pack(anchor="w", pady=1)
 
         self.exclude_outside_var = tk.BooleanVar(value=False)
+        self.exclude_outside_var.trace_add('write', self._on_exclude_outside_changed)
         ttk.Checkbutton(options_frame, text="排除阶段外数据", variable=self.exclude_outside_var,
                        command=self.recalculate).pack(anchor="w", pady=1)
 
@@ -850,7 +852,7 @@ class StatisticsPanel(ttk.Frame):
         )
         self.cursor_info.set_animated(True)
 
-    def _hide_cursor_elements(self):
+    def _hide_cursor_elements(self, event=None):
         """隐藏鼠标追踪元素（复用对象隐藏）"""
         for art in [self.cursor_line, self.cursor_info]:
             if art is not None:
@@ -956,6 +958,14 @@ class StatisticsPanel(ttk.Frame):
         secs = int(seconds % 60)
         millis = int((seconds % 1) * 1000)
         return f"{minutes:02d}:{secs:02d}.{millis:03d}"
+
+    def _on_exclude_outside_changed(self, *args):
+        """排除阶段外数据勾选时，自动取消并禁用显示原曲线"""
+        if self.exclude_outside_var.get():
+            self.show_raw_var.set(False)
+            self.show_raw_checkbtn.configure(state="disabled")
+        else:
+            self.show_raw_checkbtn.configure(state="normal")
 
     def recalculate(self, event=None):
         """重新计算并更新图表"""

@@ -173,7 +173,15 @@ class FrameViewer(tk.Toplevel):
         event_row.pack(fill="x")
 
         ttk.Label(event_row, text="事件类型:").pack(side="left", padx=(0, 5))
-        self.event_type_var = tk.StringVar(value=self.EVENT_TYPES[0])
+        # 智能选择事件默认值：无入豆→入豆，无回温→回温，都有→调整火力
+        if not any(e.get('type') == '入豆' for e in self.events):
+            default_event = "入豆"
+        elif not any(e.get('type') == '回温' for e in self.events):
+            default_event = "回温"
+        else:
+            default_event = "调整火力"
+        self.event_type_var = tk.StringVar(value=default_event)
+        self.after_idle(lambda: self.on_event_type_changed())
         self.event_combo = ttk.Combobox(event_row, textvariable=self.event_type_var,
                                       values=self.EVENT_TYPES, state="readonly", width=14)
         self.event_combo.pack(side="left", padx=5)

@@ -48,8 +48,6 @@ class DataTable(ttk.Frame):
         self.on_view_frame_callback = None
         # 回调函数，用于单元格编辑
         self.on_cell_edited_callback = None
-        # 回调函数，用于计时起点
-        self.on_timer_start_callback = None
 
         # 布局（使用grid确保纵横滚动条共存）
         self.grid_rowconfigure(0, weight=1)
@@ -92,8 +90,6 @@ class DataTable(ttk.Frame):
     def setup_context_menu(self):
         """设置右键菜单"""
         self.context_menu = tk.Menu(self, tearoff=0)
-        self.context_menu.add_command(label="设为计时起点", command=self.set_timer_start)
-        self.context_menu.add_separator()
         self.context_menu.add_command(label="查看帧截图", command=self.view_frame)
         self.context_menu.add_command(label="复制选中行", command=self.copy_row)
         self.context_menu.add_separator()
@@ -377,24 +373,6 @@ class DataTable(ttk.Frame):
         if self.on_view_frame_callback:
             self.on_view_frame_callback(frame_num, original_timestamp, data)
 
-    def set_timer_start(self):
-        """将选中行设为计时起点"""
-        data = self.get_selected_row()
-        if not data:
-            return
-
-        try:
-            frame = int(data['frame'])
-            original_timestamp = float(data.get('original_timestamp', 0))
-        except (ValueError, KeyError):
-            return
-
-        if self.on_timer_start_callback:
-            self.on_timer_start_callback(frame, original_timestamp)
-        else:
-            # 默认行为：打印信息
-            print(f"查看帧截图: 帧号={frame_num}, 时间戳={timestamp}")
-
     def copy_row(self):
         """复制选中行的数据到剪贴板"""
         data = self.get_selected_row()
@@ -458,10 +436,6 @@ class DataTable(ttk.Frame):
     def set_view_frame_callback(self, callback):
         """设置查看帧回调函数"""
         self.on_view_frame_callback = callback
-
-    def set_timer_start_callback(self, callback):
-        """设置计时起点回调函数"""
-        self.on_timer_start_callback = callback
 
     def set_cell_edited_callback(self, callback):
         """设置单元格编辑回调函数"""
