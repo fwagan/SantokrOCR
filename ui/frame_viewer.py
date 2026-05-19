@@ -30,7 +30,8 @@ class FrameViewer(tk.Toplevel):
     def __init__(self, parent, extractor, video_path, rois, frame_num, timestamp,
                  results=None, events=None, on_mark_event_callback=None,
                  heater_initial=50.0, fan_initial=80.0,
-                 rotate_angle: float = 5):
+                 rotate_angle: float = 5,
+                 on_edit_callback=None):
         """
         初始化帧查看器
         Args:
@@ -46,6 +47,7 @@ class FrameViewer(tk.Toplevel):
             heater_initial: 初始火力值
             fan_initial: 初始风门值
             rotate_angle: 旋转角度（正数=逆时针，0=不旋转）
+            on_edit_callback: 手动修正回调函数(frame_num, temp1_value, temp2_value)
         """
         super().__init__(parent)
 
@@ -56,6 +58,7 @@ class FrameViewer(tk.Toplevel):
         self.current_timestamp = timestamp
         self.results = results or {}
         self.events = events if events is not None else []
+        self.on_edit_callback = on_edit_callback
 
         # 从结果字典中提取相对时间戳用于显示
         self.relative_timestamp = self.current_timestamp
@@ -151,14 +154,46 @@ class FrameViewer(tk.Toplevel):
         self.notebook.add(self.debug_tab, text="  识别调试  ")
         self._create_debug_tab()
 
-        # 识别结果面板（底部）
-        result_frame = ttk.LabelFrame(main_frame, text="识别结果", padding=10)
-        result_frame.pack(fill="x", pady=(0, 10))
+        # === 识别结果 + 手动修正（并排） ===
+        hbox = ttk.Frame(main_frame)
+        hbox.pack(fill="x", pady=(0, 10))
+        hbox.columnconfigure(0, weight=1)
+
+        # 识别结果（左侧）
+        result_frame = ttk.LabelFrame(hbox, text="识别结果", padding=10)
+        result_frame.grid(row=0, column=0, sticky="nsew")
 
         # 创建结果网格
         self.create_result_grid(result_frame)
 
-        # 操作按钮（底部）
+        # 手动修正（右侧）
+        edit_frame = ttk.LabelFrame(hbox, text="手动修正", padding=8)
+        edit_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+
+        edit_row = ttk.Frame(edit_frame)
+        edit_row.pack(fill="x")
+
+        # 颜色指示器
+        self.color_indicator = tk.Canvas(edit_row, width=24, height=24,
+                                         highlightthickness=1, highlightbackground="gray")
+        self.color_indicator.pack(side="left", padx=(0, 10))
+
+        ttk.Label(edit_row, text="豆温:").pack(side="left", padx=(0, 2))
+        self.edit_temp1_var = tk.StringVar(value=self.results.get('temp1_full', ''))
+        ttk.Entry(edit_row, textvariable=self.edit_temp1_var, width=10).pack(side="left", padx=5)
+
+        ttk.Label(edit_row, text="风温:").pack(side="left", padx=(10, 2))
+        self.edit_temp2_var = tk.StringVar(value=self.results.get('temp2', ''))
+        ttk.Entry(edit_row, textvariable=self.edit_temp2_var, width=10).pack(side="left", padx=5)
+
+        button_row = ttk.Frame(edit_frame)
+        button_row.pack(fill="x", pady=(8, 0))
+        ttk.Button(button_row, text="确认修改", command=self.confirm_edit).pack(side="left")
+
+        # 更新颜色指示器
+        self.update_color_indicator()
+
+        # 操作按钮
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill="x")
 
@@ -175,7 +210,6 @@ class FrameViewer(tk.Toplevel):
         event_row.pack(fill="x")
 
         ttk.Label(event_row, text="事件类型:").pack(side="left", padx=(0, 5))
-        # 智能选择事件默认值：无入豆→入豆，无回温→回温，都有→调整火力
         if not any(e.get('type') == '入豆' for e in self.events):
             default_event = "入豆"
         elif not any(e.get('type') == '回温' for e in self.events):
@@ -713,6 +747,42 @@ class FrameViewer(tk.Toplevel):
         if self.on_mark_event_callback:
             self.on_mark_event_callback(event_data, is_overwrite=False)
         self.destroy()
+
+    def _get_record_color(self):
+        """根据记录数据获取状态颜色"""
+        faulty = self.results.get('temp1_faulty_digit')
+        temp1 = self.results.get('temp1_full', '')
+        abnormal = self.results.get('abnormal_category')
+
+        if abnormal == 'temperature_diff':
+            return 'black'
+        if faulty == -1 or temp1 == '????':
+            return 'red'
+        return 'lightgreen'
+
+    def update_color_indicator(self):
+        """更新颜色指示器"""
+        color = self._get_record_color()
+        self.color_indicator.configure(bg=color)
+
+    def confirm_edit(self):
+        """确认手动修正"""
+        temp1_value = self.edit_temp1_var.get().strip()
+        temp2_value = self.edit_temp2_var.get().strip()
+
+        if not temp1_value and not temp2_value:
+            from tkinter import messagebox
+            messagebox.showwarning("输入错误", "至少输入一个值")
+            return
+
+        if self.on_edit_callback:
+            self.on_edit_callback(
+                self.current_frame_num,
+                temp1_value if temp1_value else None,
+                temp2_value if temp2_value else None
+            )
+            from tkinter import messagebox
+            messagebox.showinfo("修改成功", "值已更新")
 
     def prev_frame(self):
         """跳转到上一帧"""

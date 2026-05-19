@@ -161,15 +161,6 @@ class MainWindow(tk.Tk):
                                      state="disabled")
         self.stop_button.pack(side="left", padx=5)
 
-        # 推断控制行
-        inference_row = ttk.Frame(top_frame)
-        inference_row.pack(fill="x", pady=5)
-
-        ttk.Button(inference_row, text="推断broken位",
-                  command=self.infer_broken_digits).pack(side="left", padx=5)
-        ttk.Button(inference_row, text="重新推断选中行",
-                  command=self.reinfer_selected).pack(side="left", padx=5)
-
         # 统计按钮行（导出.alog等）
         stats_row = ttk.Frame(top_frame)
         stats_row.pack(fill="x", pady=5)
@@ -212,205 +203,10 @@ class MainWindow(tk.Tk):
         ttk.Label(filter_row, text="筛选记录颜色:").pack(side="left", padx=(0, 5))
         self.filter_color_var = tk.StringVar(value="全部")
         filter_combo = ttk.Combobox(filter_row, textvariable=self.filter_color_var,
-                                   values=["全部", "黑色-温差异常", "红色-识别失败", "绿色-可确定", "红色-不一致", "黄色-模糊", "蓝色-可编辑"],
+                                   values=["全部", "黑色-温差异常", "红色-识别失败"],
                                    state="readonly", width=20)
         filter_combo.pack(side="left", padx=5)
         filter_combo.bind("<<ComboboxSelected>>", self.apply_color_filter)
-
-    def infer_broken_digits(self):
-        """遍历所有结果，推断broken位数字"""
-        if not self.results:
-            self.log("没有可推断的数据")
-            return
-
-        # 统计需要推断的记录数
-        total = sum(1 for r in self.results if r.get('temp1_faulty_digit') == -2)
-        if total == 0:
-            self.log("没有需要推断的broken位记录")
-            return
-
-        self.log(f"开始推断broken位，共{total}条记录需要处理...")
-
-        processed = 0
-        for i, result in enumerate(self.results):
-            if result.get('temp1_faulty_digit') == -2:
-                # 使用扩展的infer_zero_eight_digit方法，传递上下文参数
-                # 注意：current_temp_full可能是"????"，需要构建候选值
-                temp1_normal = result.get('temp1_normal', '')
-                if temp1_normal and len(temp1_normal) >= 3:
-                    # 构建候选温度字符串（格式：xxx0或xxx8）
-                    temp_candidate = temp1_normal[:3] + "0"
-                else:
-                    # 如果没有正常位数据，跳过
-                    continue
-
-                # 调用推断方法
-                try:
-                    digit, category = self.extractor.infer_zero_eight_digit(
-                        temp_candidate,
-                        None, None,  # prev_temp_full和next_temp_full设为None，使用上下文模式
-                        current_idx=i,
-                        results=self.results,
-                        window_size=10
-                    )
-                except Exception as e:
-                    # 如果推断方法出错（可能因为返回格式不兼容），尝试简单模式
-                    self.log(f"推断记录{i}时出错: {e}")
-                    digit = -2
-                    category = 'no_context'
-
-                # 更新结果
-                result['inferred_digit'] = digit if digit != -2 else -2
-                result['inference_category'] = category
-                result['is_editable'] = category in ['inconsistent', 'ambiguous']
-
-                # 如果推断成功，更新temp1_full
-                if digit in [0, 8]:
-                    temp1_normal_text = result.get('temp1_normal', '')
-                    if temp1_normal_text and len(temp1_normal_text) >= 3:
-                        result['temp1_full'] = temp1_normal_text + "." + str(digit)
-                        result['quality'] = 'high'
-
-                # 更新表格显示
-                self.data_table.update_row_display(i, result)
-
-                processed += 1
-                # 更新进度（每10条记录更新一次）
-                if processed % 10 == 0 or processed == total:
-                    self.log(f"已推断 {processed}/{total} 条记录")
-
-        self.log(f"推断完成，处理了{processed}个broken位")
-        # 更新缓存
-        self.update_cache()
-
-    def reinfer_selected(self):
-        """重新推断选中行"""
-        selected_data = self.data_table.get_selected_row()
-        if not selected_data:
-            self.log("请先选择一行数据")
-            return
-
-        # 找到选中行在results中的索引
-        selected_index = None
-        selected_frame_str = selected_data.get('frame', '')
-
-        # 尝试将选中的frame转换为整数（因为results中的frame是整数）
-        try:
-            selected_frame_int = int(selected_frame_str)
-        except (ValueError, TypeError):
-            selected_frame_int = None
-
-        for i, result in enumerate(self.results):
-            result_frame = result.get('frame')
-            # 尝试两种匹配方式：直接匹配或整数匹配
-            if (result_frame == selected_frame_str or
-                (selected_frame_int is not None and result_frame == selected_frame_int)):
-                selected_index = i
-                break
-
-        if selected_index is None:
-            self.log("无法找到选中行在数据中的位置")
-            return
-
-        result = self.results[selected_index]
-        if result.get('temp1_faulty_digit') != -2:
-            self.log("选中行不是broken位记录（temp1_faulty_digit != -2）")
-            return
-
-        # 重新推断
-        temp1_normal = result.get('temp1_normal', '')
-        if temp1_normal and len(temp1_normal) >= 3:
-            temp_candidate = temp1_normal[:3] + "0"
-        else:
-            self.log("选中行没有有效的正常位数据")
-            return
-
-        try:
-            digit, category = self.extractor.infer_zero_eight_digit(
-                temp_candidate,
-                None, None,
-                current_idx=selected_index,
-                results=self.results,
-                window_size=10
-            )
-        except Exception as e:
-            self.log(f"重新推断时出错: {e}")
-            digit = -2
-            category = 'no_context'
-
-        # 更新结果
-        result['inferred_digit'] = digit if digit != -2 else -2
-        result['inference_category'] = category
-        result['is_editable'] = category in ['inconsistent', 'ambiguous']
-
-        if digit in [0, 8]:
-            temp1_normal_text = result.get('temp1_normal', '')
-            if temp1_normal_text and len(temp1_normal_text) >= 3:
-                result['temp1_full'] = temp1_normal_text + "." + str(digit)
-                result['quality'] = 'high'
-
-        # 更新表格显示
-        self.data_table.update_row_display(selected_index, result)
-        self.log(f"重新推断完成: 索引={selected_index}, 结果={digit}, 分类={category}")
-        # 更新缓存
-        self.update_cache()
-
-    def on_cell_edited(self, item, column_id, new_value):
-        """
-        单元格编辑回调函数
-
-        Args:
-            item: treeview项ID
-            column_id: 列ID（如'temp1_faulty_digit'）
-            new_value: 新值
-        """
-        if column_id != 'temp1_faulty_digit':
-            return
-
-        # 找到项在treeview中的索引
-        items = list(self.data_table.tree.get_children())
-        try:
-            item_index = items.index(item)
-        except ValueError:
-            self.log(f"无法找到项 {item} 在treeview中的位置")
-            return
-
-        if item_index < 0 or item_index >= len(self.results):
-            self.log(f"项索引 {item_index} 超出范围")
-            return
-
-        # 更新结果数据
-        result = self.results[item_index]
-        try:
-            new_digit = int(new_value)
-        except ValueError:
-            self.log(f"无效的数字值: {new_value}")
-            return
-
-        # 更新故障位数字
-        result['temp1_faulty_digit'] = new_digit
-
-        # 如果数字有效（0或8），更新temp1_full
-        if new_digit in [0, 8]:
-            temp1_normal_text = result.get('temp1_normal', '')
-            if temp1_normal_text and len(temp1_normal_text) >= 3:
-                result['temp1_full'] = temp1_normal_text + "." + str(new_digit)
-                result['quality'] = 'high'
-        elif new_digit == -2:
-            # 恢复为未知
-            result['temp1_full'] = '????'
-            result['quality'] = 'low'
-
-        # 清除推断相关字段（因为用户手动修改了）
-        result.pop('inferred_digit', None)
-        result.pop('inference_category', None)
-        result.pop('is_editable', None)
-
-        # 更新表格显示
-        self.data_table.update_row_display(item_index, result)
-        self.log(f"单元格已更新: 索引={item_index}, {column_id}={new_value}")
-        # 更新缓存
-        self.update_cache()
 
     def remove_invalid_data(self):
         """排除非法数据：删除temp1_full为????或temp1_faulty_digit为-1的记录"""
@@ -553,14 +349,6 @@ class MainWindow(tk.Tk):
                 continue  # 跳过通用添加逻辑
             elif selected_filter == "红色-识别失败":
                 should_show = result.get('temp1_faulty_digit') == -1
-            elif selected_filter == "绿色-可确定":
-                should_show = result.get('inference_category') == 'determined'
-            elif selected_filter == "红色-不一致":
-                should_show = result.get('inference_category') == 'inconsistent'
-            elif selected_filter == "黄色-模糊":
-                should_show = result.get('inference_category') == 'ambiguous'
-            elif selected_filter == "蓝色-可编辑":
-                should_show = result.get('is_editable', False)
             else:
                 # 未知筛选条件，显示所有
                 should_show = True
@@ -674,8 +462,6 @@ class MainWindow(tk.Tk):
 
         # 设置帧查看器回调
         self.data_table.set_view_frame_callback(self.open_frame_viewer)
-        # 设置单元格编辑回调
-        self.data_table.set_cell_edited_callback(self.on_cell_edited)
         # 设置行删除回调
         self.data_table.set_rows_deleted_callback(self.on_rows_deleted)
 
@@ -721,11 +507,18 @@ class MainWindow(tk.Tk):
                     self.log("缓存有效，尝试加载缓存数据...")
 
                     # 加载ROI配置
-                    cached_rois = self.cache_manager.load_rois(video_hash)
-                    if cached_rois:
-                        self.rois = cached_rois
+                    cached_data = self.cache_manager.load_rois(video_hash)
+                    if cached_data:
+                        self.rois = cached_data['rois']
                         self.roi_status_label.config(text="已配置（从缓存）")
-                        self.log(f"从缓存加载ROI配置: {len(cached_rois)}个区域")
+                        self.log(f"从缓存加载ROI配置: {len(self.rois)}个区域")
+
+                        # 恢复旋转角度
+                        angle = cached_data.get('rotation_angle')
+                        if angle is not None:
+                            self.rotation_angle_var.set(str(angle))
+                            self.extractor.rotation_angle = float(angle)
+                            self.log(f"从缓存恢复旋转角度: {angle}")
 
                         # 加载识别结果
                         cached_results = self.cache_manager.load_results(video_hash)
@@ -824,9 +617,13 @@ class MainWindow(tk.Tk):
                 video_hash = self.cache_manager.compute_video_hash(self.video_path)
                 # 保存视频信息
                 self.cache_manager.save_video_info(self.video_path, video_hash)
-                # 保存ROI配置
-                self.cache_manager.save_rois(video_hash, rois)
-                self.log(f"ROI配置已保存到缓存 (hash: {video_hash})")
+                # 保存ROI配置（附带旋转角度和启动帧）
+                try:
+                    angle = float(self.rotation_angle_var.get())
+                except ValueError:
+                    angle = 5.0
+                self.cache_manager.save_rois(video_hash, rois, rotation_angle=angle, start_frame=0)
+                self.log(f"ROI配置已保存到缓存 (hash: {video_hash}, 角度: {angle})")
         except Exception as e:
             self.log(f"保存ROI到缓存失败: {e}")
 
@@ -874,7 +671,7 @@ class MainWindow(tk.Tk):
             import traceback
             self.log(traceback.format_exc())
 
-    def test_single_frame_processing(self, start_frame):
+    def test_single_frame_processing(self):
         """测试模式：只处理一帧并显示详细步骤"""
         try:
             self.log("=== 测试模式：开始处理单帧 ===")
@@ -885,17 +682,17 @@ class MainWindow(tk.Tk):
                 self.log("错误：无法打开视频文件")
                 return
 
-            # 跳转到指定帧
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            # 跳转到第0帧
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = cap.read()
             if not ret:
-                self.log(f"错误：无法读取帧 {start_frame}")
+                self.log("错误：无法读取帧 0")
                 cap.release()
                 return
 
             fps = cap.get(cv2.CAP_PROP_FPS)
-            timestamp = start_frame / fps
-            self.log(f"处理帧: {start_frame}, 时间戳: {timestamp:.3f}s, FPS: {fps:.2f}")
+            timestamp = 0 / fps
+            self.log(f"处理帧: 0, 时间戳: 0s, FPS: {fps:.2f}")
 
             # 裁剪ROI区域
             self.log("裁剪ROI区域:")
@@ -977,49 +774,39 @@ class MainWindow(tk.Tk):
             # 组合完整温度值（逻辑复用process_video_async中的逻辑）
             temp1_full = "????"
             faulty_digit = -1
-            quality = 'low'
 
             if temp1_normal_text and len(temp1_normal_text) >= 3:
                 if faulty_digit_result == -2:
-                    # 数字0/8情况
-                    temp_candidate_0 = temp1_normal_text[:3] + "0"
-                    temp_candidate_8 = temp1_normal_text[:3] + "8"
-                    self.log(f"数字0/8情况，候选温度: {temp_candidate_0} 或 {temp_candidate_8}")
-                    # 单帧无法推断，标记为-2
+                    # 数字0/8情况，标记为-2
                     faulty_digit = -2
                     temp1_full = "????"
-                    quality = 'low'
-                    self.log("单帧无法推断0/8，需要时间序列推断")
+                    self.log("数字0/8歧义，标记为-2")
                 elif faulty_digit_result != -1:
                     # 成功识别数字
                     faulty_digit = faulty_digit_result
                     temp1_full = temp1_normal_text + "." + str(faulty_digit)
-                    quality = 'high'
                     self.log(f"成功组合完整温度: {temp1_full}")
                 else:
                     # 无法识别故障位数字
                     faulty_digit = -1
                     temp1_full = "????"
-                    quality = 'low'
                     self.log("无法识别故障位数字")
             else:
                 # 正常位识别失败
                 faulty_digit = -1
                 temp1_full = "????"
-                quality = 'low'
                 self.log("正常位识别失败")
 
             # 构建结果记录
             result = {
-                'frame': start_frame,
+                'frame': 0,
                 'timestamp': round(timestamp, 3),
                 'original_timestamp': round(timestamp, 3),
                 'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
                 'temp1_full': temp1_full,
                 'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
                 'temp1_faulty_digit': faulty_digit,
-                'temp2': temp2_text if temp2_text else "????",
-                'quality': quality
+                'temp2': temp2_text if temp2_text else "????"
             }
 
             self.log("=== 处理结果 ===")
@@ -1079,11 +866,8 @@ class MainWindow(tk.Tk):
             self.results = []
             self.data_table.clear()
 
-            # 获取启动帧（默认从第0帧开始）
-            start_frame = 0
-
             # 执行单帧测试处理
-            self.test_single_frame_processing(start_frame)
+            self.test_single_frame_processing()
 
             # 重新启用开始按钮
             self.start_button.config(state="normal")
@@ -1106,15 +890,11 @@ class MainWindow(tk.Tk):
         # 启动异步处理线程
         self.update_status("正在处理视频...")
 
-        # 获取启动帧（默认从第0帧开始）
-        start_frame = 0
-
         # 启动处理线程
         self.processing_thread = ProcessingThread(
             extractor=self.extractor,
             video_path=self.video_path,
             rois=self.rois,
-            start_frame=start_frame,
             interval=interval
         )
 
@@ -1128,7 +908,7 @@ class MainWindow(tk.Tk):
         self.processing_thread.start()
 
         self.log(f"开始处理视频: {self.video_path}")
-        self.log(f"参数: 间隔={interval}s, 启动帧={start_frame}")
+        self.log(f"参数: 间隔={interval}s")
 
     def pause_processing(self):
         """暂停处理"""
@@ -1379,7 +1159,8 @@ class MainWindow(tk.Tk):
                 on_mark_event_callback=self.on_event_marked,
                 heater_initial=self.heater_initial_var.get(),
                 fan_initial=self.fan_initial_var.get(),
-                rotate_angle=float(self.rotation_angle_var.get())
+                rotate_angle=float(self.rotation_angle_var.get()),
+                on_edit_callback=self.on_edit_record
             )
             self.log(f"打开帧查看器: 帧号={frame_num}, 原始时间戳={timestamp}")
         except Exception as e:
@@ -1394,6 +1175,23 @@ class MainWindow(tk.Tk):
         self.log(f"事件已{action}: {event_data['type']} @ 帧{event_data['frame']} 时间{event_data['time']:.1f}s")
         self.update_cache()
         self.refresh_events_display()
+
+    def on_edit_record(self, frame_num, temp1_value, temp2_value):
+        """帧查看器中手动修正后的回调"""
+        for result in self.results:
+            if result.get('frame') == frame_num:
+                if temp1_value is not None:
+                    result['temp1_full'] = temp1_value
+                if temp2_value is not None:
+                    result['temp2'] = temp2_value
+                break
+
+        # 刷新表格显示
+        self.data_table.clear()
+        for result in self.results:
+            self.data_table.add_row(result)
+        self.log(f"帧 {frame_num} 已手动修正: 豆温={temp1_value}, 风温={temp2_value}")
+        self.update_cache()
 
     def ensure_initial_events(self):
         """确保存在初始火力/风门事件（时间0秒）"""

@@ -94,7 +94,6 @@ class VideoDigitExtractor:
         self.digit_recognizer = None  # OpenCV数字识别器
         self.faulty_classifier = LEDDigitClassifier()
         self.rois = {}  # 存储三个ROI区域
-        self.start_frame = 0
         self.frame_cache = FrameCache(maxsize=50)
         self._pipeline = None  # 统一识别管道（懒加载）
         self.processing_stats = {
@@ -129,7 +128,7 @@ class VideoDigitExtractor:
         )
         return video_path
 
-    def process_video_async(self, video_path, rois, start_frame, interval=0.25,
+    def process_video_async(self, video_path, rois, interval=0.25,
                           progress_callback=None, status_callback=None, result_callback=None):
         """
         异步处理视频，支持进度回调
@@ -158,13 +157,8 @@ class VideoDigitExtractor:
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 frame_interval = int(fps * interval)
-
-                # 计算从启动帧开始的剩余帧数和实际可处理的时间点
-                remaining_frames = total_frames - start_frame
-                if remaining_frames <= 0:
-                    total_time_points = 0
-                else:
-                    total_time_points = (remaining_frames - 1) // frame_interval + 1  # 确保包含启动帧且不超出范围
+                # 按 interval 跳帧后的采样点总数，用于进度条
+                total_time_points = (total_frames - 1) // frame_interval + 1
 
                 # 更新总帧数
                 self.processing_stats['total_frames'] = total_frames
@@ -177,11 +171,10 @@ class VideoDigitExtractor:
 
                 # 准备数据存储
                 results = []
-                prev_temp_full = None  # 用于时间序列推断的前一个完整温度值
 
-                # 跳转到启动帧
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                frame_count = start_frame
+                # 跳转到第0帧
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                frame_count = 0
 
                 while True:
                     # 检查是否应该停止
@@ -256,33 +249,27 @@ class VideoDigitExtractor:
                         temp2_conf = 0.0
 
                     # 故障位数字识别
-                    faulty_digit_result, method, is_suspicious = self.recognize_faulty_digit(temp1_faulty_img)
+                    faulty_digit_result, method = self.recognize_faulty_digit(temp1_faulty_img)
 
                     # 初始化完整温度值
                     temp1_full = "????"
                     faulty_digit = -1
-                    quality = 'low'
 
                     # 如果正常位识别成功，尝试组合完整温度值
                     if temp1_normal_text and len(temp1_normal_text) >= 3:
                         # 故障位识别结果处理
                         if faulty_digit_result == -2:
-                            # 数字0/8情况，保留原始数据，后续统一推断
                             faulty_digit = -2
                             temp1_full = "????"
-                            quality = 'low'
                         elif faulty_digit_result != -1:
                             faulty_digit = faulty_digit_result
                             temp1_full = temp1_normal_text + "." + str(faulty_digit)
-                            quality = 'suspicious' if is_suspicious else 'high'
                         else:
                             faulty_digit = -1
                             temp1_full = "????"
-                            quality = 'low'
                     else:
                         faulty_digit = -1
                         temp1_full = "????"
-                        quality = 'low'
 
                     # 记录结果
                     result = {
@@ -293,18 +280,13 @@ class VideoDigitExtractor:
                         'temp1_full': temp1_full,
                         'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
                         'temp1_faulty_digit': faulty_digit,
-                        'temp2': temp2_text if temp2_text else "????",
-                        'quality': quality
+                        'temp2': temp2_text if temp2_text else "????"
                     }
                     results.append(result)
 
                     # 发射结果回调
                     if result_callback:
                         result_callback(result)
-
-                    # 更新前一个完整温度值（用于时间序列推断）
-                    if temp1_full != "????" and faulty_digit not in [-1, -2]:
-                        prev_temp_full = temp1_full
 
                     # 更新进度
                     self.processing_stats['processed_frames'] = len(results)
@@ -470,273 +452,6 @@ class VideoDigitExtractor:
 
 
 
-    def infer_zero_eight_digit(self, current_temp_full, prev_temp_full=None, next_temp_full=None,
-                              current_idx=None, results=None, window_size=10):
-        """
-        推断数字是0还是8（基于温度变化连续性）
-
-        扩展支持两种模式：
-        1. 简单模式：只使用前后帧（保持向后兼容）
-        2. 上下文模式：使用前后各window_size个有效读数
-
-        Args:
-            current_temp_full: 当前完整的4位温度字符串
-            prev_temp_full: 前一帧的完整温度字符串（简单模式）
-            next_temp_full: 后一帧的完整温度字符串（简单模式）
-            current_idx: 当前记录在results中的索引（上下文模式）
-            results: 所有结果记录的列表（上下文模式）
-            window_size: 前后窗口大小（上下文模式）
-
-        Returns:
-            简单模式: 0, 8, 或 -2（无法推断）
-            上下文模式: (digit, category)
-                digit: 0, 8, 或 -2（无法推断）
-                category: 'determined', 'inconsistent', 'ambiguous', 'no_context'
-        """
-        # 上下文模式：使用前后各window_size个有效读数
-        if results is not None and current_idx is not None:
-            return self._infer_zero_eight_digit_with_context(
-                current_temp_full, current_idx, results, window_size
-            )
-
-        # 简单模式：保持原有逻辑（向后兼容）
-        try:
-            if not current_temp_full or len(current_temp_full) != 4:
-                return -2
-
-            # 提取故障位数字（第4位）
-            current_digit = int(current_temp_full[3])
-            # 提取前三位数字（正常位）
-            current_normal = int(current_temp_full[:3])
-
-            # 如果没有前后帧数据，无法推断
-            if prev_temp_full is None and next_temp_full is None:
-                return -2
-
-            # 尝试使用前一帧推断
-            if prev_temp_full and len(prev_temp_full) == 4:
-                prev_digit = int(prev_temp_full[3])
-                prev_normal = int(prev_temp_full[:3])
-
-                # 如果前一帧的故障位数字已知（不是0/8）
-                if prev_digit not in [0, 8, -2]:
-                    # 检查温度变化是否连续
-                    # 示例：前一帧180.6，当前帧故障位=0/8，正常位=181
-                    # 可能的序列：180.6 → 181.0 或 180.6 → 181.8
-                    # 计算可能的温度值
-                    possible_temp1 = current_normal * 10 + 0  # 假设是0
-                    possible_temp2 = current_normal * 10 + 8  # 假设是8
-                    prev_temp = prev_normal * 10 + prev_digit
-
-                    # 检查哪个变化更连续（差值更小）
-                    diff1 = abs(possible_temp1 - prev_temp)
-                    diff2 = abs(possible_temp2 - prev_temp)
-
-                    # 温度变化通常是连续的，选择差值较小的
-                    if diff1 < diff2:
-                        return 0
-                    else:
-                        return 8
-
-            # 尝试使用后一帧推断
-            if next_temp_full and len(next_temp_full) == 4:
-                next_digit = int(next_temp_full[3])
-                next_normal = int(next_temp_full[:3])
-
-                if next_digit not in [0, 8, -2]:
-                    # 类似逻辑，但检查与后一帧的连续性
-                    possible_temp1 = current_normal * 10 + 0
-                    possible_temp2 = current_normal * 10 + 8
-                    next_temp = next_normal * 10 + next_digit
-
-                    diff1 = abs(possible_temp1 - next_temp)
-                    diff2 = abs(possible_temp2 - next_temp)
-
-                    if diff1 < diff2:
-                        return 0
-                    else:
-                        return 8
-
-            # 如果前后帧都是0/8或未知，无法推断
-            return -2
-
-        except:
-            return -2
-
-    def _infer_zero_eight_digit_with_context(self, current_temp_full, current_idx, results, window_size):
-        """
-        基于上下文推断0/8数字（内部方法）
-
-        Args:
-            current_temp_full: 当前完整的4位温度字符串
-            current_idx: 当前记录在results中的索引
-            results: 所有结果记录的列表
-            window_size: 前后窗口大小
-
-        Returns:
-            (digit, category)
-            digit: 0, 8, 或 -2（无法推断）
-            category: 'determined', 'inconsistent', 'ambiguous', 'no_context'
-        """
-        try:
-            # 1. 收集前后窗口内的有效读数
-            context_readings = self._collect_context_readings(current_idx, results, window_size)
-
-            if not context_readings:
-                return -2, 'no_context'
-
-            # 2. 提取当前温度的正常位（前3位数字）
-            if not current_temp_full or len(current_temp_full) != 4:
-                return -2, 'no_context'
-
-            current_normal = int(current_temp_full[:3])
-
-            # 3. 计算两个候选温度值
-            candidate_0_temp = current_normal * 10 + 0  # 假设是0
-            candidate_8_temp = current_normal * 10 + 8  # 假设是8
-
-            # 4. 评估每个候选值与上下文温度序列的连续性
-            continuity_0 = self._evaluate_continuity(candidate_0_temp, context_readings)
-            continuity_8 = self._evaluate_continuity(candidate_8_temp, context_readings)
-
-            # 5. 根据评估结果分类
-            return self._classify_inference_result(continuity_0, continuity_8)
-
-        except Exception as e:
-            # 记录错误但不中断
-            return -2, 'no_context'
-
-    def _collect_context_readings(self, current_idx, results, window_size):
-        """
-        收集前后窗口内的有效读数（简化版）
-
-        有效读数条件：
-        1. temp1_full不是"????"且不为空
-        2. 可以提取有效的温度值
-
-        返回: 有效温度值的列表（浮点数）
-        """
-        context_temps = []
-
-        # 收集前window_size个读数
-        start_idx = max(0, current_idx - window_size)
-        for i in range(start_idx, current_idx):
-            if i < 0 or i >= len(results):
-                continue
-
-            result = results[i]
-            temp_full = result.get('temp1_full', '')
-
-            # 跳过无效温度值
-            if temp_full == '????' or not temp_full:
-                continue
-
-            # 提取温度值：格式为xxx.x（如1814表示181.4）
-            try:
-                if len(temp_full) == 4:
-                    # 格式：xxx.x，如1814表示181.4
-                    temp_value = float(temp_full[:3] + '.' + temp_full[3])
-                    context_temps.append(temp_value)
-                else:
-                    # 尝试直接转换
-                    temp_value = float(temp_full)
-                    context_temps.append(temp_value)
-            except:
-                continue
-
-        # 收集后window_size个读数
-        end_idx = min(len(results), current_idx + window_size + 1)
-        for i in range(current_idx + 1, end_idx):
-            if i < 0 or i >= len(results):
-                continue
-
-            result = results[i]
-            temp_full = result.get('temp1_full', '')
-
-            if temp_full == '????' or not temp_full:
-                continue
-
-            try:
-                if len(temp_full) == 4:
-                    temp_value = float(temp_full[:3] + '.' + temp_full[3])
-                    context_temps.append(temp_value)
-                else:
-                    temp_value = float(temp_full)
-                    context_temps.append(temp_value)
-            except:
-                continue
-
-        return context_temps
-
-    def _evaluate_continuity(self, candidate_temp, context_readings):
-        """
-        评估候选温度值与上下文温度序列的连续性
-
-        评估指标：
-        1. 平均绝对误差（MAE）：候选值与相邻温度值的差异
-        2. 斜率一致性：候选值是否保持温度变化趋势
-
-        返回: 连续性分数（0-1，越高表示越连续）
-        """
-        if not context_readings:
-            return 0.0
-
-        # 计算候选值与所有上下文温度的平均绝对误差
-        errors = []
-        for context_temp in context_readings:
-            error = abs(candidate_temp - context_temp)
-            errors.append(error)
-
-        # 归一化误差：误差越小，连续性越高
-        if errors:
-            # 假设温度变化通常在0-20度之间，误差超过20度认为不连续
-            max_reasonable_error = 20.0
-            # 使用最小误差（温度应该与最近的读数最接近）
-            min_error = min(errors)
-            normalized_error = min(min_error, max_reasonable_error) / max_reasonable_error
-            continuity_score = 1.0 - normalized_error
-            return max(0.0, min(1.0, continuity_score))
-
-        return 0.0
-
-    def _classify_inference_result(self, continuity_0, continuity_8):
-        """
-        根据连续性分数分类推断结果
-
-        分类标准：
-        1. 可确定（determined）：一个候选值的连续性分数显著高于另一个
-        2. 不一致（inconsistent）：两个候选值都合理但温度变化方向相反
-        3. 模糊（ambiguous）：两个候选值都合理且温度变化方向一致
-        4. 无法推断（no_context）：连续性分数都太低
-
-        返回: (digit, category)
-        """
-        threshold = 0.5  # 连续性阈值（降低）
-        diff_threshold = 0.2  # 差异阈值（降低）
-
-        # 检查是否都有足够的连续性
-        if continuity_0 < threshold and continuity_8 < threshold:
-            return -2, 'no_context'
-
-        # 检查是否只有一个候选值有足够的连续性
-        if continuity_0 >= threshold and continuity_8 < threshold:
-            return 0, 'determined'
-        if continuity_8 >= threshold and continuity_0 < threshold:
-            return 8, 'determined'
-
-        # 两个候选值都有足够的连续性
-        diff = abs(continuity_0 - continuity_8)
-
-        # 如果差异显著，选择连续性更高的
-        if diff >= diff_threshold:
-            if continuity_0 > continuity_8:
-                return 0, 'determined'
-            else:
-                return 8, 'determined'
-
-        # 差异不显著，两个都合理 - 返回模糊分类（黄色）
-        return -2, 'ambiguous'
-
     def get_screen_resolution(self):
         """获取屏幕分辨率"""
         try:
@@ -761,32 +476,28 @@ class VideoDigitExtractor:
         }
         return colors.get(roi_name, (255, 255, 255))  # 默认白色
 
-    def recognize_faulty_digit(self, faulty_roi_image, prev_temp_full=None, next_temp_full=None):
+    def recognize_faulty_digit(self, faulty_roi_image):
         """
         识别故障位数字（使用统一识别管道）
 
         策略：
         1. 使用统一识别管道识别单个数字（经过完整预处理）
         2. 支持正常位和故障位模式识别
-        3. 如果返回-2（0/8），应用时间序列推断
 
         Args:
             faulty_roi_image: 故障位区域图像
-            prev_temp_full: 前一帧的完整温度字符串（用于0/8推断）
-            next_temp_full: 后一帧的完整温度字符串（用于0/8推断）
 
         Returns:
-            (digit, method, is_suspicious) - 数字、识别方法标识和是否存疑
-            digit: 识别的数字（-1表示无法识别）
-            method: 'digit_recognizer'、'inference' 或 'unknown'
-            is_suspicious: True表示识别到的亮段与映射不一致
+            (digit, method) - 数字、识别方法标识
+            digit: 识别的数字（-1表示无法识别，-2表示0/8歧义）
+            method: 'digit_recognizer'、'digit_recognizer_0or8' 或 'unknown'
         """
         try:
             # 策略：先直接识别，如果失败（-1）再尝试分割后识别
             # 直接分割故障位会导致g段缺失的4被误分成两个1，所以不能先分割
             pipeline = self._get_recognition_pipeline()
             pipeline.set_mode('broken')
-            digit, confidence, is_suspicious, _ = pipeline.recognize_digit_image(
+            digit, confidence, _, _ = pipeline.recognize_digit_image(
                 faulty_roi_image, mode='broken'
             )
 
@@ -794,20 +505,19 @@ class VideoDigitExtractor:
             if digit == -1:
                 _segments = pipeline._segmenter.segment_digits(faulty_roi_image)
                 if _segments:
-                    digit, confidence, is_suspicious, _ = pipeline.recognize_digit_image(
+                    digit, confidence, _, _ = pipeline.recognize_digit_image(
                         _segments[0]['image'], mode='broken'
                     )
 
             # 检查识别结果
             if digit == -2:
-                # 数字0/8情况，需要时间序列推断
-                return -2, 'digit_recognizer_0or8', False
+                return -2, 'digit_recognizer_0or8'
             elif digit != -1:
                 # 成功识别数字
-                return digit, 'digit_recognizer', is_suspicious
+                return digit, 'digit_recognizer'
             else:
                 # 无法识别
-                return -1, 'unknown', False
+                return -1, 'unknown'
 
         except Exception as e:
             print(f"数字识别器识别故障位数字失败: {e}")

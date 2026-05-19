@@ -40,13 +40,10 @@ class DataTable(ttk.Frame):
 
         self.setup_columns()
 
-        # 设置标签颜色（用于推断结果着色）
         self.setup_tags()
 
         # 回调函数，用于查看帧
         self.on_view_frame_callback = None
-        # 回调函数，用于单元格编辑
-        self.on_cell_edited_callback = None
 
         # 布局（使用grid确保纵横滚动条共存）
         self.grid_rowconfigure(0, weight=1)
@@ -72,19 +69,8 @@ class DataTable(ttk.Frame):
         """配置标签颜色"""
         # 识别失败：亮红色（无map匹配）
         self.tree.tag_configure('failed_red', background='red', foreground='white')
-        # 可确定的值：绿色
-        self.tree.tag_configure('determined_green', background='lightgreen')
-        # 不一致：红色
-        self.tree.tag_configure('inconsistent_red', background='lightcoral')
-        # 模糊：黄色
-        self.tree.tag_configure('ambiguous_yellow', background='lightyellow')
-        # 可编辑：浅蓝色
-        self.tree.tag_configure('editable', background='lightblue')
         # 温差异常：黑色（文字白色以便阅读）
         self.tree.tag_configure('abnormal_black', background='black', foreground='white')
-        # 原有标签（质量标记）
-        self.tree.tag_configure('high', background='lightgreen')
-        self.tree.tag_configure('low', background='lightcoral')
 
     def setup_context_menu(self):
         """设置右键菜单"""
@@ -109,93 +95,16 @@ class DataTable(ttk.Frame):
                 value = str(value)
             values.append(value)
 
-        # 根据推断分类设置标签（颜色）
         tags = []
 
-        # 首先检查是否为异常温差记录
         abnormal_category = data.get('abnormal_category')
         if abnormal_category == 'temperature_diff':
             tags.append('abnormal_black')
-        else:
-            faulty_digit = data.get('temp1_faulty_digit')
-            if faulty_digit == -1:
-                # 识别失败（无map匹配），亮红色
-                tags.append('failed_red')
-            elif faulty_digit == -2:
-                # 需要推断的记录（0/8歧义），应用推断分类标签
-                inference_category = data.get('inference_category')
-                if inference_category == 'determined':
-                    tags.append('determined_green')
-                elif inference_category == 'inconsistent':
-                    tags.append('inconsistent_red')
-                elif inference_category == 'ambiguous':
-                    tags.append('ambiguous_yellow')
-
-                # 可编辑标签
-                if data.get('is_editable', False):
-                    tags.append('editable')
-            else:
-                # 非-1/-2记录保持白色（无标签）
-                pass
+        elif data.get('temp1_faulty_digit') == -1:
+            tags.append('failed_red')
 
         item = self.tree.insert("", "end", values=values, tags=tuple(tags))
         return item
-
-    def update_row_display(self, row_index, data):
-        """
-        更新指定行的显示（用于推断后更新标签和值）
-
-        Args:
-            row_index: 行索引（在results列表中的位置）
-            data: 更新后的数据字典
-        """
-        # 获取treeview中的所有项
-        items = list(self.tree.get_children())
-        if row_index < 0 or row_index >= len(items):
-            return
-
-        item = items[row_index]
-
-        # 更新值
-        values = []
-        for col_id, _, _ in self.columns:
-            value = data.get(col_id, "")
-            # 转换数字为字符串
-            if isinstance(value, (int, float)):
-                value = str(value)
-            values.append(value)
-
-        # 更新标签（与add_row保持一致）
-        tags = []
-
-        # 首先检查是否为异常温差记录
-        abnormal_category = data.get('abnormal_category')
-        if abnormal_category == 'temperature_diff':
-            tags.append('abnormal_black')
-        else:
-            faulty_digit = data.get('temp1_faulty_digit')
-            if faulty_digit == -1:
-                # 识别失败（无map匹配），亮红色
-                tags.append('failed_red')
-            elif faulty_digit == -2:
-                # 需要推断的记录（0/8歧义），应用推断分类标签
-                inference_category = data.get('inference_category')
-                if inference_category == 'determined':
-                    tags.append('determined_green')
-                elif inference_category == 'inconsistent':
-                    tags.append('inconsistent_red')
-                elif inference_category == 'ambiguous':
-                    tags.append('ambiguous_yellow')
-
-                # 可编辑标签
-                if data.get('is_editable', False):
-                    tags.append('editable')
-            else:
-                # 非-1/-2记录保持白色（无标签）
-                pass
-
-        # 更新treeview项
-        self.tree.item(item, values=values, tags=tuple(tags))
 
     def load_all(self, results):
         """批量加载所有结果到表格（一次性插入）"""
@@ -212,20 +121,8 @@ class DataTable(ttk.Frame):
             abnormal_category = data.get('abnormal_category')
             if abnormal_category == 'temperature_diff':
                 tags.append('abnormal_black')
-            else:
-                faulty_digit = data.get('temp1_faulty_digit')
-                if faulty_digit == -1:
-                    tags.append('failed_red')
-                elif faulty_digit == -2:
-                    inference_category = data.get('inference_category')
-                    if inference_category == 'determined':
-                        tags.append('determined_green')
-                    elif inference_category == 'inconsistent':
-                        tags.append('inconsistent_red')
-                    elif inference_category == 'ambiguous':
-                        tags.append('ambiguous_yellow')
-                    if data.get('is_editable', False):
-                        tags.append('editable')
+            elif data.get('temp1_faulty_digit') == -1:
+                tags.append('failed_red')
 
             self.tree.insert("", "end", values=values, tags=tuple(tags))
 
@@ -298,94 +195,8 @@ class DataTable(ttk.Frame):
         return data
 
     def on_row_double_click(self, event):
-        """双击行事件"""
-        # 识别点击的列和行
-        region = self.tree.identify_region(event.x, event.y)
-        if region == "cell":
-            # 获取列ID和行
-            column = self.tree.identify_column(event.x)
-            row = self.tree.identify_row(event.y)
-
-            # 检查是否是temp1_faulty_digit列（第7列）
-            if column == '#7':  # temp1_faulty_digit列
-                # 获取行数据
-                item = self.tree.item(row)
-                values = item['values']
-                if not values:
-                    return
-
-                # 获取该行的数据字典
-                data = self.get_row_data_by_item(row)
-                if not data:
-                    return
-
-                # 检查是否可编辑
-                if data.get('is_editable', False):
-                    # 显示单元格编辑器
-                    self.show_cell_editor(row, column, values[6])  # 第7列的值在索引6
-                    return
-
-        # 默认行为：查看帧截图
+        """双击行事件：查看帧截图"""
         self.view_frame()
-
-    def show_cell_editor(self, row, column, current_value):
-        """
-        显示单元格编辑器（Combobox）
-
-        Args:
-            row: 行ID
-            column: 列ID（如'#7'）
-            current_value: 当前单元格的值
-        """
-        # 创建Combobox编辑器
-        editor = ttk.Combobox(self.tree, values=['-2', '0', '8'])
-        editor.set(current_value)
-
-        # 定位编辑器
-        x, y, width, height = self.tree.bbox(row, column)
-        editor.place(x=x, y=y, width=width, height=height)
-
-        # 绑定事件
-        editor.bind('<<ComboboxSelected>>',
-                   lambda e: self.on_digit_selected(row, column, editor.get(), editor))
-        editor.bind('<FocusOut>', lambda e: editor.destroy())
-        editor.bind('<Return>', lambda e: self.on_digit_selected(row, column, editor.get(), editor))
-
-        # 设置焦点
-        editor.focus_set()
-
-    def on_digit_selected(self, row, column, new_value, editor):
-        """
-        数字选择回调函数
-
-        Args:
-            row: 行ID
-            column: 列ID
-            new_value: 新选择的值
-            editor: 编辑器控件
-        """
-        # 销毁编辑器
-        editor.destroy()
-
-        # 更新treeview中的值
-        item = row  # row已经是item ID
-        values = list(self.tree.item(item, 'values'))
-
-        # 找到temp1_faulty_digit列的索引
-        col_index = None
-        for i, (col_id, _, _) in enumerate(self.columns):
-            if col_id == 'temp1_faulty_digit':
-                col_index = i
-                break
-
-        if col_index is not None:
-            # 更新值
-            values[col_index] = new_value
-            self.tree.item(item, values=values)
-
-            # 通知主窗口更新数据（需要主窗口提供回调）
-            if hasattr(self, 'on_cell_edited_callback'):
-                self.on_cell_edited_callback(item, 'temp1_faulty_digit', new_value)
 
     def view_frame(self):
         """查看帧截图"""
@@ -467,10 +278,6 @@ class DataTable(ttk.Frame):
     def set_view_frame_callback(self, callback):
         """设置查看帧回调函数"""
         self.on_view_frame_callback = callback
-
-    def set_cell_edited_callback(self, callback):
-        """设置单元格编辑回调函数"""
-        self.on_cell_edited_callback = callback
 
     def delete_selected_rows(self):
         """删除选中行（单行或多行）"""

@@ -31,12 +31,11 @@ class Signal:
 class ProcessingThread(threading.Thread):
     """处理视频的异步线程"""
 
-    def __init__(self, extractor, video_path, rois, start_frame=0, interval=0.25):
+    def __init__(self, extractor, video_path, rois, interval=0.25):
         super().__init__()
         self.extractor = extractor
         self.video_path = video_path
         self.rois = rois
-        self.start_frame = start_frame
         self.interval = interval
 
         # 信号
@@ -62,7 +61,6 @@ class ProcessingThread(threading.Thread):
             thread = self.extractor.process_video_async(
                 video_path=self.video_path,
                 rois=self.rois,
-                start_frame=self.start_frame,
                 interval=self.interval,
                 progress_callback=self._on_progress,
                 status_callback=self._on_status,

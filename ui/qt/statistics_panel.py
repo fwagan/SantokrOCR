@@ -880,8 +880,7 @@ if __name__ == "__main__":
             'temp1_full': f"{temp1:.1f}",
             'temp1_normal': '123',
             'temp1_faulty_digit': 0,
-            'temp2': f"{temp2:.1f}",
-            'quality': 'high'
+            'temp2': f"{temp2:.1f}"
         }
         test_results.append(result)
 

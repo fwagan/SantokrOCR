@@ -143,13 +143,15 @@ class CacheManager:
         logger.info(f"视频信息已保存: {info_path}")
         return info_path
 
-    def save_rois(self, video_hash: str, rois) -> str:
+    def save_rois(self, video_hash: str, rois, rotation_angle: float = None, start_frame: int = None) -> str:
         """
-        保存ROI配置
+        保存ROI配置及相关参数
 
         Args:
             video_hash: 视频hash值
             rois: ROI配置（字典：{name: (x, y, w, h)} 或 列表）
+            rotation_angle: 旋转角度
+            start_frame: 启动帧号
 
         Returns:
             保存的文件路径
@@ -174,21 +176,28 @@ class CacheManager:
             # 列表格式（向后兼容）
             for roi in rois:
                 if isinstance(roi, dict) and 'name' in roi:
-                    # 列表中的字典，包含name字段
                     name = roi['name']
                     if 'x' in roi and 'y' in roi:
                         serializable_rois[name] = {'x': roi['x'], 'y': roi['y'],
                                                   'width': roi.get('width', roi.get('w', 0)),
                                                   'height': roi.get('height', roi.get('h', 0))}
                 elif isinstance(roi, dict):
-                    # 没有name字段的字典，无法处理
                     logger.warning(f"跳过无法处理的ROI格式: {roi}")
         else:
             logger.warning(f"未知的ROI格式: {type(rois)}")
             serializable_rois = {'error': f'unknown_roi_format_{type(rois)}'}
 
+        # 包装为带配置的格式
+        payload = {
+            'rois': serializable_rois,
+        }
+        if rotation_angle is not None:
+            payload['rotation_angle'] = float(rotation_angle)
+        if start_frame is not None:
+            payload['start_frame'] = int(start_frame)
+
         with open(rois_path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_rois, f, indent=2, ensure_ascii=False)
+            json.dump(payload, f, indent=2, ensure_ascii=False)
 
         logger.info(f"ROI配置已保存: {rois_path} (共{len(serializable_rois)}个ROI)")
         return rois_path
@@ -254,13 +263,14 @@ class CacheManager:
 
     def load_rois(self, video_hash: str):
         """
-        加载ROI配置
+        加载ROI配置及相关参数
 
         Args:
             video_hash: 视频hash值
 
         Returns:
-            ROI配置字典 {name: (x, y, w, h)}，如果不存在返回None
+            dict: {'rois': {name: (x, y, w, h)}, 'rotation_angle': float, 'start_frame': int}
+            旧格式缓存只返回rois字典。如果不存在返回None。
         """
         cache_dir = self.get_cache_dir(video_hash)
         rois_path = os.path.join(cache_dir, 'rois.json')
@@ -272,10 +282,22 @@ class CacheManager:
             with open(rois_path, 'r', encoding='utf-8') as f:
                 loaded_data = json.load(f)
 
-            # 转换回原始格式
             rois = {}
+            rotation_angle = None
+            start_frame = None
+
             if isinstance(loaded_data, dict):
-                for name, roi_data in loaded_data.items():
+                # 判断新旧格式
+                if 'rois' in loaded_data:
+                    # 新格式：{'rois': {...}, 'rotation_angle': ..., 'start_frame': ...}
+                    roi_dict = loaded_data['rois']
+                    rotation_angle = loaded_data.get('rotation_angle')
+                    start_frame = loaded_data.get('start_frame')
+                else:
+                    # 旧格式：ROI数据直接在顶层
+                    roi_dict = loaded_data
+
+                for name, roi_data in roi_dict.items():
                     if isinstance(roi_data, dict) and 'x' in roi_data and 'y' in roi_data:
                         x = roi_data['x']
                         y = roi_data['y']
@@ -299,7 +321,15 @@ class CacheManager:
                             rois[name] = (int(x), int(y), int(w), int(h))
 
             logger.info(f"ROI配置已加载: {rois_path} (共{len(rois)}个ROI)")
-            return rois if rois else None
+            if not rois:
+                return None
+
+            result = {'rois': rois}
+            if rotation_angle is not None:
+                result['rotation_angle'] = rotation_angle
+            if start_frame is not None:
+                result['start_frame'] = start_frame
+            return result
         except Exception as e:
             logger.error(f"加载ROI配置失败: {rois_path}, 错误: {e}")
             return None

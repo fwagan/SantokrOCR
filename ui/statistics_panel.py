@@ -1036,8 +1036,7 @@ if __name__ == "__main__":
             'temp1_full': f"{temp1:.1f}",
             'temp1_normal': '123',
             'temp1_faulty_digit': 0,
-            'temp2': f"{temp2:.1f}",
-            'quality': 'high'
+            'temp2': f"{temp2:.1f}"
         }
         test_results.append(result)
 
@@ -1051,8 +1050,7 @@ if __name__ == "__main__":
             'temp1_full': '????',
             'temp1_normal': '????',
             'temp1_faulty_digit': -1,
-            'temp2': '????',
-            'quality': 'low'
+            'temp2': '????'
         }
         test_results.append(result)
 
