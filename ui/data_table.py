@@ -67,10 +67,12 @@ class DataTable(ttk.Frame):
 
     def setup_tags(self):
         """配置标签颜色"""
-        # 识别失败：亮红色（无map匹配）
-        self.tree.tag_configure('failed_red', background='red', foreground='white')
-        # 温差异常：黑色（文字白色以便阅读）
-        self.tree.tag_configure('abnormal_black', background='black', foreground='white')
+        # 识别失败：无map匹配
+        self.tree.tag_configure('recognition_failed', background='red', foreground='white')
+        # 温差异常：
+        self.tree.tag_configure('abnormal_temp', background='purple', foreground='white')
+        # 分组分隔行
+        self.tree.tag_configure('separator', background='#C0C0C0')
 
     def setup_context_menu(self):
         """设置右键菜单"""
@@ -99,9 +101,9 @@ class DataTable(ttk.Frame):
 
         abnormal_category = data.get('abnormal_category')
         if abnormal_category == 'temperature_diff':
-            tags.append('abnormal_black')
-        elif data.get('temp1_faulty_digit') == -1:
-            tags.append('failed_red')
+            tags.append('abnormal_temp')
+        elif data.get('temp1_faulty_digit') == -1 or data.get('temp2', '') == '????':
+            tags.append('recognition_failed')
 
         item = self.tree.insert("", "end", values=values, tags=tuple(tags))
         return item
@@ -120,11 +122,17 @@ class DataTable(ttk.Frame):
             tags = []
             abnormal_category = data.get('abnormal_category')
             if abnormal_category == 'temperature_diff':
-                tags.append('abnormal_black')
-            elif data.get('temp1_faulty_digit') == -1:
-                tags.append('failed_red')
+                tags.append('abnormal_temp')
+            elif data.get('temp1_faulty_digit') == -1 or data.get('temp2', '') == '????':
+                tags.append('recognition_failed')
 
             self.tree.insert("", "end", values=values, tags=tuple(tags))
+
+    def add_separator(self):
+        """添加灰色分隔行（3行）"""
+        empty_values = [""] * len(self.columns)
+        for _ in range(3):
+            self.tree.insert("", "end", values=empty_values, tags=('separator',))
 
     def clear(self):
         """清空所有数据"""

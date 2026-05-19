@@ -202,11 +202,14 @@ class MainWindow(tk.Tk):
 
         ttk.Label(filter_row, text="筛选记录颜色:").pack(side="left", padx=(0, 5))
         self.filter_color_var = tk.StringVar(value="全部")
-        filter_combo = ttk.Combobox(filter_row, textvariable=self.filter_color_var,
-                                   values=["全部", "黑色-温差异常", "红色-识别失败"],
-                                   state="readonly", width=20)
-        filter_combo.pack(side="left", padx=5)
-        filter_combo.bind("<<ComboboxSelected>>", self.apply_color_filter)
+        tk.Radiobutton(filter_row, text="全部", variable=self.filter_color_var,
+                      value="全部", command=self.apply_color_filter).pack(side="left", padx=3)
+        tk.Radiobutton(filter_row, text="识别失败", variable=self.filter_color_var,
+                      value="红色-识别失败", command=self.apply_color_filter,
+                      foreground="red").pack(side="left", padx=3)
+        tk.Radiobutton(filter_row, text="温差异常", variable=self.filter_color_var,
+                      value="温差异常", command=self.apply_color_filter,
+                      foreground="purple").pack(side="left", padx=3)
 
     def remove_invalid_data(self):
         """排除非法数据：删除temp1_full为????或temp1_faulty_digit为-1的记录"""
@@ -302,10 +305,9 @@ class MainWindow(tk.Tk):
                 # 温度值无法转换为浮点数，跳过
                 continue
 
-        # 更新表格显示
-        self.data_table.clear()
-        for result in self.results:
-            self.data_table.add_row(result)
+        # 自动切换到温差异常筛选
+        self.filter_color_var.set("温差异常")
+        self.apply_color_filter()
 
         self.log(f"检测完成，发现{abnormal_count}条异常温差记录")
 
@@ -314,50 +316,71 @@ class MainWindow(tk.Tk):
         if not hasattr(self, 'data_table') or not self.data_table:
             return
 
-        selected_filter = self.filter_color_var.get()
-        self.log(f"应用筛选: {selected_filter}")
-
-        # 清空表格
+        selected = self.filter_color_var.get()
         self.data_table.clear()
 
-        if selected_filter == "全部":
-            # 显示所有记录
+        if selected == "全部":
             for result in self.results:
                 self.data_table.add_row(result)
             self.log(f"显示全部 {len(self.results)} 条记录")
             return
 
-        # 根据筛选条件显示记录
-        filtered_count = 0
-        for result in self.results:
-            should_show = False
+        if selected == "红色-识别失败":
+            count = 0
+            for result in self.results:
+                if result.get('temp1_faulty_digit') == -1 or result.get('temp2', '') == '????':
+                    self.data_table.add_row(result)
+                    count += 1
+            self.log(f"筛选完成，显示 {count} 条识别失败记录")
+            return
 
-            if selected_filter == "黑色-温差异常":
-                if filtered_count == 0:
-                    # 只执行一次：收集异常记录的前后索引，保留上下文
-                    abnormal_indices = set()
-                    for idx, r in enumerate(self.results):
-                        if r.get('abnormal_category') == 'temperature_diff':
-                            abnormal_indices.add(idx)
-                            if idx > 0:
-                                abnormal_indices.add(idx - 1)
-                            if idx < len(self.results) - 1:
-                                abnormal_indices.add(idx + 1)
-                    for idx in sorted(abnormal_indices):
-                        self.data_table.add_row(self.results[idx])
-                    filtered_count = len(abnormal_indices)
-                continue  # 跳过通用添加逻辑
-            elif selected_filter == "红色-识别失败":
-                should_show = result.get('temp1_faulty_digit') == -1
-            else:
-                # 未知筛选条件，显示所有
-                should_show = True
+        if selected == "温差异常":
+            # 收集所有温差异常索引
+            abnormal_indices = []
+            for idx, r in enumerate(self.results):
+                if r.get('abnormal_category') == 'temperature_diff':
+                    abnormal_indices.append(idx)
 
-            if should_show:
-                self.data_table.add_row(result)
-                filtered_count += 1
+            if not abnormal_indices:
+                self.log("没有温差异常记录")
+                return
 
-        self.log(f"筛选完成，显示 {filtered_count} 条记录")
+            # 将间距≤5的异常记录合并为组
+            groups = []
+            current_group = [abnormal_indices[0]]
+            for idx in abnormal_indices[1:]:
+                if idx - current_group[-1] <= 5:
+                    current_group.append(idx)
+                else:
+                    groups.append(current_group)
+                    current_group = [idx]
+            groups.append(current_group)
+
+            # 每组前后各取5条上下文，生成显示索引集合
+            context_sets = []  # list of (start, end) tuples
+            for group in groups:
+                start = max(0, group[0] - 5)
+                end = min(len(self.results) - 1, group[-1] + 5)
+                context_sets.append((start, end))
+
+            # 合并有重叠的显示区间
+            merged = []
+            for start, end in context_sets:
+                if merged and start <= merged[-1][1]:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+                else:
+                    merged.append((start, end))
+
+            # 插入行和分隔符
+            for gi, (start, end) in enumerate(merged):
+                for idx in range(start, end + 1):
+                    self.data_table.add_row(self.results[idx])
+                if gi < len(merged) - 1:
+                    self.data_table.add_separator()
+
+            total = sum(end - start + 1 for start, end in merged)
+            self.log(f"筛选完成，{len(abnormal_indices)} 条异常分 {len(groups)} 组，显示 {total} 条记录")
+            return
 
     def on_rows_deleted(self, deleted_items, deleted_data):
         """
@@ -783,6 +806,10 @@ class MainWindow(tk.Tk):
             self.progress_label.config(text=f"{len(self.results)}/{sample_count}")
             self.update_status(f"测试模式完成：{len(self.results)} 条记录")
             self.log(f"=== 测试模式完成：成功处理 {len(self.results)}/{sample_count} 帧 ===")
+
+            # 自动切换到识别失败筛选
+            self.filter_color_var.set("红色-识别失败")
+            self.apply_color_filter()
 
         except Exception as e:
             self.log(f"测试模式处理出错: {e}")
