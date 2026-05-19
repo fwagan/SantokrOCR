@@ -68,11 +68,6 @@ class MainWindow(tk.Tk):
         # 绑定窗口关闭事件
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    @property
-    def auto_start_var(self):
-        """向后兼容性：返回enable_timer_recognition_var"""
-        return self.enable_timer_recognition_var
-
     def create_menu(self):
         """创建菜单栏"""
         menubar = tk.Menu(self)
@@ -138,35 +133,6 @@ class MainWindow(tk.Tk):
         ttk.Label(params_row, text="采样间隔 (秒):").pack(side="left", padx=(0, 5))
         self.interval_var = tk.StringVar(value="0.25")
         ttk.Entry(params_row, textvariable=self.interval_var, width=10).pack(side="left", padx=5)
-
-        ttk.Label(params_row, text="启用Timer识别:").pack(side="left", padx=(20, 5))
-        self.enable_timer_recognition_var = tk.BooleanVar(value=False)  # 默认禁用
-        self.timer_checkbox = ttk.Checkbutton(params_row, variable=self.enable_timer_recognition_var,
-                                             command=self.on_timer_recognition_toggle)
-        self.timer_checkbox.pack(side="left")
-
-        # 手动时间输入控件
-        ttk.Label(params_row, text="开始时间 (mm:ss):").pack(side="left", padx=(20, 5))
-        self.start_time_var = tk.StringVar(value="00:00")
-        self.start_time_entry = ttk.Entry(params_row, textvariable=self.start_time_var, width=8)
-        self.start_time_entry.pack(side="left", padx=5)
-
-        # 添加输入验证
-        def validate_time_input(new_value):
-            if new_value == "": return True
-            if len(new_value) > 5: return False
-            if ":" not in new_value: return False
-            parts = new_value.split(":")
-            if len(parts) != 2: return False
-            try:
-                minutes = int(parts[0])
-                seconds = int(parts[1])
-                return 0 <= minutes <= 59 and 0 <= seconds <= 59
-            except ValueError:
-                return False
-
-        vcmd = (self.register(validate_time_input), '%P')
-        self.start_time_entry.config(validate="key", validatecommand=vcmd)
 
         # 测试模式开关
         ttk.Label(params_row, text="测试模式:").pack(side="left", padx=(20, 5))
@@ -250,17 +216,6 @@ class MainWindow(tk.Tk):
                                    state="readonly", width=20)
         filter_combo.pack(side="left", padx=5)
         filter_combo.bind("<<ComboboxSelected>>", self.apply_color_filter)
-
-    def on_timer_recognition_toggle(self):
-        """Timer识别开关切换时的处理"""
-        if self.enable_timer_recognition_var.get():
-            # 启用timer识别时，禁用手动时间输入
-            self.start_time_entry.config(state="disabled")
-            self.log("Timer识别已启用")
-        else:
-            # 禁用timer识别时，启用手动时间输入
-            self.start_time_entry.config(state="normal")
-            self.log("Timer识别已禁用，请手动输入开始时间")
 
     def infer_broken_digits(self):
         """遍历所有结果，推断broken位数字"""
@@ -843,8 +798,7 @@ class MainWindow(tk.Tk):
             from ui.roi_selector import RoiSelector
             selector = RoiSelector(
                 self,
-                self.video_path,
-                enable_timer=self.enable_timer_recognition_var.get()
+                self.video_path
             )
             rois = selector.get_results()
 
@@ -984,14 +938,6 @@ class MainWindow(tk.Tk):
                 cap.release()
                 return
 
-            # Timer ROI（可选）
-            timer_img = None
-            if 'timer' in self.rois:
-                timer_img = self.extractor.crop_roi(frame, self.rois['timer'])
-                self.log("已裁剪timer区域")
-            else:
-                self.log("Timer ROI未选择（正常，当Timer识别禁用时）")
-
             # 初始化数字识别器
             self.log("初始化数字识别器...")
             recognizer = self.extractor._get_digit_recognizer()
@@ -1022,11 +968,6 @@ class MainWindow(tk.Tk):
                 temp2_text, temp2_conf = recognizer.recognize_temperature(temp2_3digits_img, digit_count=4)
                 self.log(f"temp2识别结果: {temp2_text}, 置信度: {temp2_conf:.3f} (旧格式，向后兼容)")
 
-            # 识别timer（如果存在）
-            timer_text, timer_conf = None, 0.0
-            if timer_img is not None:
-                timer_text, timer_conf = recognizer.recognize_timer(timer_img)
-                self.log(f"timer识别结果: {timer_text}, 置信度: {timer_conf:.3f}")
 
             # 故障位数字识别（故障位模式）
             self.log("故障位数字识别（故障位模式）...")
@@ -1074,7 +1015,6 @@ class MainWindow(tk.Tk):
                 'timestamp': round(timestamp, 3),
                 'original_timestamp': round(timestamp, 3),
                 'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
-                'timer': timer_text,
                 'temp1_full': temp1_full,
                 'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
                 'temp1_faulty_digit': faulty_digit,
@@ -1139,40 +1079,8 @@ class MainWindow(tk.Tk):
             self.results = []
             self.data_table.clear()
 
-            # 获取启动帧（与正常模式相同逻辑）
+            # 获取启动帧（默认从第0帧开始）
             start_frame = 0
-            if self.enable_timer_recognition_var.get():
-                # 启用timer识别：自动检测启动帧
-                try:
-                    if 'timer' in self.rois:
-                        start_frame = self.extractor.find_start_frame(self.video_path, self.rois['timer'])
-                        self.log(f"Timer识别已启用，自动检测到启动帧: {start_frame}")
-                    else:
-                        self.log("警告：Timer识别已启用但未选择timer区域，使用默认启动帧0")
-                        start_frame = 0
-                except Exception as e:
-                    self.log(f"Timer识别失败: {e}")
-                    start_frame = 0
-            else:
-                # 禁用timer识别：手动输入时间转换为帧数
-                try:
-                    time_str = self.start_time_var.get()
-                    minutes, seconds = map(int, time_str.split(":"))
-
-                    # 获取视频FPS
-                    cap = cv2.VideoCapture(self.video_path)
-                    fps = cap.get(cv2.CAP_PROP_FPS)
-                    cap.release()
-
-                    # 计算帧数：时间(秒) × FPS
-                    total_seconds = minutes * 60 + seconds
-                    start_frame = int(total_seconds * fps)
-
-                    self.log(f"Timer识别已禁用，使用手动输入时间: {time_str}")
-                    self.log(f"转换为启动帧: {start_frame} (FPS: {fps:.2f})")
-                except Exception as e:
-                    self.log(f"时间转换失败: {e}，使用默认启动帧0")
-                    start_frame = 0
 
             # 执行单帧测试处理
             self.test_single_frame_processing(start_frame)
@@ -1198,40 +1106,8 @@ class MainWindow(tk.Tk):
         # 启动异步处理线程
         self.update_status("正在处理视频...")
 
-        # 获取启动帧
+        # 获取启动帧（默认从第0帧开始）
         start_frame = 0
-        if self.enable_timer_recognition_var.get():
-            # 启用timer识别：自动检测启动帧
-            try:
-                if 'timer' in self.rois:
-                    start_frame = self.extractor.find_start_frame(self.video_path, self.rois['timer'])
-                    self.log(f"Timer识别已启用，自动检测到启动帧: {start_frame}")
-                else:
-                    self.log("警告：Timer识别已启用但未选择timer区域，使用默认启动帧0")
-                    start_frame = 0
-            except Exception as e:
-                self.log(f"Timer识别失败: {e}")
-                start_frame = 0
-        else:
-            # 禁用timer识别：手动输入时间转换为帧数
-            try:
-                time_str = self.start_time_var.get()
-                minutes, seconds = map(int, time_str.split(":"))
-
-                # 获取视频FPS
-                cap = cv2.VideoCapture(self.video_path)
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                cap.release()
-
-                # 计算帧数：时间(秒) × FPS
-                total_seconds = minutes * 60 + seconds
-                start_frame = int(total_seconds * fps)
-
-                self.log(f"Timer识别已禁用，使用手动输入时间: {time_str}")
-                self.log(f"转换为启动帧: {start_frame} (FPS: {fps:.2f})")
-            except Exception as e:
-                self.log(f"时间转换失败: {e}，使用默认启动帧0")
-                start_frame = 0
 
         # 启动处理线程
         self.processing_thread = ProcessingThread(
@@ -1346,9 +1222,9 @@ class MainWindow(tk.Tk):
 
 1. 选择视频：点击"选择视频"按钮选择要处理的视频文件
 2. 框选ROI：选择视频后，点击"框选ROI"按钮，按照提示框选三个区域：
-   - 计时器区域
    - 温度正常位区域
    - 温度故障位区域
+   - 风温区域
 3. 设置参数：调整采样间隔（默认0.25秒）
 4. 开始处理：点击"开始处理"按钮开始异步处理
 5. 查看结果：在数据表格中查看识别结果，双击行可查看对应帧截图

@@ -2,13 +2,12 @@
 多数字识别器
 
 整合数字分割和单个数字识别，支持多位数字识别。
-专门针对7段数码管显示设计，支持计时器格式和温度值识别。
+专门针对7段数码管显示设计，支持温度值识别。
 """
 
 import cv2
 import numpy as np
 from typing import List, Tuple, Dict, Optional, Union
-import re
 
 # 使用投影分割器（基于test_doubao_multiple_1.py算法，100%准确率）
 from .projection_segmenter import ProjectionSegmenter
@@ -205,49 +204,6 @@ class MultiDigitRecognizer:
 
         return digit_string, valid_digits, overall_confidence
 
-    def recognize_timer(self, image: np.ndarray) -> Tuple[str, float]:
-        """
-        识别计时器格式 (HH:MM:SS)
-
-        Args:
-            image: 计时器区域图像
-
-        Returns:
-            (timer_string, confidence): 计时器字符串和置信度
-        """
-        # 简化：不再进行复杂的冒号检测，直接识别数字
-        # 用户已放弃timer识别，此方法仅用于向后兼容
-        digit_string, digits, confidence = self.recognize_digits(image, expected_count=6)
-
-        # 格式化计时器字符串
-        formatted = self._format_timer_string(digit_string)
-
-        return formatted, confidence
-
-    def _format_timer_string(self, digit_string: str) -> str:
-        """
-        格式化计时器字符串
-
-        Args:
-            digit_string: 原始数字字符串
-
-        Returns:
-            格式化的计时器字符串 (HH:MM:SS)
-        """
-        # 过滤非数字字符
-        digits = re.sub(r'[^\d?]', '', digit_string)
-
-        # 确保长度为6（不足补'?'，超长截断）
-        if len(digits) < 6:
-            digits = digits.ljust(6, '?')
-        else:
-            digits = digits[:6]
-
-        # 插入冒号
-        formatted = f"{digits[0:2]}:{digits[2:4]}:{digits[4:6]}"
-
-        return formatted
-
     def recognize_temperature(self, image: np.ndarray, digit_count: int = 3) -> Tuple[str, float]:
         """
         识别温度值
@@ -431,20 +387,6 @@ def test_recognizer():
     digit_string, digits, confidence = recognizer.recognize_digits(test_img, expected_count=3)
     print(f"多数字识别: 字符串='{digit_string}', 数字={digits}, 置信度={confidence:.2f}")
 
-    # 测试计时器识别（模拟00:00:00）
-    timer_img = np.ones((80, 200, 3), dtype=np.uint8) * 50
-    # 添加6个数字和2个冒号（简化）
-    for i in range(6):
-        x = 20 + i * 25
-        cv2.rectangle(timer_img, (x, 20), (x+15, 60), (255, 255, 255), -1)
-
-    # 添加冒号
-    cv2.rectangle(timer_img, (65, 30), (70, 35), (255, 255, 255), -1)
-    cv2.rectangle(timer_img, (115, 30), (120, 35), (255, 255, 255), -1)
-
-    timer_str, timer_conf = recognizer.recognize_timer(timer_img)
-    print(f"计时器识别: '{timer_str}', 置信度={timer_conf:.2f}")
-
     # 测试温度识别
     temp_img = np.ones((80, 120, 3), dtype=np.uint8) * 50
     for i in range(3):
@@ -454,7 +396,7 @@ def test_recognizer():
     temp_str, temp_conf = recognizer.recognize_temperature(temp_img, digit_count=3)
     print(f"温度识别: '{temp_str}', 置信度={temp_conf:.2f}")
 
-    return digit_string, timer_str, temp_str
+    return digit_string, temp_str
 
 
 if __name__ == "__main__":

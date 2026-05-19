@@ -129,94 +129,6 @@ class VideoDigitExtractor:
         )
         return video_path
 
-    def find_start_frame(self, video_path, timer_roi):
-        """自动找到计时器开始变化的帧（00:00:01的前1秒）"""
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-
-        # 初始化数字识别器
-        recognizer = self._get_digit_recognizer()
-
-        prev_text = None
-        frame_count = 0
-
-        print("正在定位启动时间点...")
-
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # 每隔0.5秒检测一次（加快速度）
-            if frame_count % int(fps * 0.5) == 0:
-                x, y, w, h = timer_roi
-                timer_img = frame[y:y+h, x:x+w]
-
-                # 设置正常模式识别时间
-                recognizer.set_mode('normal')
-                timer_text, _ = recognizer.recognize_timer(timer_img)
-                if timer_text:
-                    text = timer_text  # 已经是格式化字符串，如"00:00:00"
-
-                    # 检查是否变为00:00:01
-                    if text == "00:00:01" and prev_text == "00:00:00":
-                        start_second = frame_count / fps - 1  # 前1秒
-                        cap.release()
-                        return int(start_second * fps)
-
-                    prev_text = text
-
-            frame_count += 1
-
-        cap.release()
-        # 如果没找到，返回第10秒（保守估计）
-        return int(10 * fps)
-
-    def collect_faulty_samples(self, video_path, faulty_roi, start_frame, num_samples=50):
-        """
-        收集故障位的训练样本
-        返回 [(image, label)]，需要用户手动标注
-        """
-        cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-
-        # 跳转到启动帧附近
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-        samples = []
-        frame_count = start_frame
-
-        print(f"请准备标注{num_samples}个故障位数字样本...")
-
-        while len(samples) < num_samples:
-            ret, frame = cap.read()
-            if not ret:
-                break
-
-            # 每隔10帧取一个样本
-            if frame_count % 10 == 0:
-                x, y, w, h = faulty_roi
-                digit_img = frame[y:y+h, x:x+w]
-
-                # 显示图片，让用户输入数字
-                cv2.imshow("请输入这个数字 (0-9)，按q退出", digit_img)
-                key = cv2.waitKey(0)
-
-                if key == ord('q'):
-                    break
-
-                # 数字键 0-9
-                if 48 <= key <= 57:
-                    digit = chr(key)
-                    samples.append((digit_img.copy(), int(digit)))
-                    print(f"已收集 {len(samples)}/{num_samples}: {digit}")
-
-            frame_count += 1
-
-        cv2.destroyAllWindows()
-        cap.release()
-        return samples
-
     def process_video_async(self, video_path, rois, start_frame, interval=0.25,
                           progress_callback=None, status_callback=None, result_callback=None):
         """
@@ -316,20 +228,7 @@ class VideoDigitExtractor:
                         # 没有temp2 ROI
                         pass
 
-                    # 处理timer ROI（如果存在）
-                    timer_text = None
-                    if 'timer' in rois:
-                        timer_img = self.crop_roi(frame, rois['timer'])
-                    else:
-                        # 创建一个空的占位符图像，避免识别器错误
-                        timer_img = np.zeros((50, 100, 3), dtype=np.uint8)
-
-                    # 使用数字识别器识别正常区域（正常模式）
                     recognizer.set_mode('normal')
-                    if 'timer' in rois:
-                        timer_text, timer_conf = recognizer.recognize_timer(timer_img)
-                    else:
-                        timer_text, timer_conf = None, 0.0
                     temp1_normal_text, temp1_conf = recognizer.recognize_temperature(temp1_normal_img, digit_count=3)
                     # 识别temp2（支持新旧格式）
                     if temp2_lastdigit_img is not None:
@@ -391,7 +290,6 @@ class VideoDigitExtractor:
                         'timestamp': round(timestamp, 3),
                         'original_timestamp': round(timestamp, 3),
                         'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
-                        'timer': timer_text,
                         'temp1_full': temp1_full,
                         'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
                         'temp1_faulty_digit': faulty_digit,
@@ -856,7 +754,6 @@ class VideoDigitExtractor:
     def get_roi_color(self, roi_name):
         """获取ROI对应的颜色"""
         colors = {
-            'timer': (0, 255, 0),      # 绿色
             'temp1_normal': (255, 0, 0),  # 蓝色
             'temp1_faulty': (0, 0, 255),   # 红色
             'temp2_normal_3digits': (255, 255, 0),  # 黄色

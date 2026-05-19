@@ -242,18 +242,6 @@ class DigitRecognizer:
                     digits.append(text_digits)
         return digits
 
-    def recognize_timer(self, image: np.ndarray) -> Tuple[str, float]:
-        """
-        识别计时器格式 (HH:MM:SS)
-
-        Args:
-            image: 计时器区域图像
-
-        Returns:
-            (timer_string, confidence): 计时器字符串和置信度
-        """
-        return self.multi_digit_recognizer.recognize_timer(image)
-
     def recognize_temperature(self, image: np.ndarray,
                               digit_count: int = 3) -> Tuple[str, float]:
         """
@@ -366,15 +354,6 @@ def test_digit_recognizer():
     # 测试图像分析
     analysis = recognizer.analyze_image(test_img)
     print(f"图像分析 - 特征: {analysis['features']}")
-
-    # 测试计时器识别（简化）
-    timer_img = np.ones((80, 200, 3), dtype=np.uint8) * 50
-    for i in range(6):
-        x = 20 + i * 25
-        cv2.rectangle(timer_img, (x, 20), (x+15, 60), (255, 255, 255), -1)
-
-    timer_str, timer_conf = recognizer.recognize_timer(timer_img)
-    print(f"计时器识别: '{timer_str}', 置信度={timer_conf:.2f}")
 
     return results, text, digits
 

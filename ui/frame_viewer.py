@@ -267,7 +267,6 @@ class FrameViewer(tk.Toplevel):
 
         # 定义要显示的字段
         fields = [
-            ("计时器", "timer", "00:00:00"),
             ("豆温", "temp1_full", "????"),
             ("豆温正常位", "temp1_normal", "????"),
             ("豆温故障位", "temp1_faulty_digit", "-1"),
@@ -472,7 +471,7 @@ class FrameViewer(tk.Toplevel):
                 debug_images = []
 
                 # 定义需要调试的ROI名称（数字区域）
-                digit_roi_names = ['temp1_normal', 'temp1_faulty', 'temp2_normal_3digits', 'temp2_normal_lastdigit', 'timer']
+                digit_roi_names = ['temp1_normal', 'temp1_faulty', 'temp2_normal_3digits', 'temp2_normal_lastdigit']
 
                 for roi_name in digit_roi_names:
                     if roi_name not in self.rois:
@@ -592,7 +591,7 @@ class FrameViewer(tk.Toplevel):
                 if not debug_images:
                     # 创建提示信息
                     no_data = np.zeros((100, 600, 3), dtype=np.uint8)
-                    cv2.putText(no_data, "No digit ROIs found (temp1_normal, temp1_faulty, temp2_normal_3digits, temp2_normal_lastdigit, timer)",
+                    cv2.putText(no_data, "No digit ROIs found (temp1_normal, temp1_faulty, temp2_normal_3digits, temp2_normal_lastdigit)",
                                (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                     cv2.putText(no_data, "Select video and configure ROIs in main window first",
                                (10, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
@@ -801,7 +800,6 @@ if __name__ == "__main__":
 
     extractor = MockExtractor()
     rois = {
-        'timer': (50, 50, 100, 50),
         'temp1_normal': (200, 50, 100, 50),
         'temp1_faulty': (350, 50, 100, 50)
     }

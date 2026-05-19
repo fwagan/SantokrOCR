@@ -16,7 +16,6 @@ from utils.screen_utils import center_window, calc_image_window_size
 
 # ROI名称 → 中文标签映射
 ROI_LABELS = {
-    'timer': '计时器',
     'temp1_normal': '豆温正常位',
     'temp1_faulty': '豆温故障位',
     'temp2_normal_3digits': '风温前三位',
@@ -25,7 +24,6 @@ ROI_LABELS = {
 
 # ROI名称 → BGR颜色 (与video_extractor.get_roi_color保持一致)
 ROI_COLORS_BGR = {
-    'timer': (0, 255, 0),           # 绿色
     'temp1_normal': (255, 0, 0),    # 蓝色
     'temp1_faulty': (0, 0, 255),    # 红色
     'temp2_normal_3digits': (255, 255, 0),   # 黄色
@@ -63,19 +61,17 @@ class RoiSelector(tk.Toplevel):
         STATUS_DONE: '#00CC00',       # 绿色
     }
 
-    def __init__(self, parent, video_path, enable_timer=True):
+    def __init__(self, parent, video_path):
         super().__init__(parent)
         self.parent = parent
 
-        # 构建ROI顺序（用户指定的固定顺序：timer在最后）
+        # 构建ROI顺序
         self.roi_names = [
             'temp1_normal',
             'temp1_faulty',
             'temp2_normal_3digits',
             'temp2_normal_lastdigit',
         ]
-        if enable_timer:
-            self.roi_names.append('timer')
 
         # 读取视频帧（第10秒位置）
         self.frame_rgb, self.frame_size = self._read_frame(video_path)
