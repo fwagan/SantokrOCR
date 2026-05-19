@@ -376,7 +376,7 @@ class VideoDigitExtractor:
         return frame_with_rois
 
     def get_frame_with_rois_cropped(self, video_path, timestamp, rois, expand_ratio=0.1,
-                                    downward_expand_ratio=0.0):
+                                    downward_expand_ratio=0.0, extend_right=False):
         """
         获取帧并裁剪到只包含所有ROI区域（外扩指定比例）
 
@@ -386,6 +386,7 @@ class VideoDigitExtractor:
             rois: ROI字典
             expand_ratio: 外扩比例（默认10%，四个方向均匀扩展）
             downward_expand_ratio: 额外向下扩展比例（相对于裁剪高度，默认0%）
+            extend_right: 是否将裁剪右边界扩展到视频最右侧
 
         Returns:
             裁剪到ROI区域的图像，坐标已偏移
@@ -415,7 +416,7 @@ class VideoDigitExtractor:
         h, w = frame.shape[:2]
         crop_x1 = max(0, min_x - expand_x)
         crop_y1 = max(0, min_y - expand_y)
-        crop_x2 = min(w, max_x + expand_x)
+        crop_x2 = w if extend_right else min(w, max_x + expand_x)
         crop_y2 = min(h, max_y + expand_y + extra_down)
 
         # 裁剪

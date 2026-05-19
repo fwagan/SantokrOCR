@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from utils.screen_utils import center_window, calc_image_window_size
+from utils.screen_utils import center_window
 
 
 # ROI名称 → 中文标签映射
@@ -87,16 +87,23 @@ class RoiSelector(tk.Toplevel):
         self.rect_end = None            # 拖拽终点 (图像坐标)
         self._result = None             # 最终返回结果
         self._closed = False            # 是否已关闭
+        self._auto_close_timer = None   # 全部ROI完成后的自动关闭计时器
 
         # Canvas显示参数（在布局确定后计算）
         self._scale = 1.0               # 图像→Canvas缩放比
+        self._zoom = 1.0               # 用户缩放倍率（1.0=适应画布）
         self._offset_x = 0              # 图像在Canvas中的X偏移
         self._offset_y = 0              # 图像在Canvas中的Y偏移
+        self._pan_x = 0                 # 平移X偏移
+        self._pan_y = 0                 # 平移Y偏移
         self._canvas_img_id = None      # Canvas上图像item的ID
         self._overlay_items = []        # 叠加层item ID列表
 
         # 窗口设置
         self.title('ROI区域选择')
+        self.geometry("1200x1500")
+        self.resizable(False, False)
+        center_window(self, 1200, 1500)
         self.protocol('WM_DELETE_WINDOW', self._on_cancel)
 
         # 创建UI
@@ -111,8 +118,8 @@ class RoiSelector(tk.Toplevel):
         self.transient(parent)
         self.grab_set()
 
-        # 按视频尺寸自适应窗口
-        self._size_and_center()
+        # 强制布局计算，确保 canvas 尺寸在 _redraw_canvas 时可用
+        self.update_idletasks()
 
         # 初始绘制
         self._update_status_labels()
@@ -124,15 +131,7 @@ class RoiSelector(tk.Toplevel):
 
     # ──────── 窗口大小 ────────
 
-    def _size_and_center(self):
-        """根据视频帧尺寸和屏幕大小设置窗口"""
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        # chrome: 窗口边框 + main padding + canvas边框/padding + gap + 右侧面板200 + 底栏
-        chrome_w = 260
-        chrome_h = 122
-        w, h = calc_image_window_size(sw, sh, self.img_w, self.img_h, chrome_w, chrome_h)
-        center_window(self, w, h)
+    # （窗口大小固定为 1200×1500，在 __init__ 中设置）
 
     # ──────── 读取帧 ────────
 
@@ -175,6 +174,12 @@ class RoiSelector(tk.Toplevel):
         self.canvas.bind('<ButtonRelease-1>', self._on_button_release)
         self.canvas.bind('<Button-3>', self._on_right_click)
         self.canvas.bind('<Configure>', self._on_canvas_resize)
+        # 中键拖拽平移
+        self.canvas.bind('<Button-2>', self._on_pan_start)
+        self.canvas.bind('<B2-Motion>', self._on_pan_move)
+        self.canvas.bind('<ButtonRelease-2>', self._on_pan_end)
+        # 滚轮缩放
+        self.canvas.bind('<MouseWheel>', self._on_mouse_wheel)
 
         # ── 右侧：状态面板 ──
         right_frame = ttk.Frame(main, width=200)
@@ -233,23 +238,22 @@ class RoiSelector(tk.Toplevel):
     # ──────── Canvas缩放计算 ────────
 
     def _update_display_params(self):
-        """根据Canvas尺寸计算缩放参数和图像显示位置"""
+        """根据Canvas尺寸、缩放和偏移计算显示参数"""
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
         if cw < 10 or ch < 10:
             return
 
-        # 计算缩放比（保持宽高比，留出边距）
+        # 计算适应画布的缩放比（保持宽高比，留出边距）
         margin = 4
-        scale_x = (cw - 2 * margin) / self.img_w
-        scale_y = (ch - 2 * margin) / self.img_h
-        self._scale = min(scale_x, scale_y)
+        fit_scale = min((cw - 2 * margin) / self.img_w, (ch - 2 * margin) / self.img_h)
+        self._scale = fit_scale * self._zoom
 
-        # 居中偏移
+        # 居中偏移 + 平移偏移
         disp_w = self.img_w * self._scale
         disp_h = self.img_h * self._scale
-        self._offset_x = (cw - disp_w) / 2
-        self._offset_y = (ch - disp_h) / 2
+        self._offset_x = (cw - disp_w) / 2 + self._pan_x
+        self._offset_y = (ch - disp_h) / 2 + self._pan_y
 
     def _canvas_to_image(self, cx, cy):
         """Canvas坐标 → 图像像素坐标"""
@@ -496,7 +500,7 @@ class RoiSelector(tk.Toplevel):
             self._update_all_ui()
             self._redraw_canvas()
             # 自动关闭（延迟1.5秒）
-            self.after(1500, self._on_finish)
+            self._auto_close_timer = self.after(1500, self._on_finish)
             return
 
         self._update_all_ui()
@@ -512,6 +516,11 @@ class RoiSelector(tk.Toplevel):
             return
         if not self.results:
             return
+
+        # 取消自动关闭计时器
+        if self._auto_close_timer is not None:
+            self.after_cancel(self._auto_close_timer)
+            self._auto_close_timer = None
 
         # 找到最后一个已确认的ROI
         last_idx = -1
@@ -532,6 +541,9 @@ class RoiSelector(tk.Toplevel):
 
     def _on_clear_all(self):
         """清除所有已选ROI"""
+        if self._auto_close_timer is not None:
+            self.after_cancel(self._auto_close_timer)
+            self._auto_close_timer = None
         self.results.clear()
         self.current_idx = 0
         self.rect_start = None
@@ -547,6 +559,62 @@ class RoiSelector(tk.Toplevel):
         self._closed = True
         self.grab_release()
         self.destroy()
+
+    # ──────── 平移与缩放 ────────
+
+    def _on_pan_start(self, event):
+        """中键拖拽平移开始"""
+        self._pan_start_x = event.x
+        self._pan_start_y = event.y
+        self.canvas.config(cursor="fleur")
+
+    def _on_pan_move(self, event):
+        """中键拖拽平移移动"""
+        dx = event.x - self._pan_start_x
+        dy = event.y - self._pan_start_y
+        self._pan_x += dx
+        self._pan_y += dy
+        self._pan_start_x = event.x
+        self._pan_start_y = event.y
+        self._redraw_canvas()
+
+    def _on_pan_end(self, event):
+        """中键拖拽平移结束"""
+        self.canvas.config(cursor="crosshair")
+
+    def _on_mouse_wheel(self, event):
+        """滚轮缩放（以鼠标所在点为中心）"""
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw < 10 or ch < 10:
+            return
+
+        # 计算当前适应缩放
+        margin = 4
+        fit_scale = min((cw - 2 * margin) / self.img_w, (ch - 2 * margin) / self.img_h)
+
+        old_zoom = self._zoom
+        factor = 1.15 if event.delta > 0 else 0.85
+        new_zoom = max(0.1, min(10.0, old_zoom * factor))
+
+        # 光标在图像坐标系中的位置
+        old_display_scale = fit_scale * old_zoom
+        old_disp_w = self.img_w * old_display_scale
+        old_disp_h = self.img_h * old_display_scale
+        old_offset_x = (cw - old_disp_w) / 2 + self._pan_x
+        old_offset_y = (ch - old_disp_h) / 2 + self._pan_y
+        img_x = (event.x - old_offset_x) / old_display_scale
+        img_y = (event.y - old_offset_y) / old_display_scale
+
+        # 更新缩放和平移，使光标所在图像点保持不动
+        self._zoom = new_zoom
+        new_display_scale = fit_scale * new_zoom
+        new_disp_w = self.img_w * new_display_scale
+        new_disp_h = self.img_h * new_display_scale
+        self._pan_x = event.x - img_x * new_display_scale - (cw - new_disp_w) / 2
+        self._pan_y = event.y - img_y * new_display_scale - (ch - new_disp_h) / 2
+
+        self._redraw_canvas()
 
     def _on_cancel(self):
         """取消全部"""

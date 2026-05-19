@@ -672,158 +672,117 @@ class MainWindow(tk.Tk):
             self.log(traceback.format_exc())
 
     def test_single_frame_processing(self):
-        """测试模式：只处理一帧并显示详细步骤"""
+        """测试模式：随机挑选100帧完整走一遍识别流程"""
+        import random
         try:
-            self.log("=== 测试模式：开始处理单帧 ===")
-
-            # 打开视频
             cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
                 self.log("错误：无法打开视频文件")
                 return
 
-            # 跳转到第0帧
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = cap.read()
-            if not ret:
-                self.log("错误：无法读取帧 0")
-                cap.release()
-                return
-
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS)
-            timestamp = 0 / fps
-            self.log(f"处理帧: 0, 时间戳: 0s, FPS: {fps:.2f}")
+            if fps <= 0:
+                fps = 30.0
 
-            # 裁剪ROI区域
-            self.log("裁剪ROI区域:")
-            for roi_name, roi in self.rois.items():
-                self.log(f"  {roi_name}: {roi}")
-                # 实际裁剪
-                roi_img = self.extractor.crop_roi(frame, roi)
-                # 保存图像用于调试（可选）
+            # 随机选出100个帧号
+            sample_count = min(100, total_frames)
+            frame_nums = sorted(random.sample(range(total_frames), sample_count))
+            self.log(f"=== 测试模式：从 {total_frames} 帧中随机抽选 {sample_count} 帧 ===")
 
-            # 提取各个ROI图像
-            if 'temp1_normal' in self.rois:
-                temp1_normal_img = self.extractor.crop_roi(frame, self.rois['temp1_normal'])
-                self.log("已裁剪temp1_normal区域")
-            else:
-                self.log("错误：缺少temp1_normal ROI")
+            # 检查ROI
+            if 'temp1_normal' not in self.rois or 'temp1_faulty' not in self.rois:
+                self.log("错误：缺少必要ROI（temp1_normal / temp1_faulty）")
                 cap.release()
                 return
+            has_temp2_new = 'temp2_normal_3digits' in self.rois and 'temp2_normal_lastdigit' in self.rois
+            has_temp2_old = 'temp2_normal' in self.rois
 
-            if 'temp1_faulty' in self.rois:
-                temp1_faulty_img = self.extractor.crop_roi(frame, self.rois['temp1_faulty'])
-                self.log("已裁剪temp1_faulty区域")
-            else:
-                self.log("错误：缺少temp1_faulty ROI")
-                cap.release()
-                return
-
-            # 检查temp2 ROI（新格式：两个ROI）
-            if 'temp2_normal_3digits' in self.rois and 'temp2_normal_lastdigit' in self.rois:
-                temp2_3digits_img = self.extractor.crop_roi(frame, self.rois['temp2_normal_3digits'])
-                temp2_lastdigit_img = self.extractor.crop_roi(frame, self.rois['temp2_normal_lastdigit'])
-                self.log("已裁剪temp2_normal_3digits和temp2_normal_lastdigit区域")
-            elif 'temp2_normal' in self.rois:
-                # 向后兼容：旧格式，单个ROI包含4位数字
-                temp2_normal_img = self.extractor.crop_roi(frame, self.rois['temp2_normal'])
-                self.log("已裁剪temp2_normal区域（旧格式，向后兼容）")
-                temp2_3digits_img = temp2_normal_img
-                temp2_lastdigit_img = None
-            else:
-                self.log("错误：缺少temp2 ROI（需要temp2_normal_3digits和temp2_normal_lastdigit）")
-                cap.release()
-                return
-
-            # 初始化数字识别器
-            self.log("初始化数字识别器...")
             recognizer = self.extractor._get_digit_recognizer()
 
-            # 识别正常位温度（正常模式）
-            self.log("识别正常位温度（正常模式）...")
-            recognizer.set_mode('normal')
+            for i, frame_num in enumerate(frame_nums):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_num)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
 
-            # 识别temp1_normal（3位数字）
-            temp1_normal_text, temp1_conf = recognizer.recognize_temperature(temp1_normal_img, digit_count=3)
-            self.log(f"temp1_normal识别结果: {temp1_normal_text}, 置信度: {temp1_conf:.3f}")
+                timestamp = frame_num / fps
 
-            # 识别temp2（新格式：两个ROI分别识别）
-            if temp2_lastdigit_img is not None:
-                # 新格式：分别识别3位数字和最后1位数字
-                temp2_3digits_text, temp2_3digits_conf = recognizer.recognize_temperature(temp2_3digits_img, digit_count=3)
-                temp2_lastdigit, temp2_lastdigit_conf = recognizer.multi_digit_recognizer.recognize_single_digit(temp2_lastdigit_img)
-                # 组合temp2温度值：xxx.x格式
-                if temp2_3digits_text and len(temp2_3digits_text) >= 3 and temp2_lastdigit >= 0:
-                    temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
-                    temp2_conf = (temp2_3digits_conf + temp2_lastdigit_conf) / 2
+                temp1_normal_img = self.extractor.crop_roi(frame, self.rois['temp1_normal'])
+                temp1_faulty_img = self.extractor.crop_roi(frame, self.rois['temp1_faulty'])
+
+                # temp2
+                if has_temp2_new:
+                    temp2_3digits_img = self.extractor.crop_roi(frame, self.rois['temp2_normal_3digits'])
+                    temp2_lastdigit_img = self.extractor.crop_roi(frame, self.rois['temp2_normal_lastdigit'])
+                elif has_temp2_old:
+                    temp2_3digits_img = self.extractor.crop_roi(frame, self.rois['temp2_normal'])
+                    temp2_lastdigit_img = None
+                else:
+                    temp2_3digits_img = None
+                    temp2_lastdigit_img = None
+
+                recognizer.set_mode('normal')
+                temp1_normal_text, temp1_conf = recognizer.recognize_temperature(temp1_normal_img, digit_count=3)
+
+                # 更新进度条
+                progress_pct = int((i + 1) / sample_count * 100)
+                if i == 0 or (i + 1) % 10 == 0 or i == sample_count - 1:
+                    self.progress_var.set(progress_pct)
+                    self.progress_label.config(text=f"{i + 1}/{sample_count}")
+                    self.after(0, self.update_idletasks)
+
+                # temp2 识别
+                if temp2_lastdigit_img is not None:
+                    temp2_3digits_text, temp2_3digits_conf = recognizer.recognize_temperature(temp2_3digits_img, digit_count=3)
+                    temp2_lastdigit, temp2_lastdigit_conf, _ = recognizer.multi_digit_recognizer.recognize_single_digit(temp2_lastdigit_img)
+                    if temp2_3digits_text and len(temp2_3digits_text) >= 3 and temp2_lastdigit >= 0:
+                        temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
+                    else:
+                        temp2_text = "????"
+                elif temp2_3digits_img is not None:
+                    temp2_text, _ = recognizer.recognize_temperature(temp2_3digits_img, digit_count=4)
                 else:
                     temp2_text = "????"
-                    temp2_conf = 0.0
-                self.log(f"temp2识别结果: {temp2_text}, 置信度: {temp2_conf:.3f} (新格式)")
-            else:
-                # 旧格式：单个ROI包含4位数字
-                temp2_text, temp2_conf = recognizer.recognize_temperature(temp2_3digits_img, digit_count=4)
-                self.log(f"temp2识别结果: {temp2_text}, 置信度: {temp2_conf:.3f} (旧格式，向后兼容)")
 
+                # 故障位
+                faulty_digit_result, method = self.extractor.recognize_faulty_digit(temp1_faulty_img)
 
-            # 故障位数字识别（故障位模式）
-            self.log("故障位数字识别（故障位模式）...")
-            faulty_digit_result, method = self.extractor.recognize_faulty_digit(temp1_faulty_img)
-            self.log(f"故障位识别结果: 数字={faulty_digit_result}, 方法={method}")
-
-            # 组合完整温度值（逻辑复用process_video_async中的逻辑）
-            temp1_full = "????"
-            faulty_digit = -1
-
-            if temp1_normal_text and len(temp1_normal_text) >= 3:
-                if faulty_digit_result == -2:
-                    # 数字0/8情况，标记为-2
-                    faulty_digit = -2
-                    temp1_full = "????"
-                    self.log("数字0/8歧义，标记为-2")
-                elif faulty_digit_result != -1:
-                    # 成功识别数字
-                    faulty_digit = faulty_digit_result
-                    temp1_full = temp1_normal_text + "." + str(faulty_digit)
-                    self.log(f"成功组合完整温度: {temp1_full}")
+                if temp1_normal_text and len(temp1_normal_text) >= 3:
+                    if faulty_digit_result == -2:
+                        faulty_digit = -2
+                        temp1_full = "????"
+                    elif faulty_digit_result != -1:
+                        faulty_digit = faulty_digit_result
+                        temp1_full = temp1_normal_text + "." + str(faulty_digit)
+                    else:
+                        faulty_digit = -1
+                        temp1_full = "????"
                 else:
-                    # 无法识别故障位数字
                     faulty_digit = -1
                     temp1_full = "????"
-                    self.log("无法识别故障位数字")
-            else:
-                # 正常位识别失败
-                faulty_digit = -1
-                temp1_full = "????"
-                self.log("正常位识别失败")
 
-            # 构建结果记录
-            result = {
-                'frame': 0,
-                'timestamp': round(timestamp, 3),
-                'original_timestamp': round(timestamp, 3),
-                'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
-                'temp1_full': temp1_full,
-                'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
-                'temp1_faulty_digit': faulty_digit,
-                'temp2': temp2_text if temp2_text else "????"
-            }
+                result = {
+                    'frame': frame_num,
+                    'timestamp': round(timestamp, 3),
+                    'original_timestamp': round(timestamp, 3),
+                    'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
+                    'temp1_full': temp1_full,
+                    'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
+                    'temp1_faulty_digit': faulty_digit,
+                    'temp2': temp2_text if temp2_text else "????"
+                }
+                self.results.append(result)
 
-            self.log("=== 处理结果 ===")
-            for key, value in result.items():
-                self.log(f"  {key}: {value}")
-
-            # 添加到结果表格
-            self.results.append(result)
-            self.data_table.add_row(result)
-            self.log(f"结果已添加到表格，共 {len(self.results)} 条记录")
-
-            # 更新UI状态
-            self.progress_label.config(text="1/1")
-            self.update_status("测试模式处理完成")
+                if (i + 1) % 10 == 0 or i == 0:
+                    self.log(f"  [{i+1}/{sample_count}] 帧 {frame_num}: 豆温={temp1_full}, 风温={temp2_text}")
 
             cap.release()
-            self.log("=== 测试模式：处理完成 ===")
+
+            self.data_table.load_all(self.results)
+            self.progress_label.config(text=f"{len(self.results)}/{sample_count}")
+            self.update_status(f"测试模式完成：{len(self.results)} 条记录")
+            self.log(f"=== 测试模式完成：成功处理 {len(self.results)}/{sample_count} 帧 ===")
 
         except Exception as e:
             self.log(f"测试模式处理出错: {e}")

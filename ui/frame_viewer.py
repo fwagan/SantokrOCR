@@ -16,7 +16,7 @@ from core.digit_recognition_pipeline import DigitRecognitionPipeline
 # 仅用于SEGMENT_AREAS常量（可视化），不参与实际识别
 from core.white_led_recognizer import WhiteLEDRecognizer
 
-from utils.screen_utils import center_window, calc_image_window_size
+from utils.screen_utils import center_window
 
 
 class FrameViewer(tk.Toplevel):
@@ -78,23 +78,29 @@ class FrameViewer(tk.Toplevel):
         # 统一识别管道（debug模式开启，记录中间数据供可视化）
         self._pipeline = DigitRecognitionPipeline(is_debug=True, rotate_angle=rotate_angle)
 
-        # 自动调整大小标记
-        self._has_auto_resized = False
+        # 图片状态
+        self._current_frame_rgb = None
+        self._image_x = 0
+        self._image_y = 0
+        self._drag_start_x = 0
+        self._drag_start_y = 0
+        self._image_item = None
+        self._fit_scale = 1.0
 
-        # 配置窗口
+        # 配置窗口（固定大小，居中）
         self.title(f"帧查看器 - 帧 {frame_num} ({self.relative_timestamp:.3f}秒)")
-        self.minsize(800, 700)
-
-        # 初始暂定居中（图片加载后 auto_resize_window 会再次调整）
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        center_window(self, int(sw * 0.7), int(sh * 0.75))
+        self.geometry("1200x1500")
+        self.resizable(False, False)
+        center_window(self, 1200, 1500)
 
         # 绑定关闭事件
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind('<Escape>', lambda e: self.destroy())
 
         # 创建UI组件
         self.create_widgets()
+        # 强制布局计算，确保 canvas.winfo_width/height 在 _render_frame 中可用
+        self.update_idletasks()
 
         # 加载并显示当前帧
         self.load_and_display_frame()
@@ -236,7 +242,7 @@ class FrameViewer(tk.Toplevel):
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
 
     def _create_video_tab(self):
-        """创建视频帧标签页（原有显示逻辑）"""
+        """创建视频帧标签页（支持缩放和拖拽）"""
         # 图像显示区域
         image_frame = ttk.LabelFrame(self.video_tab, text="视频帧", padding=5)
         image_frame.pack(fill="both", expand=True)
@@ -245,10 +251,11 @@ class FrameViewer(tk.Toplevel):
         self.canvas = tk.Canvas(image_frame, bg="gray20", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
 
-        # 添加滚动条（如果图像大于画布）
-        self.scroll_x = ttk.Scrollbar(image_frame, orient="horizontal", command=self.canvas.xview)
-        self.scroll_y = ttk.Scrollbar(image_frame, orient="vertical", command=self.canvas.yview)
-        self.canvas.configure(xscrollcommand=self.scroll_x.set, yscrollcommand=self.scroll_y.set)
+        # 鼠标事件：拖拽平移 + 滚轮缩放
+        self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
+        self.canvas.bind("<B1-Motion>", self._on_drag_move)
+        self.canvas.bind("<ButtonRelease-1>", self._on_drag_end)
+        self.canvas.bind("<MouseWheel>", self._on_mouse_wheel)
 
         # 缩放控制
         zoom_frame = ttk.Frame(image_frame)
@@ -256,7 +263,7 @@ class FrameViewer(tk.Toplevel):
 
         ttk.Label(zoom_frame, text="缩放:").pack(side="left", padx=(0, 5))
         self.zoom_var = tk.DoubleVar(value=1.0)
-        ttk.Scale(zoom_frame, from_=0.1, to=3.0, variable=self.zoom_var,
+        ttk.Scale(zoom_frame, from_=0.1, to=5.0, variable=self.zoom_var,
                  orient="horizontal", length=150,
                  command=self.on_zoom_change).pack(side="left", padx=(0, 10))
         ttk.Label(zoom_frame, textvariable=self.zoom_var).pack(side="left")
@@ -334,7 +341,8 @@ class FrameViewer(tk.Toplevel):
                 self.current_timestamp,
                 self.rois,
                 expand_ratio=0.1,
-                downward_expand_ratio=1.0
+                downward_expand_ratio=1.0,
+                extend_right=True
             )
 
             if frame is not None:
@@ -353,74 +361,90 @@ class FrameViewer(tk.Toplevel):
             self._generate_debug_visualization()
 
     def display_frame(self, frame):
-        """在画布上显示帧"""
-        # 转换为PIL图像
-        pil_image = Image.fromarray(frame)
+        """加载帧后的回调：缓存帧数据并渲染"""
+        self._current_frame_rgb = frame
+        self._image_x = 0
+        self._image_y = 0
+        self._render_frame()
+        self.title(f"帧查看器 - 帧 {self.current_frame_num} ({self.current_timestamp:.3f}秒)")
 
-        # 应用缩放
+    def _render_frame(self):
+        """从缓存的帧数据渲染画布（根据当前缩放和偏移）"""
+        if self._current_frame_rgb is None:
+            return
+
+        pil_image = Image.fromarray(self._current_frame_rgb)
+
+        # 计算适应画布的缩放（Canvas 可能尚未完成布局，用窗口尺寸兜底）
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw <= 1:
+            # Canvas 还未布局完成，用窗口宽度估算（减去 padding：main_frame 10*2 + 一些余量）
+            cw = self.winfo_width() - 30 if self.winfo_width() > 1 else 1170
+        if ch <= 1:
+            # 减去：标题栏 ~30 + main padding 20 + notebook chrome ~35 + 底部控件 ~80
+            ch = self.winfo_height() - 175 if self.winfo_height() > 1 else 1325
+        self._fit_scale = min(cw / pil_image.width, ch / pil_image.height)
+
         zoom = self.zoom_var.get()
-        if zoom != 1.0:
-            new_width = int(pil_image.width * zoom)
-            new_height = int(pil_image.height * zoom)
-            pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        display_scale = self._fit_scale * zoom
 
-        # 首次加载且100%缩放时自动调整窗口大小以适应截图尺寸
-        if not self._has_auto_resized and abs(zoom - 1.0) < 0.01:
-            self._has_auto_resized = True
-            self.auto_resize_window(pil_image.width, pil_image.height)
+        new_w = max(1, int(pil_image.width * display_scale))
+        new_h = max(1, int(pil_image.height * display_scale))
+        if new_w != pil_image.width or new_h != pil_image.height:
+            pil_image = pil_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
         # 转换为Tkinter PhotoImage
         self.tk_image = ImageTk.PhotoImage(pil_image)
 
         # 清除画布并显示新图像
         self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor="nw", image=self.tk_image)
-
-        # 更新画布滚动区域
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-        # 显示/隐藏滚动条
-        self.update_scrollbars(pil_image.width, pil_image.height)
-
-        # 更新窗口标题
-        self.title(f"帧查看器 - 帧 {self.current_frame_num} ({self.current_timestamp:.3f}秒)")
-
-    def auto_resize_window(self, img_width, img_height):
-        """自动调整窗口大小以适应图像尺寸（100%缩放时）"""
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        extra_w = 40
-        extra_h = 310
-        w, h = calc_image_window_size(sw, sh, img_width, img_height, extra_w, extra_h)
-        w = max(w, 800)
-        h = max(h, 700)
-        center_window(self, w, h)
-
-    def update_scrollbars(self, img_width, img_height):
-        """根据需要更新滚动条"""
-        canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
-
-        # 如果画布尺寸为0，跳过
-        if canvas_width <= 1 or canvas_height <= 1:
-            return
-
-        need_x_scroll = img_width > canvas_width
-        need_y_scroll = img_height > canvas_height
-
-        if need_x_scroll:
-            self.scroll_x.pack(side="bottom", fill="x")
-        else:
-            self.scroll_x.pack_forget()
-
-        if need_y_scroll:
-            self.scroll_y.pack(side="right", fill="y")
-        else:
-            self.scroll_y.pack_forget()
+        self._image_item = self.canvas.create_image(
+            self._image_x, self._image_y, anchor="nw", image=self.tk_image
+        )
 
     def on_zoom_change(self, value):
-        """缩放改变事件"""
-        self.load_and_display_frame()
+        """缩放滑块改变事件"""
+        self._render_frame()
+
+    def _on_drag_start(self, event):
+        """拖拽开始"""
+        self._drag_start_x = event.x
+        self._drag_start_y = event.y
+        self.canvas.config(cursor="fleur")
+
+    def _on_drag_move(self, event):
+        """拖拽移动"""
+        dx = event.x - self._drag_start_x
+        dy = event.y - self._drag_start_y
+        self._image_x += dx
+        self._image_y += dy
+        self._drag_start_x = event.x
+        self._drag_start_y = event.y
+        if self._image_item:
+            self.canvas.coords(self._image_item, self._image_x, self._image_y)
+
+    def _on_drag_end(self, event):
+        """拖拽结束"""
+        self.canvas.config(cursor="")
+
+    def _on_mouse_wheel(self, event):
+        """鼠标滚轮缩放（以鼠标所在点为中心）"""
+        old_zoom = self.zoom_var.get()
+        factor = 1.15 if event.delta > 0 else 0.85
+        new_zoom = max(0.1, min(10.0, old_zoom * factor))
+        self.zoom_var.set(new_zoom)
+
+        # 计算光标在图像坐标系中的位置
+        fit = self._fit_scale
+        img_x = (event.x - self._image_x) / (fit * old_zoom)
+        img_y = (event.y - self._image_y) / (fit * old_zoom)
+
+        # 调整偏移使光标所在图像点保持不变
+        self._image_x = event.x - img_x * (fit * new_zoom)
+        self._image_y = event.y - img_y * (fit * new_zoom)
+
+        self._render_frame()
 
     def on_tab_changed(self, event):
         """标签页切换事件"""
