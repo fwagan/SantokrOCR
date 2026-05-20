@@ -27,7 +27,7 @@ class FrameViewer(tk.Toplevel):
         "二爆开始", "烘焙结束", "调整火力", "调整风门"
     ]
 
-    def __init__(self, parent, extractor, video_path, rois, frame_num, timestamp,
+    def __init__(self, parent, extractor, video_path, rois, frame_num, timestamp, interval=0.25,
                  results=None, events=None, on_mark_event_callback=None,
                  heater_initial=50.0, fan_initial=80.0,
                  rotate_angle: float = 5,
@@ -47,6 +47,7 @@ class FrameViewer(tk.Toplevel):
             heater_initial: 初始火力值
             fan_initial: 初始风门值
             rotate_angle: 旋转角度（正数=逆时针，0=不旋转）
+            interval: 采样间隔（秒），用于计算记录帧之间的步长
             on_edit_callback: 手动修正回调函数(frame_num, temp1_value, temp2_value)
         """
         super().__init__(parent)
@@ -59,6 +60,7 @@ class FrameViewer(tk.Toplevel):
         self.results = results or {}
         self.events = events if events is not None else []
         self.on_edit_callback = on_edit_callback
+        self.interval = interval
 
         # 从结果字典中提取相对时间戳用于显示
         self.relative_timestamp = self.current_timestamp
@@ -77,6 +79,11 @@ class FrameViewer(tk.Toplevel):
 
         # 统一识别管道（debug模式开启，记录中间数据供可视化）
         self._pipeline = DigitRecognitionPipeline(is_debug=True, rotate_angle=rotate_angle)
+
+        # 视频信息缓存（懒加载）
+        self._video_fps = None
+        self._total_frames = None
+        self._frame_interval = None  # 记录间的帧步长
 
         # 图片状态
         self._current_frame_rgb = None
@@ -102,7 +109,9 @@ class FrameViewer(tk.Toplevel):
         # 强制布局计算，确保 canvas.winfo_width/height 在 _render_frame 中可用
         self.update_idletasks()
 
-        # 加载并显示当前帧
+        # 初始化视频信息和界面显示，再加载当前帧
+        self._ensure_video_info()
+        self._update_frame_display()
         self.load_and_display_frame()
 
         # 聚焦窗口
@@ -123,28 +132,24 @@ class FrameViewer(tk.Toplevel):
         nav_frame = ttk.Frame(control_frame)
         nav_frame.pack(side="left")
 
+        ttk.Button(nav_frame, text="◀◀ 上条记录",
+                  command=self.prev_record_frame).pack(side="left", padx=2)
         ttk.Button(nav_frame, text="◀ 上一帧",
-                  command=self.prev_frame).pack(side="left", padx=2)
+                  command=self.prev_video_frame).pack(side="left", padx=2)
         ttk.Button(nav_frame, text="下一帧 ▶",
-                  command=self.next_frame).pack(side="left", padx=2)
+                  command=self.next_video_frame).pack(side="left", padx=2)
+        ttk.Button(nav_frame, text="下条记录 ▶▶",
+                  command=self.next_record_frame).pack(side="left", padx=2)
 
-        # 帧号输入
-        input_frame = ttk.Frame(control_frame)
-        input_frame.pack(side="left", padx=20)
-
-        ttk.Label(input_frame, text="跳转到帧号:").pack(side="left", padx=(0, 5))
-        self.frame_var = tk.StringVar(value=str(self.current_frame_num))
-        frame_entry = ttk.Entry(input_frame, textvariable=self.frame_var, width=10)
-        frame_entry.pack(side="left", padx=(0, 5))
-        ttk.Button(input_frame, text="跳转",
-                  command=self.jump_to_frame).pack(side="left")
-
-        # 时间戳显示
+        # 帧信息显示
         info_frame = ttk.Frame(control_frame)
         info_frame.pack(side="right")
 
-        ttk.Label(info_frame, text=f"时间戳: {self.relative_timestamp:.3f} 秒").pack(side="left", padx=5)
-        ttk.Label(info_frame, text=f"帧号: {self.current_frame_num}").pack(side="left", padx=5)
+        self.frame_info_label = ttk.Label(info_frame, text="")
+        self.frame_info_label.pack(side="left", padx=5)
+
+        self.time_label = ttk.Label(info_frame, text="")
+        self.time_label.pack(side="left", padx=5)
 
         # 标签页（中间区域）
         self.notebook = ttk.Notebook(main_frame)
@@ -366,7 +371,6 @@ class FrameViewer(tk.Toplevel):
         self._image_x = 0
         self._image_y = 0
         self._render_frame()
-        self.title(f"帧查看器 - 帧 {self.current_frame_num} ({self.current_timestamp:.3f}秒)")
 
     def _render_frame(self):
         """从缓存的帧数据渲染画布（根据当前缩放和偏移）"""
@@ -808,40 +812,49 @@ class FrameViewer(tk.Toplevel):
             from tkinter import messagebox
             messagebox.showinfo("修改成功", "值已更新")
 
-    def prev_frame(self):
-        """跳转到上一帧"""
+    def _ensure_video_info(self):
+        """懒加载视频 fps、总帧数和帧间隔（委托 extractor，共享缓存）"""
+        if self._video_fps is not None:
+            return
+        self._video_fps, self._total_frames = self.extractor.get_video_info(self.video_path)
+        self._frame_interval = max(1, int(self._video_fps * self.interval))
 
-    def next_frame(self):
-        """跳转到下一帧"""
-        fps = 30
-        self.current_timestamp += 1/fps
-        self.current_frame_num += 1
+    def _update_frame_display(self):
+        """更新帧号和时间戳显示"""
+        self.frame_info_label.config(
+            text=f"帧号: {self.current_frame_num} / {self._total_frames or '?'}")
+        mm = self.current_timestamp // 60
+        ss = self.current_timestamp % 60
+        self.time_label.config(text=f"时间: {int(mm):02d}:{ss:06.3f}")
+        self.title(f"帧查看器 - 帧 {self.current_frame_num} ({int(mm):02d}:{ss:06.3f})")
+
+    def _navigate_to(self, target):
+        """统一导航到指定帧号"""
+        self._ensure_video_info()
+        if target < 0:
+            return
+        if 0 < self._total_frames <= target:
+            return
+        self.current_frame_num = target
+        self.current_timestamp = target / self._video_fps
+        self._update_frame_display()
         self.load_and_display_frame()
-        self.update_frame_info()
 
-    def jump_to_frame(self):
-        """跳转到指定帧号"""
-        try:
-            frame_num = int(self.frame_var.get())
-            fps = 30  # 应该从视频中获取
+    def prev_record_frame(self):
+        """跳转到上一条记录的帧"""
+        self._navigate_to(self.current_frame_num - self._frame_interval)
 
-            self.current_frame_num = frame_num
-            self.current_timestamp = frame_num / fps
-            self.load_and_display_frame()
-            self.update_frame_info()
-        except ValueError:
-            pass
+    def prev_video_frame(self):
+        """跳转到上一视频帧"""
+        self._navigate_to(self.current_frame_num - 1)
 
-    def update_frame_info(self):
-        """更新帧信息显示"""
-        # 更新输入框
-        self.frame_var.set(str(self.current_frame_num))
+    def next_video_frame(self):
+        """跳转到下一视频帧"""
+        self._navigate_to(self.current_frame_num + 1)
 
-        # 更新结果标签（如果有新结果）
-        if self.results:
-            for key, label in self.result_labels.items():
-                value = self.results.get(key, "")
-                label.config(text=str(value))
+    def next_record_frame(self):
+        """跳转到下一条记录的帧"""
+        self._navigate_to(self.current_frame_num + self._frame_interval)
 
     def save_screenshot(self):
         """保存当前显示的帧为图片"""

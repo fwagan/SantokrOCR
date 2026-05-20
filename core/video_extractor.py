@@ -104,6 +104,37 @@ class VideoDigitExtractor:
             'elapsed_time': 0
         }
         self.rotation_angle = 5  # 旋转角度，0=不旋转
+        self._video_info_cache = {}  # {video_path: (fps, total_frames)}
+
+    @staticmethod
+    def build_result(frame, timestamp, temp1_full, temp1_normal, temp1_faulty_digit, temp2):
+        """构建单条识别结果字典"""
+        return {
+            'frame': frame,
+            'timestamp': round(timestamp, 3),
+            'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
+            'temp1_full': temp1_full,
+            'temp1_normal': temp1_normal if temp1_normal else "????",
+            'temp1_faulty_digit': temp1_faulty_digit,
+            'temp2': temp2 if temp2 else "????"
+        }
+
+    def get_video_info(self, video_path):
+        """获取视频 fps 和总帧数（懒加载缓存，只打开一次）"""
+        if video_path in self._video_info_cache:
+            return self._video_info_cache[video_path]
+        cap = cv2.VideoCapture(video_path)
+        fps, total = 30.0, 0
+        if cap.isOpened():
+            _fps = cap.get(cv2.CAP_PROP_FPS)
+            _total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            if _fps and _fps > 0:
+                fps = _fps
+            if _total and _total > 0:
+                total = _total
+        self._video_info_cache[video_path] = (fps, total)
+        return fps, total
 
     def _get_digit_recognizer(self):
         """获取数字识别器实例（懒加载）"""
@@ -156,6 +187,7 @@ class VideoDigitExtractor:
 
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                self._video_info_cache[video_path] = (fps, total_frames)
                 frame_interval = int(fps * interval)
                 # 按 interval 跳帧后的采样点总数，用于进度条
                 total_time_points = (total_frames - 1) // frame_interval + 1
@@ -272,16 +304,14 @@ class VideoDigitExtractor:
                         temp1_full = "????"
 
                     # 记录结果
-                    result = {
-                        'frame': frame_count,
-                        'timestamp': round(timestamp, 3),
-                        'original_timestamp': round(timestamp, 3),
-                        'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
-                        'temp1_full': temp1_full,
-                        'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
-                        'temp1_faulty_digit': faulty_digit,
-                        'temp2': temp2_text if temp2_text else "????"
-                    }
+                    result = self.build_result(
+                        frame=frame_count,
+                        timestamp=timestamp,
+                        temp1_full=temp1_full,
+                        temp1_normal=temp1_normal_text,
+                        temp1_faulty_digit=faulty_digit,
+                        temp2=temp2_text,
+                    )
                     results.append(result)
 
                     # 发射结果回调

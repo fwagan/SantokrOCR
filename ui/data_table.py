@@ -21,8 +21,7 @@ class DataTable(ttk.Frame):
         self.columns = [
             ("frame", "帧号", 80),
             ("timestamp", "时间戳", 100),
-            ("original_timestamp", "原始时间戳", 110),
-            ("time_str", "时间字符串", 120),
+            ("time_str", "时间", 120),
             ("temp1_full", "豆温", 120),
             ("temp1_normal", "豆温正常位", 120),
             ("temp1_faulty_digit", "豆温故障位", 100),
@@ -187,11 +186,6 @@ class DataTable(ttk.Frame):
                     data[col_id] = float(value)
                 except ValueError:
                     data[col_id] = value
-            elif col_id == 'original_timestamp' and value:
-                try:
-                    data[col_id] = float(value)
-                except ValueError:
-                    data[col_id] = value
             elif col_id == 'temp1_faulty_digit' and value:
                 try:
                     data[col_id] = int(value)
@@ -212,16 +206,16 @@ class DataTable(ttk.Frame):
         if not data:
             return
 
-        # 获取帧号和原始时间戳（用于帧定位）
+        # 获取帧号和时间戳（用于帧定位）
         try:
             frame_num = int(data['frame'])
-            original_timestamp = float(data.get('original_timestamp', data.get('timestamp', 0)))
+            timestamp = float(data.get('timestamp', 0))
         except (ValueError, KeyError):
             return
 
-        # 如果有回调函数，调用它（传入原始时间戳用于定位帧）
+        # 如果有回调函数，调用它（传入时间戳用于定位帧）
         if self.on_view_frame_callback:
-            self.on_view_frame_callback(frame_num, original_timestamp, data)
+            self.on_view_frame_callback(frame_num, timestamp, data)
 
     def copy_row(self):
         """复制选中行的数据到剪贴板"""

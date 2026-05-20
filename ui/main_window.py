@@ -546,30 +546,23 @@ class MainWindow(tk.Tk):
                         # 加载识别结果
                         cached_results = self.cache_manager.load_results(video_hash)
                         if cached_results:
-                            # 检查缓存是否为旧格式（缺少 original_timestamp）
-                            if 'original_timestamp' not in cached_results[0]:
-                                self.log("检测到旧格式缓存（缺少original_timestamp），清除并重新处理...")
-                                self.cache_manager.clear_cache(video_hash)
-                                cached_results = None
-                                self.results = []
-                            else:
-                                self.results = cached_results
-                                self.data_table.clear()
-                                for result in self.results:
-                                    self.data_table.add_row(result)
-                                self.log(f"从缓存加载识别结果: {len(cached_results)}条记录")
-                                self.update_status(f"已从缓存加载{len(cached_results)}条记录")
+                            self.results = cached_results
+                            self.data_table.clear()
+                            for result in self.results:
+                                self.data_table.add_row(result)
+                            self.log(f"从缓存加载识别结果: {len(cached_results)}条记录")
+                            self.update_status(f"已从缓存加载{len(cached_results)}条记录")
 
-                                # 从缓存加载事件
-                                cached_events = self.cache_manager.load_events(video_hash)
-                                if cached_events:
-                                    self.events = cached_events
-                                    self.log(f"从缓存加载事件: {len(cached_events)}条")
-                                    self.refresh_events_display()
+                            # 从缓存加载事件
+                            cached_events = self.cache_manager.load_events(video_hash)
+                            if cached_events:
+                                self.events = cached_events
+                                self.log(f"从缓存加载事件: {len(cached_events)}条")
+                                self.refresh_events_display()
 
-                                # 启用异常检测相关控件
-                                self.temp_diff_entry.config(state="normal")
-                                self.detect_abnormal_button.config(state="normal")
+                            # 启用异常检测相关控件
+                            self.temp_diff_entry.config(state="normal")
+                            self.detect_abnormal_button.config(state="normal")
 
                         # 启用开始处理按钮和ROI按钮
                         self.start_button.config(state="normal")
@@ -707,6 +700,7 @@ class MainWindow(tk.Tk):
             fps = cap.get(cv2.CAP_PROP_FPS)
             if fps <= 0:
                 fps = 30.0
+            self.extractor.get_video_info(self.video_path)
 
             # 随机选出100个帧号
             sample_count = min(100, total_frames)
@@ -785,16 +779,14 @@ class MainWindow(tk.Tk):
                     faulty_digit = -1
                     temp1_full = "????"
 
-                result = {
-                    'frame': frame_num,
-                    'timestamp': round(timestamp, 3),
-                    'original_timestamp': round(timestamp, 3),
-                    'time_str': f"{int(timestamp//60):02d}:{int(timestamp%60):02d}:{int((timestamp%1)*1000):03d}",
-                    'temp1_full': temp1_full,
-                    'temp1_normal': temp1_normal_text if temp1_normal_text else "????",
-                    'temp1_faulty_digit': faulty_digit,
-                    'temp2': temp2_text if temp2_text else "????"
-                }
+                result = self.extractor.build_result(
+                    frame=frame_num,
+                    timestamp=timestamp,
+                    temp1_full=temp1_full,
+                    temp1_normal=temp1_normal_text,
+                    temp1_faulty_digit=faulty_digit,
+                    temp2=temp2_text,
+                )
                 self.results.append(result)
 
                 if (i + 1) % 10 == 0 or i == 0:
@@ -1140,6 +1132,7 @@ class MainWindow(tk.Tk):
                 rois=self.rois,
                 frame_num=frame_num,
                 timestamp=timestamp,
+                interval=float(self.interval_var.get()),
                 results=data,
                 events=self.events,
                 on_mark_event_callback=self.on_event_marked,
@@ -1148,7 +1141,7 @@ class MainWindow(tk.Tk):
                 rotate_angle=float(self.rotation_angle_var.get()),
                 on_edit_callback=self.on_edit_record
             )
-            self.log(f"打开帧查看器: 帧号={frame_num}, 原始时间戳={timestamp}")
+            self.log(f"打开帧查看器: 帧号={frame_num}, 时间戳={timestamp}")
         except Exception as e:
             error_msg = f"打开帧查看器失败: {e}"
             messagebox.showerror("错误", error_msg)
@@ -1234,16 +1227,14 @@ class MainWindow(tk.Tk):
                  font=("TkDefaultFont", 10, "bold")).pack(side="left")
 
         # 事件列表（TreeView）
-        columns = ('timestamp', 'original_time', 'type', 'value', 'time_str')
+        columns = ('timestamp', 'type', 'value', 'time_str')
         self.events_tree = ttk.Treeview(self.events_frame, columns=columns, show='headings',
                                         selectmode='extended', height=12)
         self.events_tree.heading('timestamp', text='时间戳')
-        self.events_tree.heading('original_time', text='原始时间戳')
         self.events_tree.heading('type', text='事件类型')
         self.events_tree.heading('value', text='数值')
-        self.events_tree.heading('time_str', text='时间字符串')
+        self.events_tree.heading('time_str', text='时间')
         self.events_tree.column('timestamp', width=80, anchor='center')
-        self.events_tree.column('original_time', width=80, anchor='center')
         self.events_tree.column('type', width=100, anchor='center')
         self.events_tree.column('value', width=60, anchor='center')
         self.events_tree.column('time_str', width=100, anchor='center')
@@ -1275,27 +1266,16 @@ class MainWindow(tk.Tk):
             self.events_tree.delete(item)
 
         for ev in sorted(self.events, key=lambda x: x.get('time', 0)):
-            orig_t = ev.get('time', 0)
+            t = ev.get('time', 0)
 
-            # 原始时间戳（MM:SS）
-            orig_mins = int(orig_t // 60)
-            orig_secs = int(orig_t % 60)
-            orig_time_str = f"{orig_mins:02d}:{orig_secs:02d}"
-
-            # 相对时间戳（MM:SS）
-            rel_mins = int(orig_t // 60)
-            rel_secs = int(orig_t % 60)
-            rel_time_str = f"{rel_mins:02d}:{rel_secs:02d}"
-
-            # 时间字符串（仅非负相对时间戳）
-            if orig_t >= 0:
-                display_time_str = f"{rel_mins:02d}:{rel_secs:02d}:{int((orig_t % 1) * 1000):03d}"
-            else:
-                display_time_str = '-'
+            mins = int(t // 60)
+            secs = int(t % 60)
+            time_str = f"{mins:02d}:{secs:02d}"
+            display_time_str = f"{mins:02d}:{secs:02d}:{int((t % 1) * 1000):03d}"
 
             value_str = f"{int(ev['value'])}%" if ev.get('value') is not None else "-"
             self.events_tree.insert('', 'end',
-                values=(rel_time_str, orig_time_str, ev['type'], value_str, display_time_str))
+                values=(time_str, ev['type'], value_str, display_time_str))
 
     def delete_selected_event(self):
         """删除选中事件（支持多选）"""
@@ -1313,8 +1293,8 @@ class MainWindow(tk.Tk):
             values = self.events_tree.item(item, 'values')
             if not values:
                 continue
-            orig_time_str = values[1]  # 原始时间戳列
-            ev_type = values[2]        # 事件类型列
+            time_str = values[0]  # 时间戳列
+            ev_type = values[1]        # 事件类型列
 
             # 在 events 列表中查找匹配的事件
             for i, ev in enumerate(self.events):
@@ -1322,10 +1302,10 @@ class MainWindow(tk.Tk):
                 ev_mins = int(t // 60)
                 ev_secs = int(t % 60)
                 ev_time_str = f"{ev_mins:02d}:{ev_secs:02d}"
-                if ev['type'] == ev_type and ev_time_str == orig_time_str:
-                    has_value = values[3] != "-"
+                if ev['type'] == ev_type and ev_time_str == time_str:
+                    has_value = values[2] != "-"
                     if has_value:
-                        val_str = values[3].rstrip('%')
+                        val_str = values[2].rstrip('%')
                         ev_val = ev.get('value')
                         if ev_val is not None and int(ev_val) == int(val_str):
                             indices_to_delete.add(i)
