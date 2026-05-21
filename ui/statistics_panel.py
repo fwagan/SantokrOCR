@@ -239,23 +239,21 @@ class StatisticsPanel(ttk.Frame):
                        command=self.recalculate)
         self.show_raw_checkbtn.pack(anchor="w", pady=1)
 
+        self.show_hf_var = tk.BooleanVar(value=not realtime_mode)
+        self.show_event_markers_var = tk.BooleanVar(value=not realtime_mode)
+        self.show_phase_bar_var = tk.BooleanVar(value=not realtime_mode)
+        self.exclude_outside_var = tk.BooleanVar(value=False)
+
         if not realtime_mode:
-            self.show_hf_var = tk.BooleanVar(value=True)
             ttk.Checkbutton(options_frame, text="显示火力/风门", variable=self.show_hf_var,
                            command=self.recalculate).pack(anchor="w", pady=1)
-
-            self.show_event_markers_var = tk.BooleanVar(value=True)
             ttk.Checkbutton(options_frame, text="显示事件标记", variable=self.show_event_markers_var,
                            command=self.recalculate).pack(anchor="w", pady=1)
-
-        self.show_phase_bar_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(options_frame, text="显示阶段条", variable=self.show_phase_bar_var,
-                       command=self.recalculate).pack(anchor="w", pady=1)
-
-        self.exclude_outside_var = tk.BooleanVar(value=False)
-        self.exclude_outside_var.trace_add('write', self._on_exclude_outside_changed)
-        ttk.Checkbutton(options_frame, text="排除阶段外数据", variable=self.exclude_outside_var,
-                       command=self.recalculate).pack(anchor="w", pady=1)
+            ttk.Checkbutton(options_frame, text="显示阶段条", variable=self.show_phase_bar_var,
+                           command=self.recalculate).pack(anchor="w", pady=1)
+            self.exclude_outside_var.trace_add('write', self._on_exclude_outside_changed)
+            ttk.Checkbutton(options_frame, text="排除阶段外数据", variable=self.exclude_outside_var,
+                           command=self.recalculate).pack(anchor="w", pady=1)
 
     def set_results(self, results):
         """设置结果数据并更新图表"""
@@ -368,6 +366,10 @@ class StatisticsPanel(ttk.Frame):
         """
         使用Savitzky-Golay滤波平滑数据
 
+        右边界外推：实时场景下Savgol需要(窗口半径)个未来数据才能形成对称窗口。
+        在调用Savgol之前，用最近一个窗口的数据做线性回归外推rt半径个点，
+        使所有真实数据点拥有完整对称窗口，平滑后再丢弃外推部分。
+
         Args:
             time: 时间数组（等间隔）
             values: 值数组
@@ -375,7 +377,7 @@ class StatisticsPanel(ttk.Frame):
             polyorder: 多项式阶数
 
         Returns:
-            平滑后的值数组
+            平滑后的值数组（与原数据等长）
         """
         if len(values) < window_seconds:
             return values
@@ -389,8 +391,20 @@ class StatisticsPanel(ttk.Frame):
 
             if window_points <= len(values):
                 try:
-                    smoothed = savgol_filter(values, window_points, polyorder)
-                    return smoothed
+                    radius = (window_points - 1) // 2
+                    if radius > 0 and len(values) >= window_points:
+                        # 用最近一个窗口的数据做线性回归外推 radius 个点
+                        y_fit = values[-window_points:]
+                        x_fit = np.arange(window_points)
+                        coeffs = np.polyfit(x_fit, y_fit, 1)
+                        x_extrap = np.arange(window_points, window_points + radius)
+                        y_extrap = coeffs[0] * x_extrap + coeffs[1]
+                        extended = np.concatenate([values, y_extrap])
+                    else:
+                        extended = values
+
+                    smoothed = savgol_filter(extended, window_points, polyorder)
+                    return smoothed[:len(values)]
                 except:
                     pass
 

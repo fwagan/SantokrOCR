@@ -340,20 +340,22 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _select_roi(self):
         """从当前数据源捕获一帧用于ROI框选"""
+        # 先停止预览，释放摄像头独占连接
+        self._stop_preview()
+
         source = self._current_source
-        cap = cv2.VideoCapture(source)
+        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
         if not cap.isOpened():
             messagebox.showerror("错误", "无法打开数据源")
+            self._start_preview()
             return
 
         ret, frame = cap.read()
         cap.release()
         if not ret:
             messagebox.showerror("错误", "无法从数据源读取帧")
+            self._start_preview()
             return
-
-        # 恢复暂存的预览
-        self._stop_preview()
 
         try:
             from ui.roi_selector import RoiSelector
@@ -399,7 +401,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.set_results([])
         self.stats_panel.set_update_interval(interval)
 
-        # 创建处理线程
+        # 先停止预览，释放摄像头独占连接，再创建处理线程
+        self._stop_preview()
+
         self.processing_thread = CameraProcessingThread(
             extractor=self.extractor,
             source=self._current_source,
@@ -415,9 +419,6 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 启动
         self.processing_thread.start()
-
-        # 停止独立预览循环，改由处理线程 frame_signal 驱动预览
-        self._stop_preview()
 
         # 更新UI
         self.start_btn.config(state="disabled")

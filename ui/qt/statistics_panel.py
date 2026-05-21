@@ -322,6 +322,7 @@ class StatisticsPanel(QWidget):
         return resampled_time, resampled_values
 
     def smooth_data(self, time, values, window_seconds, polyorder):
+        """使用Savitzky-Golay滤波平滑数据，右边界线性外推避免跳动"""
         if len(values) < window_seconds:
             return values
         if len(time) > 1:
@@ -331,7 +332,18 @@ class StatisticsPanel(QWidget):
             window_points = max(polyorder + 1, window_points)
             if window_points <= len(values):
                 try:
-                    return savgol_filter(values, window_points, polyorder)
+                    radius = (window_points - 1) // 2
+                    if radius > 0 and len(values) >= window_points:
+                        y_fit = values[-window_points:]
+                        x_fit = np.arange(window_points)
+                        coeffs = np.polyfit(x_fit, y_fit, 1)
+                        x_extrap = np.arange(window_points, window_points + radius)
+                        y_extrap = coeffs[0] * x_extrap + coeffs[1]
+                        extended = np.concatenate([values, y_extrap])
+                    else:
+                        extended = values
+                    smoothed = savgol_filter(extended, window_points, polyorder)
+                    return smoothed[:len(values)]
                 except Exception:
                     pass
         return values
