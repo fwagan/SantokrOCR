@@ -61,7 +61,7 @@ class RoiSelector(tk.Toplevel):
         STATUS_DONE: '#00CC00',       # 绿色
     }
 
-    def __init__(self, parent, video_path):
+    def __init__(self, parent, video_path=None, frame=None):
         super().__init__(parent)
         self.parent = parent
 
@@ -73,8 +73,8 @@ class RoiSelector(tk.Toplevel):
             'temp2_normal_lastdigit',
         ]
 
-        # 读取视频帧（第10秒位置）
-        self.frame_rgb, self.frame_size = self._read_frame(video_path)
+        # 读取视频帧：优先使用传入的frame，否则从video_path读取
+        self.frame_rgb, self.frame_size = self._read_frame(video_path, frame)
         self.img_h, self.img_w = self.frame_size
 
         # 状态
@@ -135,20 +135,27 @@ class RoiSelector(tk.Toplevel):
 
     # ──────── 读取帧 ────────
 
-    def _read_frame(self, video_path):
-        """读取视频第10秒的帧，返回(RGB数组, (h,w))"""
+    def _read_frame(self, video_path=None, frame=None):
+        """读取视频帧，返回(RGB数组, (h,w))
+
+        优先使用传入的 frame (numpy BGR数组)；若无则从 video_path 读取第10秒帧。
+        """
+        if frame is not None:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            return frame_rgb, frame.shape[:2]
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f'无法打开视频: {video_path}')
         fps = cap.get(cv2.CAP_PROP_FPS)
         target_frame = int(10 * fps)
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-        ret, frame = cap.read()
+        ret, frame_bgr = cap.read()
         cap.release()
         if not ret:
             raise ValueError('无法读取视频第10秒的帧')
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame_rgb, frame.shape[:2]
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        return frame_rgb, frame_bgr.shape[:2]
 
     # ──────── 创建UI ────────
 

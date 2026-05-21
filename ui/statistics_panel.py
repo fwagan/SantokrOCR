@@ -23,6 +23,7 @@ from matplotlib.transforms import blended_transform_factory
 import warnings
 import os
 import json
+import math
 warnings.filterwarnings('ignore')
 
 # --- ROR 非均匀 Y 轴配置 ---
@@ -114,6 +115,20 @@ class StatisticsPanel(ttk.Frame):
         self.ror_time = None
         self.ror_values = None
 
+        # 实时更新节流
+        self._update_interval = 0.25  # 处理线程的采样间隔，用于计算每1秒的帧数
+
+        # 图表状态
+        self._chart_built = False
+        self._line_temp1 = None
+        self._line_temp1_raw = None
+        self._line_temp2 = None
+        self._line_temp2_raw = None
+        self._line_ror = None
+        self._line_heater = None
+        self._line_fan = None
+        self._event_scatter = None
+
         # 鼠标追踪相关
         self.cursor_line = None
         self.cursor_text = None
@@ -147,11 +162,23 @@ class StatisticsPanel(ttk.Frame):
         # 图表框架
         chart_frame = ttk.Frame(self)
         chart_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+        chart_frame.pack_propagate(False)  # 阻止FigureCanvasTkAgg收缩父容器
+        self.pack_propagate(False)  # 阻止自身被收缩
 
         # 创建Matplotlib图形
         self.fig = Figure(figsize=(14, 8), dpi=150)
         self.canvas = FigureCanvasTkAgg(self.fig, chart_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
+
+        # 初始空白图表（等待数据）
+        ax = self.fig.add_subplot(111)
+        ax.text(0.5, 0.5, '等待实时数据...',
+               horizontalalignment='center', verticalalignment='center',
+               transform=ax.transAxes, fontsize=14, color='#888888')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        self.fig.tight_layout()
+        self.canvas.draw()
 
         # 状态栏
         status_frame = ttk.Frame(self)
@@ -164,8 +191,13 @@ class StatisticsPanel(ttk.Frame):
         self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.canvas.mpl_connect('axes_leave_event', self._hide_cursor_elements)
 
-    def create_controls(self, parent):
-        """在 parent 中创建纵向排列的控制参数"""
+    def create_controls(self, parent, realtime_mode=False):
+        """在 parent 中创建纵向排列的控制参数
+
+        Args:
+            parent: 父容器
+            realtime_mode: True=仅显示"显示原曲线"checkbox，隐藏离线功能
+        """
         # 控制面板
         control_frame = ttk.LabelFrame(parent, text="控制参数")
         control_frame.pack(fill="x", padx=5, pady=5)
@@ -207,13 +239,14 @@ class StatisticsPanel(ttk.Frame):
                        command=self.recalculate)
         self.show_raw_checkbtn.pack(anchor="w", pady=1)
 
-        self.show_hf_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(options_frame, text="显示火力/风门", variable=self.show_hf_var,
-                       command=self.recalculate).pack(anchor="w", pady=1)
+        if not realtime_mode:
+            self.show_hf_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(options_frame, text="显示火力/风门", variable=self.show_hf_var,
+                           command=self.recalculate).pack(anchor="w", pady=1)
 
-        self.show_event_markers_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(options_frame, text="显示事件标记", variable=self.show_event_markers_var,
-                       command=self.recalculate).pack(anchor="w", pady=1)
+            self.show_event_markers_var = tk.BooleanVar(value=True)
+            ttk.Checkbutton(options_frame, text="显示事件标记", variable=self.show_event_markers_var,
+                           command=self.recalculate).pack(anchor="w", pady=1)
 
         self.show_phase_bar_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(options_frame, text="显示阶段条", variable=self.show_phase_bar_var,
@@ -230,6 +263,34 @@ class StatisticsPanel(ttk.Frame):
         if self.results:
             self.process_data()
             self.plot_charts()
+
+    def set_update_interval(self, interval_sec):
+        """设置处理线程的采样间隔，用于计算图表更新节流（ceil(1s / interval) 帧更新一次）"""
+        self._update_interval = max(0.01, interval_sec)
+
+    def append_data(self, result_dict):
+        """增量追加单条结果并节流更新图表（用于实时识别）
+
+        图表未建立前每条都尝试构建；建立后每约1秒增量更新。
+        """
+        self.results.append(result_dict)
+
+        if not hasattr(self, '_live_update_count'):
+            self._live_update_count = 0
+
+        self._live_update_count += 1
+
+        # 基于采样间隔计算每次更新的帧数：ceil(1.0 / interval)，保证 1 秒左右更新一次
+        frames_per_update = max(1, math.ceil(1.0 / self._update_interval))
+        threshold = 1 if not self._chart_built else frames_per_update
+
+        if self._live_update_count >= threshold:
+            self._live_update_count = 0
+            self.process_data()
+            if not self._chart_built:
+                self._full_redraw()
+            else:
+                self._incremental_update()
 
     def set_events(self, events, heater_initial=50.0, fan_initial=80.0):
         """设置事件数据（用于.alog导出）"""
@@ -518,21 +579,7 @@ class StatisticsPanel(ttk.Frame):
         # 重置 events 为原始版本（每次重算时还原，确保 toggle 无累积偏移）
         self.events = list(self._original_events)
 
-        self.status_var.set(f"处理完成：{len(self.timestamps)}个有效点，{len(self.resampled_time)}个重采样点")
-
-    def plot_charts(self):
-        """绘制图表（三个曲线在同一坐标系）"""
-        self.fig.clear()
-        if len(self.timestamps) < 2:
-            ax = self.fig.add_subplot(111)
-            ax.text(0.5, 0.5, '数据不足，无法绘制图表',
-                   horizontalalignment='center', verticalalignment='center',
-                   transform=ax.transAxes, fontsize=14)
-            self._blit_bg = None
-            self.canvas.draw()
-            return
-
-        # 排除阶段外数据：过滤并重基，使入豆位于 x=0
+        # 排除阶段外数据：过滤并重基（从 plot_charts 移入，保持数据与视图分离）
         if hasattr(self, 'exclude_outside_var') and self.exclude_outside_var.get():
             charge_t = None
             drop_t = None
@@ -543,286 +590,350 @@ class StatisticsPanel(ttk.Frame):
                     drop_t = ev.get('time', 0.0)
             if charge_t is not None and drop_t is not None and drop_t > charge_t:
                 mask = (self.resampled_time >= charge_t) & (self.resampled_time <= drop_t)
-                self.resampled_time = self.resampled_time[mask] - charge_t  # 重基
+                self.resampled_time = self.resampled_time[mask] - charge_t
                 self.smooth_temp1 = self.smooth_temp1[mask]
                 self.smooth_temp2 = self.smooth_temp2[mask]
                 if self.ror_time is not None and len(self.ror_time) > 0:
                     ror_mask = (self.ror_time >= charge_t) & (self.ror_time <= drop_t)
                     if np.any(ror_mask):
-                        self.ror_time = self.ror_time[ror_mask] - charge_t  # 重基
+                        self.ror_time = self.ror_time[ror_mask] - charge_t
                         self.ror_values = self.ror_values[ror_mask]
-                # 重基 events — 从原始 events 重基，避免多次 toggle 累积偏移
                 self.events = [{**ev, 'time': ev.get('time', 0) - charge_t} for ev in self._original_events]
-                # 确保 events 时间在数据范围内，使过滤后的数据集自洽
                 t_min = self.resampled_time[0]
                 t_max = self.resampled_time[-1]
                 for ev in self.events:
                     ev['time'] = max(t_min, min(ev['time'], t_max))
 
+        self.status_var.set(f"处理完成：{len(self.timestamps)}个有效点，{len(self.resampled_time)}个重采样点")
+
+    # ── 图表绘制（全量 / 增量） ──
+
+    def plot_charts(self):
+        """绘制图表 — 全量重建（向后兼容，用于手动 recalculate）"""
+        self._full_redraw()
+
+    def _full_redraw(self):
+        """全量重建图表：清空 figure，重新创建所有 artist"""
+        self.fig.clear()
+        self._chart_built = False
+
+        if len(self.timestamps) < 2:
+            ax = self.fig.add_subplot(111)
+            ax.text(0.5, 0.5, '数据不足，无法绘制图表',
+                   horizontalalignment='center', verticalalignment='center',
+                   transform=ax.transAxes, fontsize=14)
+            self._blit_bg = None
+            self.canvas.draw()
+            return
+
         # 创建单个子图
         ax = self.fig.add_subplot(111)
-        self.main_ax = ax  # 保存主坐标轴引用
+        self.main_ax = ax
 
-        # 设置颜色
         temp1_color = 'tab:blue'
         temp2_color = 'tab:orange'
         ror_color = 'tab:red'
 
-        # 转换时间为mm:ss格式用于横坐标
-        def seconds_to_mmss(seconds):
-            """将秒转换为mm:ss格式"""
-            minutes = int(seconds // 60)
-            secs = int(seconds % 60)
-            return f"{minutes:02d}:{secs:02d}"
+        # 1 & 2. 创建 line 对象并保存引用
+        self._line_temp1, = ax.plot([], [], color=temp1_color, linewidth=2, label='豆温（平滑）')
+        self._line_temp1.set_data(self.resampled_time, self.smooth_temp1)
 
-        # 1. 绘制豆温曲线（平滑）
-        line1, = ax.plot(self.resampled_time, self.smooth_temp1,
-                        color=temp1_color, linewidth=2, label='豆温（平滑）')
-        line1_raw = None
+        self._line_temp1_raw = None
         if self.show_raw_var.get():
-            line1_raw, = ax.plot(self.timestamps, self.temp1_values,
-                               color=temp1_color, linewidth=0.8, alpha=0.25, label='豆温（原始）')
+            self._line_temp1_raw, = ax.plot([], [], color=temp1_color, linewidth=0.8, alpha=0.25, label='豆温（原始）')
+            self._line_temp1_raw.set_data(self.timestamps, self.temp1_values)
 
-        # 2. 绘制风温曲线（平滑）
-        line2, = ax.plot(self.resampled_time, self.smooth_temp2,
-                        color=temp2_color, linewidth=2, label='风温（平滑）')
-        line2_raw = None
+        self._line_temp2, = ax.plot([], [], color=temp2_color, linewidth=2, label='风温（平滑）')
+        self._line_temp2.set_data(self.resampled_time, self.smooth_temp2)
+
+        self._line_temp2_raw = None
         if self.show_raw_var.get():
-            line2_raw, = ax.plot(self.timestamps, self.temp2_values,
-                               color='darkorange', linewidth=0.8, alpha=0.25, label='风温（原始）')
+            self._line_temp2_raw, = ax.plot([], [], color='darkorange', linewidth=0.8, alpha=0.25, label='风温（原始）')
+            self._line_temp2_raw.set_data(self.timestamps, self.temp2_values)
 
-        # 3. 绘制ROR曲线（如果有数据）
-        self.ror_axis = None  # 存储ROR轴的引用
+        # 3. ROR 曲线
+        self.ror_axis = None
+        self._line_ror = None
         if len(self.ror_values) > 0:
-            # 创建第二个Y轴用于ROR
             self.ror_axis = ax.twinx()
-            line3, = self.ror_axis.plot(self.ror_time, self.ror_values,
-                            color=ror_color, linewidth=2, label='ROR')
+            self._line_ror, = self.ror_axis.plot([], [], color=ror_color, linewidth=2, label='ROR')
+            self._line_ror.set_data(self.ror_time, self.ror_values)
             self.ror_axis.set_ylabel('ROR (℃/min)', color=ror_color)
-
-            # 非均匀 Y 轴：展开正半区（0~30），压缩负半区（0~-120）
             self.ror_axis.set_yscale('function', functions=(ror_forward, ror_inverse))
             self.ror_axis.set_ylim(*ROR_YLIM)
-            self.ror_axis.yaxis.set_major_locator(
-                matplotlib.ticker.FixedLocator(ROR_CUSTOM_TICKS))
-            self.ror_axis.yaxis.set_minor_locator(
-                matplotlib.ticker.NullLocator())
-
+            self.ror_axis.yaxis.set_major_locator(matplotlib.ticker.FixedLocator(ROR_CUSTOM_TICKS))
+            self.ror_axis.yaxis.set_minor_locator(matplotlib.ticker.NullLocator())
             self.ror_axis.tick_params(axis='y', labelcolor=ror_color)
             self.ror_axis.axhline(y=0, color='gray', linestyle='--', alpha=0.5)
 
-            # 合并图例
-            lines = [line1, line2, line3]
-            labels = [line.get_label() for line in lines]
-            if line1_raw is not None:
-                lines.append(line1_raw)
-                labels.append(line1_raw.get_label())
-            if line2_raw is not None:
-                lines.append(line2_raw)
-                labels.append(line2_raw.get_label())
-        else:
-            lines = [line1, line2]
-            labels = [line.get_label() for line in lines]
-            if line1_raw is not None:
-                lines.append(line1_raw)
-                labels.append(line1_raw.get_label())
-            if line2_raw is not None:
-                lines.append(line2_raw)
-                labels.append(line2_raw.get_label())
-
-        # 4. 绘制火力/风门曲线（第三条Y轴）
+        # 4. 火力/风门曲线
         self.hf_axis = None
-        heater_data = None
-        fan_data = None
+        self._line_heater = None
+        self._line_fan = None
+        heater_data, fan_data = None, None
         if self.show_hf_var.get():
             heater_data, fan_data = self.build_heater_fan_data()
 
         if heater_data is not None and fan_data is not None:
             self.hf_axis = ax.twinx()
-            # 有ROR轴时偏移到右侧，无ROR轴时保持默认位置
             hf_pos = 1.05 if self.ror_axis is not None else 1.00
             self.hf_axis.spines['right'].set_position(('axes', hf_pos))
-
-            line4, = self.hf_axis.plot(self.resampled_time, heater_data,
-                                       color='green', linewidth=2, linestyle='-', label='火力')
-            line5, = self.hf_axis.plot(self.resampled_time, fan_data,
-                                       color='purple', linewidth=2, linestyle='--', label='风门')
-
+            self._line_heater, = self.hf_axis.plot([], [], color='green', linewidth=2, linestyle='-', label='火力')
+            self._line_fan, = self.hf_axis.plot([], [], color='purple', linewidth=2, linestyle='--', label='风门')
+            self._line_heater.set_data(self.resampled_time, heater_data)
+            self._line_fan.set_data(self.resampled_time, fan_data)
             self.hf_axis.set_ylabel('火力/风门 (%)', color='green')
             self.hf_axis.set_ylim(0, 200)
             self.hf_axis.tick_params(axis='y', labelcolor='green')
 
-            # 添加到图例
-            lines.extend([line4, line5])
-            labels.extend(['火力', '风门'])
+        # 构建图例 line 列表
+        all_lines = [self._line_temp1, self._line_temp2]
+        if self._line_ror is not None:
+            all_lines.append(self._line_ror)
+        if self._line_temp1_raw is not None:
+            all_lines.append(self._line_temp1_raw)
+        if self._line_temp2_raw is not None:
+            all_lines.append(self._line_temp2_raw)
+        if self._line_heater is not None:
+            all_lines.extend([self._line_heater, self._line_fan])
 
-        # 设置横坐标为mm:ss格式
-        if len(self.resampled_time) > 0:
-            # 选择一些刻度位置
-            time_range = self.resampled_time[-1] - self.resampled_time[0]
-            if time_range > 0:
-                num_ticks = min(10, len(self.resampled_time))
-                tick_indices = np.linspace(0, len(self.resampled_time)-1, num_ticks, dtype=int)
-                tick_times = self.resampled_time[tick_indices]
-                tick_labels = [seconds_to_mmss(t) for t in tick_times]
+        # X 轴刻度：固定每30秒一个标点
+        ax.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(30))
+        ax.xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(
+            lambda s, _: f"{int(s // 60):02d}:{int(s % 60):02d}"))
+        ax.tick_params(axis='x', rotation=45)
 
-                ax.set_xticks(tick_times)
-                ax.set_xticklabels(tick_labels, rotation=45)
-
-        # 设置标签和标题
         ax.set_xlabel('时间 (mm:ss)')
         ax.set_ylabel('温度 (℃)', color=temp1_color)
         ax.tick_params(axis='y', labelcolor=temp1_color)
         ax.grid(True, alpha=0.3)
         ax.set_title('温度曲线和ROR分析', y=1.18)
+        ax.set_ylim(100, 230)
+        ax.set_xlim(0, 480)
+        ax.legend(all_lines, [l.get_label() for l in all_lines], loc='upper right')
 
-        # 添加图例
-        ax.legend(lines, labels, loc='upper right')
-
-        # 5. 在豆温曲线上标记事件点
+        # 5. 事件标记
+        self._event_scatter = None
         self.event_marker_data = []
         if self.show_event_markers_var.get():
             markers = self.get_event_markers()
             if markers:
                 xs = [m[0] for m in markers]
                 ys = [m[1] for m in markers]
-                ax.scatter(xs, ys, color='black', s=50, zorder=5, marker='o')
-                self.event_marker_data = markers  # 用于鼠标悬浮检测
+                self._event_scatter = ax.scatter(xs, ys, color='black', s=50, zorder=5, marker='o')
+                self.event_marker_data = markers
 
-        # 6. 绘制阶段划分条（在坐标系上方，图表名称下方）
-        if self.show_phase_bar_var.get():
-            bounds = self.find_phase_boundaries()
-            if bounds is not None:
-                t_charge, t_p1, t_fcs, t_drop = bounds
-                # 横条范围：入豆 → 烘焙结束
-                bar_x_start = t_charge
-                bar_x_end = t_drop
-                bar_width = bar_x_end - bar_x_start
+        # 6. 阶段条
+        self._draw_phase_bar(ax)
 
-                if bar_width > 0:
-                    # 各段时间和百分比
-                    p1_dur = t_p1 - t_charge
-                    p2_dur = (t_fcs - t_p1) if t_fcs is not None else 0
-                    p3_dur = t_drop - (t_fcs if t_fcs is not None else t_p1)
-                    p1_pct = p1_dur / bar_width * 100
-                    p2_pct = p2_dur / bar_width * 100
-                    p3_pct = 100 - p1_pct - p2_pct
-
-                    # 计算各阶段平均ROR（基于阶段温差/时间，而非平均瞬时ROR）
-                    def _phase_avg_ror(start_t, end_t):
-                        if start_t is None or end_t is None or end_t <= start_t:
-                            return None
-                        t_start = _temp_at(start_t)
-                        t_end = _temp_at(end_t)
-                        if t_start is None or t_end is None:
-                            return None
-                        dur_min = (end_t - start_t) / 60
-                        if dur_min <= 0:
-                            return None
-                        return (t_end - t_start) / dur_min
-
-                    # 获取指定时间点的平滑温度
-                    def _temp_at(t):
-                        if self.resampled_time is None or self.smooth_temp1 is None or t is None:
-                            return None
-                        idx = np.searchsorted(self.resampled_time, t)
-                        if idx < len(self.smooth_temp1):
-                            return float(self.smooth_temp1[idx])
-                        return None
-
-                    # 找回升点（入豆后豆温最低点）= 回温点
-                    revert_time = t_charge
-                    if self.resampled_time is not None and self.smooth_temp1 is not None:
-                        ci = np.searchsorted(self.resampled_time, t_charge)
-                        pi = np.searchsorted(self.resampled_time, t_p1)
-                        if ci < pi < len(self.smooth_temp1):
-                            seg_min_idx = ci + np.argmin(self.smooth_temp1[ci:pi])
-                            revert_time = self.resampled_time[seg_min_idx]
-                    p1_avg_ror = _phase_avg_ror(revert_time, t_p1)
-                    p2_avg_ror = _phase_avg_ror(t_p1, t_fcs) if t_fcs else None
-                    p3_avg_ror = _phase_avg_ror(t_fcs if t_fcs is not None else t_p1, t_drop)
-
-                    # 第三阶段温差
-                    t_fcs_val = _temp_at(t_fcs) if t_fcs else None
-                    t_drop_val = _temp_at(t_drop)
-                    p3_dt = (t_drop_val - t_fcs_val) if (t_fcs_val is not None and t_drop_val is not None) else None
-
-                    # 构建标签
-                    p1_label = f"脱水期\n{int(p1_dur//60)}:{int(p1_dur%60):02d} ({p1_pct:.0f}%)"
-                    if p1_avg_ror is not None:
-                        p1_label += f"\n升温段ROR:{p1_avg_ror:.1f}"
-
-                    p2_label = ""
-                    if t_fcs:
-                        p2_label = f"美拉德期\n{int(p2_dur//60)}:{int(p2_dur%60):02d} ({p2_pct:.0f}%)"
-                        if p2_avg_ror is not None:
-                            p2_label += f"\n平均ROR:{p2_avg_ror:.1f}"
-
-                    p3_label = f"发展期\n{int(p3_dur//60)}:{int(p3_dur%60):02d} ({p3_pct:.0f}%)"
-                    p3_extra = []
-                    if p3_dt is not None:
-                        p3_extra.append(f"ΔT:{p3_dt:.1f}℃")
-                    if p3_avg_ror is not None:
-                        p3_extra.append(f"ROR:{p3_avg_ror:.1f}")
-                    if p3_extra:
-                        p3_label += "\n" + " ".join(p3_extra)
-
-                    segments = [
-                        # 脱水期绿、美拉德期黄、发展期咖啡色（低饱和度）
-                        (t_charge, t_p1, '#81C784', p1_label),
-                        (t_p1, t_fcs if t_fcs is not None else t_drop, '#FFD54F', p2_label),
-                        (t_fcs if t_fcs is not None else t_drop, t_drop, '#A0522D', p3_label),
-                    ]
-
-                    # 在坐标系上方绘制（y>1.0为axes坐标上方区域）
-                    bar_bottom = 1.02  # axes坐标，略高于坐标系顶部
-                    bar_height = 0.09
-
-                    # 阶段条背景面板
-                    transform = blended_transform_factory(ax.transData, ax.transAxes)
-                    bg_panel = Rectangle(
-                        (bar_x_start, bar_bottom - 0.01), bar_width, bar_height + 0.02,
-                        facecolor='#E8E8E8', edgecolor='#CCCCCC', linewidth=0.5,
-                        transform=transform, zorder=0, clip_on=False
-                    )
-                    ax.add_patch(bg_panel)
-
-                    for seg_start, seg_end, color, label in segments:
-                        if seg_end is None or seg_end <= seg_start:
-                            continue
-                        # 绘制色块
-                        rect = Rectangle((seg_start, bar_bottom), seg_end - seg_start, bar_height,
-                                        facecolor=color, alpha=0.85, edgecolor='none',
-                                        transform=transform, zorder=1, clip_on=False)
-                        ax.add_patch(rect)
-
-                        # 标签文字
-                        mid = (seg_start + seg_end) / 2
-                        ax.text(mid, bar_bottom + bar_height / 2, label,
-                               transform=blended_transform_factory(ax.transData, ax.transAxes),
-                               ha='center', va='center', fontsize=6.5, fontweight='bold')
-
-                    # 分界虚线（浅黄色）
-                    for boundary in [t_p1]:
-                        if t_charge < boundary < t_drop:
-                            ax.axvline(x=boundary, color='lightyellow', linestyle='--', linewidth=2, alpha=0.8)
-                    if t_fcs is not None and t_charge < t_fcs < t_drop:
-                        ax.axvline(x=t_fcs, color='lightyellow', linestyle='--', linewidth=2, alpha=0.8)
-
-        # 调整布局（为阶段条腾出上方空间）
         self.fig.tight_layout()
         adj = {}
         if self.show_phase_bar_var.get():
-            # 自适应top：根据图高保证阶段条有足够空间，至少1.2英寸
             fig_h = self.fig.get_figheight()
             adj['top'] = max(0.70, 1.0 - 1.4 / fig_h)
         if adj:
             self.fig.subplots_adjust(**adj)
 
-        # 初始化鼠标追踪元素（一次性创建，后续复用）
         self._create_cursor_artists(ax)
-
         self._setup_blit()
+        self._chart_built = True
+
+    def _incremental_update(self):
+        """增量更新：仅更新 line 数据 + 轴范围 + 刻度，不重建 figure 结构"""
+        if not getattr(self, '_chart_built', False) or self.main_ax is None:
+            self._full_redraw()
+            return
+
+        # 如果 ROR/HF 数据首次出现（之前的全量构建没创建对应 axis），回退全量重建
+        if (self._line_ror is None and len(self.ror_values) > 0) or \
+           (self._line_heater is None and self.show_hf_var.get()):
+            self._full_redraw()
+            return
+
+        if len(self.timestamps) < 2:
+            return
+
+        ax = self.main_ax
+
+        # 更新 line 数据
+        self._line_temp1.set_data(self.resampled_time, self.smooth_temp1)
+        self._line_temp2.set_data(self.resampled_time, self.smooth_temp2)
+        if self._line_temp1_raw is not None:
+            self._line_temp1_raw.set_data(self.timestamps, self.temp1_values)
+        if self._line_temp2_raw is not None:
+            self._line_temp2_raw.set_data(self.timestamps, self.temp2_values)
+        if self._line_ror is not None:
+            self._line_ror.set_data(self.ror_time, self.ror_values)
+        if self._line_heater is not None:
+            h_data, f_data = self.build_heater_fan_data()
+            if h_data is not None:
+                self._line_heater.set_data(self.resampled_time, h_data)
+                self._line_fan.set_data(self.resampled_time, f_data)
+
+        # X 轴刻度由 MultipleLocator(30) 自动管理，无需手动更新
+
+        # 更新轴范围：只扩展不收缩，避免坐标轴抖动
+        ax.relim()
+        xlim, ylim = ax.get_xlim(), ax.get_ylim()
+        dl = ax.dataLim
+        ax.set_xlim(min(xlim[0], dl.x0), max(xlim[1], dl.x1))
+        ax.set_ylim(min(ylim[0], dl.y0), max(ylim[1], dl.y1))
+        if self.ror_axis is not None:
+            self.ror_axis.relim()
+            self.ror_axis.autoscale_view(scalex=True, scaley=False)
+
+        # 清除旧的阶段条 + 事件标记 + 图例，重绘
+        self._clear_decorations(ax)
+        self._draw_phase_bar(ax)
+        if self.show_event_markers_var.get():
+            markers = self.get_event_markers()
+            if markers:
+                xs = [m[0] for m in markers]
+                ys = [m[1] for m in markers]
+                self._event_scatter = ax.scatter(xs, ys, color='black', s=50, zorder=5, marker='o')
+                self.event_marker_data = markers
+
+        self._blit_bg = None  # 失效 blit 缓存
+        self.canvas.draw()
+
+    def _clear_decorations(self, ax):
+        """清除阶段条、事件标记、图例等可重新生成的装饰元素"""
+        for p in list(ax.patches):
+            p.remove()
+        for t in list(ax.texts):
+            if t not in (self.cursor_info,):
+                t.remove()
+        for c in list(ax.lines):
+            if c not in (self._line_temp1, self._line_temp2,
+                         self._line_temp1_raw, self._line_temp2_raw,
+                         self.cursor_line):
+                c.remove()
+        # 清除旧的 scatter
+        for coll in list(ax.collections):
+            coll.remove()
+        if ax.get_legend() is not None:
+            ax.get_legend().remove()
+        # 更新图例
+        all_lines = [self._line_temp1, self._line_temp2]
+        if self._line_ror is not None:
+            all_lines.append(self._line_ror)
+        if self._line_temp1_raw is not None:
+            all_lines.append(self._line_temp1_raw)
+        if self._line_temp2_raw is not None:
+            all_lines.append(self._line_temp2_raw)
+        if self._line_heater is not None:
+            all_lines.extend([self._line_heater, self._line_fan])
+        ax.legend(all_lines, [l.get_label() for l in all_lines], loc='upper right')
+
+    def _draw_phase_bar(self, ax):
+        """绘制阶段划分条（从 _full_redraw 提取，增量时复用）"""
+        if not self.show_phase_bar_var.get():
+            return
+        bounds = self.find_phase_boundaries()
+        if bounds is None:
+            return
+        t_charge, t_p1, t_fcs, t_drop = bounds
+        bar_x_start = t_charge
+        bar_x_end = t_drop
+        bar_width = bar_x_end - bar_x_start
+        if bar_width <= 0:
+            return
+
+        p1_dur = t_p1 - t_charge
+        p2_dur = (t_fcs - t_p1) if t_fcs is not None else 0
+        p3_dur = t_drop - (t_fcs if t_fcs is not None else t_p1)
+        p1_pct = p1_dur / bar_width * 100
+        p2_pct = p2_dur / bar_width * 100
+        p3_pct = 100 - p1_pct - p2_pct
+
+        def _temp_at(t):
+            if self.resampled_time is None or self.smooth_temp1 is None or t is None:
+                return None
+            idx = np.searchsorted(self.resampled_time, t)
+            if idx < len(self.smooth_temp1):
+                return float(self.smooth_temp1[idx])
+            return None
+
+        def _phase_avg_ror(start_t, end_t):
+            if start_t is None or end_t is None or end_t <= start_t:
+                return None
+            t_start = _temp_at(start_t)
+            t_end = _temp_at(end_t)
+            if t_start is None or t_end is None:
+                return None
+            dur_min = (end_t - start_t) / 60
+            if dur_min <= 0:
+                return None
+            return (t_end - t_start) / dur_min
+
+        revert_time = t_charge
+        if self.resampled_time is not None and self.smooth_temp1 is not None:
+            ci = np.searchsorted(self.resampled_time, t_charge)
+            pi = np.searchsorted(self.resampled_time, t_p1)
+            if ci < pi < len(self.smooth_temp1):
+                seg_min_idx = ci + np.argmin(self.smooth_temp1[ci:pi])
+                revert_time = self.resampled_time[seg_min_idx]
+
+        p1_avg_ror = _phase_avg_ror(revert_time, t_p1)
+        p2_avg_ror = _phase_avg_ror(t_p1, t_fcs) if t_fcs else None
+        p3_avg_ror = _phase_avg_ror(t_fcs if t_fcs is not None else t_p1, t_drop)
+        t_fcs_val = _temp_at(t_fcs) if t_fcs else None
+        t_drop_val = _temp_at(t_drop)
+        p3_dt = (t_drop_val - t_fcs_val) if (t_fcs_val is not None and t_drop_val is not None) else None
+
+        p1_label = f"脱水期\n{int(p1_dur//60)}:{int(p1_dur%60):02d} ({p1_pct:.0f}%)"
+        if p1_avg_ror is not None:
+            p1_label += f"\n升温段ROR:{p1_avg_ror:.1f}"
+
+        p2_label = ""
+        if t_fcs:
+            p2_label = f"美拉德期\n{int(p2_dur//60)}:{int(p2_dur%60):02d} ({p2_pct:.0f}%)"
+            if p2_avg_ror is not None:
+                p2_label += f"\n平均ROR:{p2_avg_ror:.1f}"
+
+        p3_label = f"发展期\n{int(p3_dur//60)}:{int(p3_dur%60):02d} ({p3_pct:.0f}%)"
+        p3_extra = []
+        if p3_dt is not None:
+            p3_extra.append(f"ΔT:{p3_dt:.1f}℃")
+        if p3_avg_ror is not None:
+            p3_extra.append(f"ROR:{p3_avg_ror:.1f}")
+        if p3_extra:
+            p3_label += "\n" + " ".join(p3_extra)
+
+        segments = [
+            (t_charge, t_p1, '#81C784', p1_label),
+            (t_p1, t_fcs if t_fcs is not None else t_drop, '#FFD54F', p2_label),
+            (t_fcs if t_fcs is not None else t_drop, t_drop, '#A0522D', p3_label),
+        ]
+
+        bar_bottom = 1.02
+        bar_height = 0.09
+        transform = blended_transform_factory(ax.transData, ax.transAxes)
+
+        bg_panel = Rectangle(
+            (bar_x_start, bar_bottom - 0.01), bar_width, bar_height + 0.02,
+            facecolor='#E8E8E8', edgecolor='#CCCCCC', linewidth=0.5,
+            transform=transform, zorder=0, clip_on=False
+        )
+        ax.add_patch(bg_panel)
+
+        for seg_start, seg_end, color, label in segments:
+            if seg_end is None or seg_end <= seg_start:
+                continue
+            rect = Rectangle((seg_start, bar_bottom), seg_end - seg_start, bar_height,
+                           facecolor=color, alpha=0.85, edgecolor='none',
+                           transform=transform, zorder=1, clip_on=False)
+            ax.add_patch(rect)
+            mid = (seg_start + seg_end) / 2
+            ax.text(mid, bar_bottom + bar_height / 2, label,
+                   transform=blended_transform_factory(ax.transData, ax.transAxes),
+                   ha='center', va='center', fontsize=6.5, fontweight='bold')
+
+        for boundary in [t_p1]:
+            if t_charge < boundary < t_drop:
+                ax.axvline(x=boundary, color='lightyellow', linestyle='--', linewidth=2, alpha=0.8)
+        if t_fcs is not None and t_charge < t_fcs < t_drop:
+            ax.axvline(x=t_fcs, color='lightyellow', linestyle='--', linewidth=2, alpha=0.8)
 
     def _create_cursor_artists(self, ax):
         """创建可复用的鼠标追踪元素（每次重绘图表后调用）"""
@@ -898,6 +1009,8 @@ class StatisticsPanel(ttk.Frame):
     def on_mouse_move(self, event):
         """鼠标移动事件处理"""
         if not event.inaxes:
+            return
+        if self.cursor_line is None or self.cursor_info is None:
             return
 
         ax = event.inaxes

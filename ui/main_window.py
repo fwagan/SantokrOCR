@@ -39,6 +39,7 @@ class MainWindow(tk.Tk):
         self.extractor = VideoDigitExtractor()
         self._slog_viewer = None  # 单例slog viewer窗口
         self.cache_manager = get_cache_manager()
+        self._realtime_window = None  # 实时识别窗口单例
 
         # 配置窗口
         self.title("SantokrOCR - 视频数字提取工具")
@@ -75,6 +76,8 @@ class MainWindow(tk.Tk):
         # 文件菜单
         file_menu = tk.Menu(menubar, tearoff=0)
         file_menu.add_command(label="打开视频", command=self.open_video, accelerator="Ctrl+O")
+        file_menu.add_separator()
+        file_menu.add_command(label="实时识别 (摄像头)", command=self.open_realtime)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self.on_closing, accelerator="Ctrl+Q")
         menubar.add_cascade(label="文件", menu=file_menu)
@@ -160,6 +163,9 @@ class MainWindow(tk.Tk):
         self.stop_button = ttk.Button(control_row, text="停止", command=self.stop_processing,
                                      state="disabled")
         self.stop_button.pack(side="left", padx=5)
+
+        ttk.Separator(control_row, orient="vertical").pack(side="left", padx=10, fill="y")
+        ttk.Button(control_row, text="实时识别", command=self.open_realtime).pack(side="left", padx=5)
 
         # 统计按钮行（导出.alog等）
         stats_row = ttk.Frame(top_frame)
@@ -1116,6 +1122,20 @@ class MainWindow(tk.Tk):
         self.stop_button.config(state="disabled")
 
         # 重置统计面板（StatisticsPanel 没有 clear 方法，跳过）
+
+    def open_realtime(self):
+        """打开实时识别窗口（单例）"""
+        if self._realtime_window is not None:
+            try:
+                if self._realtime_window.winfo_exists():
+                    self._realtime_window.lift()
+                    self._realtime_window.focus_set()
+                    return
+            except tk.TclError:
+                pass
+        from ui.camera_realtime_window import CameraRealtimeWindow
+        self._realtime_window = CameraRealtimeWindow(self)
+        self.log("打开实时识别窗口")
 
     def open_frame_viewer(self, frame_num, timestamp, data):
         """打开帧查看器窗口"""
