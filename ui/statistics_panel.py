@@ -78,17 +78,19 @@ setup_chinese_font()
 class StatisticsPanel(ttk.Frame):
     """统计面板（嵌入版本）"""
 
-    def __init__(self, parent, results=None):
+    def __init__(self, parent, results=None, figsize=(14, 8)):
         """
         初始化统计面板
 
         Args:
             parent: 父窗口
             results: 结果数据列表（可选）
+            figsize: (宽, 高) 英寸，默认适合全屏窗口；嵌入使用时传较小值
         """
         super().__init__(parent)
         self.parent = parent
         self.results = results if results is not None else []
+        self._figsize = figsize
 
         # 配置参数
         self.sampling_interval = 1.0  # 重采样间隔（秒）
@@ -115,6 +117,16 @@ class StatisticsPanel(ttk.Frame):
         self.ror_time = None
         self.ror_values = None
 
+        # 预测参数
+        self.pred_window = 45      # ROR趋势回归窗口（秒）
+        self.pred_horizon = 60     # 预测未来秒数
+
+        # 预测数据
+        self.pred_const_time = None
+        self.pred_const_values = None
+        self.pred_trend_time = None
+        self.pred_trend_values = None
+
         # 实时更新节流
         self._update_interval = 0.25  # 处理线程的采样间隔，用于计算每1秒的帧数
 
@@ -127,10 +139,13 @@ class StatisticsPanel(ttk.Frame):
         self._line_ror = None
         self._line_heater = None
         self._line_fan = None
+        self._line_pred_const = None   # 恒定ROR预测线
+        self._line_pred_trend = None   # ROR趋势外推预测线
         self._event_scatter = None
 
         # 鼠标追踪相关
         self.cursor_line = None
+        self.cursor_info = None
         self.cursor_text = None
         self.cursor_annotations = []
         self._blit_bg = None
@@ -146,8 +161,17 @@ class StatisticsPanel(ttk.Frame):
         # 事件数据（用于.alog导出）
         self.events = []
         self._original_events = []
+        self._auto_turnaround_events = []  # 自动检测的回温事件，跨 process_data() 保留
         self.heater_initial = 50.0
         self.fan_initial = 80.0
+
+        # 理想曲线
+        self._ideal_data = None
+        self._ideal_show_bean = True
+        self._ideal_show_ror = False
+        self._ideal_line_temp1 = None
+        self._ideal_line_ror = None
+        self._prev_turnaround_time = None
 
         # 创建UI
         self.create_ui()
@@ -158,7 +182,14 @@ class StatisticsPanel(ttk.Frame):
             self.plot_charts()
 
     def create_ui(self):
-        """创建用户界面（仅图表 + 状态栏）"""
+        """创建用户界面（仅图表 + 信息栏 + 状态栏）"""
+        # 最新数据信息栏（左上角）
+        info_frame = ttk.Frame(self)
+        info_frame.pack(fill="x", padx=5, pady=(5, 0))
+        self._info_var = tk.StringVar(value="")
+        ttk.Label(info_frame, textvariable=self._info_var,
+                  font=("Consolas", 10)).pack(side="left")
+
         # 图表框架
         chart_frame = ttk.Frame(self)
         chart_frame.pack(fill="both", expand=True, padx=5, pady=(0, 5))
@@ -166,19 +197,17 @@ class StatisticsPanel(ttk.Frame):
         self.pack_propagate(False)  # 阻止自身被收缩
 
         # 创建Matplotlib图形
-        self.fig = Figure(figsize=(14, 8), dpi=150)
+        self.fig = Figure(figsize=self._figsize, dpi=150)
         self.canvas = FigureCanvasTkAgg(self.fig, chart_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
-        # 初始空白图表（等待数据）
+        # 初始子图（等待数据），不调 tight_layout/draw —— 首次渲染由 _on_canvas_resize 触发
         ax = self.fig.add_subplot(111)
         ax.text(0.5, 0.5, '等待实时数据...',
                horizontalalignment='center', verticalalignment='center',
                transform=ax.transAxes, fontsize=14, color='#888888')
         ax.set_xticks([])
         ax.set_yticks([])
-        self.fig.tight_layout()
-        self.canvas.draw()
 
         # 状态栏
         status_frame = ttk.Frame(self)
@@ -222,12 +251,12 @@ class StatisticsPanel(ttk.Frame):
         self.window_var, _ = add_spinrow("平滑窗口(秒):", tk.IntVar, self.smooth_window, 3, 60, 1)
         self.polyorder_var, _ = add_spinrow("多项式阶数:", tk.IntVar, self.smooth_polyorder, 1, 5, 1)
         self.ror_interval_var, _ = add_spinrow("ROR步长(秒):", tk.DoubleVar, self.ror_interval, 1, 30, 1)
+        self.pred_window_var, _ = add_spinrow("ROR趋势窗口(秒):", tk.IntVar, self.pred_window, 10, 120, 5, fmt='int')
 
         # 按钮行
         btn_frame = ttk.Frame(control_frame)
         btn_frame.pack(fill="x", padx=8, pady=(8, 4))
         ttk.Button(btn_frame, text="计算曲线", command=self.recalculate).pack(side="left", padx=1)
-        ttk.Button(btn_frame, text="导出数据", command=self.export_data).pack(side="left", padx=1)
         ttk.Button(btn_frame, text="保存图表", command=self.save_chart).pack(side="left", padx=1)
 
         # ===== Checkbox 区 =====
@@ -240,7 +269,7 @@ class StatisticsPanel(ttk.Frame):
         self.show_raw_checkbtn.pack(anchor="w", pady=1)
 
         self.show_hf_var = tk.BooleanVar(value=not realtime_mode)
-        self.show_event_markers_var = tk.BooleanVar(value=not realtime_mode)
+        self.show_event_markers_var = tk.BooleanVar(value=True)
         self.show_phase_bar_var = tk.BooleanVar(value=not realtime_mode)
         self.exclude_outside_var = tk.BooleanVar(value=False)
 
@@ -261,6 +290,25 @@ class StatisticsPanel(ttk.Frame):
         if self.results:
             self.process_data()
             self.plot_charts()
+
+    def clear_data(self):
+        """清空所有数据并重置图表到初始状态"""
+        self.results.clear()
+        self.events.clear()
+        self._original_events.clear()
+        self._auto_turnaround_events.clear()
+        self.timestamps = np.array([])
+        self.temp1_values = np.array([])
+        self.temp2_values = np.array([])
+        self.resampled_time = None
+        self.smooth_temp1 = None
+        self.smooth_temp2 = None
+        self.ror_time = None
+        self.ror_values = None
+        self.pred_const_time = None
+        self.pred_trend_time = None
+        self._chart_built = False
+        self._full_redraw()
 
     def set_update_interval(self, interval_sec):
         """设置处理线程的采样间隔，用于计算图表更新节流（ceil(1s / interval) 帧更新一次）"""
@@ -285,6 +333,19 @@ class StatisticsPanel(ttk.Frame):
         if self._live_update_count >= threshold:
             self._live_update_count = 0
             self.process_data()
+
+            # 检测回温点变化：理想曲线对齐需要全量重绘
+            if self._ideal_data is not None:
+                current_ta = None
+                for ev in self.events:
+                    if ev.get('type') == '回温':
+                        current_ta = ev.get('time')
+                        break
+                if current_ta != self._prev_turnaround_time:
+                    self._prev_turnaround_time = current_ta
+                    self._full_redraw()
+                    return
+
             if not self._chart_built:
                 self._full_redraw()
             else:
@@ -299,6 +360,78 @@ class StatisticsPanel(ttk.Frame):
         # 如果已有数据，重绘图表以显示火力/风门曲线
         if hasattr(self, 'resampled_time') and self.resampled_time is not None and len(self.resampled_time) > 0:
             self.plot_charts()
+
+    def set_ideal_curve(self, ideal_data, show_bean=True, show_ror=False):
+        """设置理想曲线数据并重绘"""
+        self._ideal_data = ideal_data
+        self._ideal_show_bean = show_bean
+        self._ideal_show_ror = show_ror
+        if self._chart_built:
+            self._full_redraw()
+
+    def clear_ideal_curve(self):
+        """清除理想曲线"""
+        self._ideal_data = None
+        self._ideal_line_temp1 = None
+        self._ideal_line_ror = None
+        self._prev_turnaround_time = None
+        if self._chart_built:
+            self._full_redraw()
+
+    def _draw_ideal_curve(self, ax):
+        """在指定轴上绘制理想曲线叠加"""
+        if self._ideal_data is None:
+            return
+
+        data = self._ideal_data
+
+        # 计算对齐偏移
+        offset = 0.0
+        turnaround_time = None
+        for ev in self.events:
+            if ev.get('type') == '回温':
+                turnaround_time = ev.get('time')
+                break
+        if turnaround_time is not None and data['alignment'].get('回温', 0) > 0:
+            offset = turnaround_time - data['alignment']['回温']
+
+        # 阶段外数据排除
+        charge_time = data.get('charge_time')
+        end_time = data.get('end_time')
+        has_phase_bounds = (charge_time is not None and end_time is not None
+                           and end_time > charge_time)
+
+        # 绘制豆温理想曲线
+        self._ideal_line_temp1 = None
+        if self._ideal_show_bean and data.get('smooth_temp1') is not None:
+            t = data['resampled_time'] + offset
+            vals = data['smooth_temp1']
+            if has_phase_bounds:
+                mask = (data['resampled_time'] >= charge_time) & (data['resampled_time'] <= end_time)
+                t = t[mask]
+                vals = vals[mask]
+            if len(t) > 0:
+                self._ideal_line_temp1, = ax.plot(
+                    t, vals, color='#2ca02c', linestyle='--',
+                    linewidth=2, label='理想豆温', zorder=3
+                )
+
+        # 绘制ROR理想曲线
+        self._ideal_line_ror = None
+        if (self._ideal_show_ror and data.get('ror_values') is not None
+                and len(data['ror_values']) > 0 and self.ror_axis is not None):
+            ror_t = data['ror_time'] + offset
+            ror_v = data['ror_values']
+            if has_phase_bounds:
+                ror_mask = (data['ror_time'] >= charge_time) & (data['ror_time'] <= end_time)
+                if np.any(ror_mask):
+                    ror_t = ror_t[ror_mask]
+                    ror_v = ror_v[ror_mask]
+            if len(ror_t) > 0:
+                self._ideal_line_ror, = self.ror_axis.plot(
+                    ror_t, ror_v, color='#2ca02c', linestyle='-.',
+                    linewidth=1.5, label='理想ROR', zorder=3
+                )
 
     def extract_valid_data(self):
         """
@@ -444,6 +577,80 @@ class StatisticsPanel(ttk.Frame):
 
         return ror_time, ror_values
 
+    def _compute_predictions(self):
+        """计算两条未来温度预测曲线（恒定ROR + ROR趋势外推）"""
+        self.pred_const_time = None
+        self.pred_const_values = None
+        self.pred_trend_time = None
+        self.pred_trend_values = None
+
+        if self.smooth_temp1 is None or len(self.smooth_temp1) < 2:
+            return
+        if self.ror_values is None or len(self.ror_values) < 5:
+            return
+
+        current_temp = self.smooth_temp1[-1]
+        current_time = self.resampled_time[-1]
+        latest_ror = self.ror_values[-1]
+
+        # ROR ≤ 0 时停止预测（ROR 回到正值后自动恢复）
+        if latest_ror <= 0:
+            return
+
+        # 预测时间轴（未来60秒，每秒1点）
+        future_seconds = np.arange(1, self.pred_horizon + 1)
+        pred_time = current_time + future_seconds
+
+        # ── 恒定ROR ──
+        self.pred_const_time = pred_time
+        self.pred_const_values = current_temp + (latest_ror / 60.0) * future_seconds
+
+        # ── ROR趋势外推 ──
+        n_points = min(int(self.pred_window / self.sampling_interval), len(self.ror_values))
+        exclude_points = int((self.smooth_window / 2) / self.sampling_interval)
+
+        # 去掉平滑窗口后半段（右边界平滑质量下降），保证至少2个点
+        if exclude_points > 0 and n_points > exclude_points + 1:
+            ror_segment = self.ror_values[-(n_points):-exclude_points]
+            ror_t_segment = self.ror_time[-(n_points):-exclude_points]
+        elif n_points > 1:
+            ror_segment = self.ror_values[-n_points:]
+            ror_t_segment = self.ror_time[-n_points:]
+        else:
+            ror_segment = np.array([])
+            ror_t_segment = np.array([])
+
+        if len(ror_segment) >= 2:
+            # 线性回归：ROR ~ 时间
+            coeffs = np.polyfit(ror_t_segment - ror_t_segment[0], ror_segment, 1)
+            slope = coeffs[0]  # ROR变化率 (℃/min per second)
+
+            # 逐秒积分：从当前温度出发，每秒累加 ror/60
+            temp_trend = np.zeros(self.pred_horizon)
+            for i in range(self.pred_horizon):
+                ror = latest_ror + slope * i
+                ror = max(ror, 0)  # 下限保护，避免ROR变负
+                if i == 0:
+                    temp_trend[i] = current_temp + ror / 60.0
+                else:
+                    temp_trend[i] = temp_trend[i - 1] + ror / 60.0
+
+            self.pred_trend_time = pred_time
+            self.pred_trend_values = temp_trend
+
+    def _detect_turnaround_point(self):
+        """检测回温点：smooth_temp1 全局最低点，且当前温度已回升"""
+        if self.smooth_temp1 is None or len(self.smooth_temp1) < 5:
+            return None
+        min_idx = np.argmin(self.smooth_temp1)
+        if self.smooth_temp1[-1] <= self.smooth_temp1[min_idx]:
+            return None
+        return {
+            'type': '回温', 'frame': 0,
+            'time': float(self.resampled_time[min_idx]),
+            'value': float(self.smooth_temp1[min_idx]),
+        }
+
     def build_heater_fan_data(self):
         """
         从事件数据构建火力和风门的时间序列
@@ -571,6 +778,7 @@ class StatisticsPanel(ttk.Frame):
         self.smooth_window = self.window_var.get()
         self.smooth_polyorder = self.polyorder_var.get()
         self.ror_interval = self.ror_interval_var.get()
+        self.pred_window = self.pred_window_var.get()
 
         # 重采样
         self.resampled_time, self.resampled_temp1 = self.resample_data(
@@ -589,6 +797,9 @@ class StatisticsPanel(ttk.Frame):
         # 计算ROR
         self.ror_time, self.ror_values = self.compute_ror(
             self.resampled_time, self.smooth_temp1, self.sampling_interval, self.ror_interval)
+
+        # 计算预测曲线
+        self._compute_predictions()
 
         # 重置 events 为原始版本（每次重算时还原，确保 toggle 无累积偏移）
         self.events = list(self._original_events)
@@ -618,6 +829,24 @@ class StatisticsPanel(ttk.Frame):
                 for ev in self.events:
                     ev['time'] = max(t_min, min(ev['time'], t_max))
 
+        # ── 自动检测回温点 ──
+        ta = self._detect_turnaround_point()
+        self._auto_turnaround_events = [ta] if ta else []
+        if ta and not any(e.get('type') == '回温' and abs(e.get('time', 0) - ta['time']) < 0.01
+                          for e in self.events):
+            self.events.append(ta)
+
+        # ── 更新最新数据信息栏 ──
+        if self.resampled_time is not None and len(self.resampled_time) > 0:
+            parts = []
+            if self.smooth_temp1 is not None:
+                parts.append(f"豆温: {self.smooth_temp1[-1]:.1f}℃")
+            if self.smooth_temp2 is not None:
+                parts.append(f"风温: {self.smooth_temp2[-1]:.1f}℃")
+            if self.ror_values is not None and len(self.ror_values) > 0:
+                parts.append(f"ROR: {self.ror_values[-1]:.1f}℃/min")
+            self._info_var.set(' | '.join(parts))
+
         self.status_var.set(f"处理完成：{len(self.timestamps)}个有效点，{len(self.resampled_time)}个重采样点")
 
     # ── 图表绘制（全量 / 增量） ──
@@ -629,11 +858,14 @@ class StatisticsPanel(ttk.Frame):
     def _full_redraw(self):
         """全量重建图表：清空 figure，重新创建所有 artist"""
         self.fig.clear()
+        # fig.clear() 销毁了所有 cursor 对象，清空引用避免 on_mouse_move 读到僵尸对象
+        self.cursor_info = None
+        self.cursor_line = None
         self._chart_built = False
 
         if len(self.timestamps) < 2:
             ax = self.fig.add_subplot(111)
-            ax.text(0.5, 0.5, '数据不足，无法绘制图表',
+            ax.text(0.5, 0.5, '等待数据...',
                    horizontalalignment='center', verticalalignment='center',
                    transform=ax.transAxes, fontsize=14)
             self._blit_bg = None
@@ -700,6 +932,17 @@ class StatisticsPanel(ttk.Frame):
             self.hf_axis.set_ylim(0, 200)
             self.hf_axis.tick_params(axis='y', labelcolor='green')
 
+        # 5. 预测曲线（从温度曲线右端出发，覆盖未来60秒）
+        self._line_pred_const, = ax.plot([], [], color=temp1_color, linestyle='--', linewidth=2, alpha=0.5, label='预测（恒定ROR）')
+        self._line_pred_trend, = ax.plot([], [], color=temp1_color, linestyle=':', linewidth=2, alpha=0.5, label='预测（ROR趋势）')
+        if self.pred_const_time is not None:
+            self._line_pred_const.set_data(self.pred_const_time, self.pred_const_values)
+        if self.pred_trend_time is not None:
+            self._line_pred_trend.set_data(self.pred_trend_time, self.pred_trend_values)
+
+        # 6. 理想曲线叠加（静态，在实时数据之上绘制）
+        self._draw_ideal_curve(ax)
+
         # 构建图例 line 列表
         all_lines = [self._line_temp1, self._line_temp2]
         if self._line_ror is not None:
@@ -710,6 +953,11 @@ class StatisticsPanel(ttk.Frame):
             all_lines.append(self._line_temp2_raw)
         if self._line_heater is not None:
             all_lines.extend([self._line_heater, self._line_fan])
+        all_lines.extend([self._line_pred_const, self._line_pred_trend])
+        if self._ideal_line_temp1 is not None:
+            all_lines.append(self._ideal_line_temp1)
+        if self._ideal_line_ror is not None:
+            all_lines.append(self._ideal_line_ror)
 
         # X 轴刻度：固定每30秒一个标点
         ax.xaxis.set_major_locator(matplotlib.ticker.MultipleLocator(30))
@@ -726,7 +974,7 @@ class StatisticsPanel(ttk.Frame):
         ax.set_xlim(0, 480)
         ax.legend(all_lines, [l.get_label() for l in all_lines], loc='upper right')
 
-        # 5. 事件标记
+        # 7. 事件标记
         self._event_scatter = None
         self.event_marker_data = []
         if self.show_event_markers_var.get():
@@ -737,7 +985,7 @@ class StatisticsPanel(ttk.Frame):
                 self._event_scatter = ax.scatter(xs, ys, color='black', s=50, zorder=5, marker='o')
                 self.event_marker_data = markers
 
-        # 6. 阶段条
+        # 8. 阶段条
         self._draw_phase_bar(ax)
 
         self.fig.tight_layout()
@@ -758,7 +1006,6 @@ class StatisticsPanel(ttk.Frame):
             self._full_redraw()
             return
 
-        # 如果 ROR/HF 数据首次出现（之前的全量构建没创建对应 axis），回退全量重建
         if (self._line_ror is None and len(self.ror_values) > 0) or \
            (self._line_heater is None and self.show_hf_var.get()):
             self._full_redraw()
@@ -768,6 +1015,12 @@ class StatisticsPanel(ttk.Frame):
             return
 
         ax = self.main_ax
+
+        # 数据有效性检查：关键数组为空或非一维时跳过本次更新
+        if not isinstance(self.resampled_time, np.ndarray) or self.resampled_time.ndim != 1 or len(self.resampled_time) == 0:
+            return
+        if not isinstance(self.smooth_temp1, np.ndarray) or self.smooth_temp1.ndim != 1 or len(self.smooth_temp1) == 0:
+            return
 
         # 更新 line 数据
         self._line_temp1.set_data(self.resampled_time, self.smooth_temp1)
@@ -786,7 +1039,7 @@ class StatisticsPanel(ttk.Frame):
 
         # X 轴刻度由 MultipleLocator(30) 自动管理，无需手动更新
 
-        # 更新轴范围：只扩展不收缩，避免坐标轴抖动
+        # 更新轴范围：只扩展不收缩，避免坐标轴抖动（在预测线 set_data 之前，使预测线不参与 autoscale）
         ax.relim()
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
         dl = ax.dataLim
@@ -795,6 +1048,18 @@ class StatisticsPanel(ttk.Frame):
         if self.ror_axis is not None:
             self.ror_axis.relim()
             self.ror_axis.autoscale_view(scalex=True, scaley=False)
+
+        # 更新预测线（在 relim 之后，避免扩展坐标系；ROR转负时数据为 None，用空数据隐掉）
+        if self._line_pred_const is not None:
+            if self.pred_const_time is not None:
+                self._line_pred_const.set_data(self.pred_const_time, self.pred_const_values)
+            else:
+                self._line_pred_const.set_data([], [])
+        if self._line_pred_trend is not None:
+            if self.pred_trend_time is not None:
+                self._line_pred_trend.set_data(self.pred_trend_time, self.pred_trend_values)
+            else:
+                self._line_pred_trend.set_data([], [])
 
         # 清除旧的阶段条 + 事件标记 + 图例，重绘
         self._clear_decorations(ax)
@@ -820,7 +1085,9 @@ class StatisticsPanel(ttk.Frame):
         for c in list(ax.lines):
             if c not in (self._line_temp1, self._line_temp2,
                          self._line_temp1_raw, self._line_temp2_raw,
-                         self.cursor_line):
+                         self._line_pred_const, self._line_pred_trend,
+                         self.cursor_line,
+                         self._ideal_line_temp1):
                 c.remove()
         # 清除旧的 scatter
         for coll in list(ax.collections):
@@ -837,6 +1104,11 @@ class StatisticsPanel(ttk.Frame):
             all_lines.append(self._line_temp2_raw)
         if self._line_heater is not None:
             all_lines.extend([self._line_heater, self._line_fan])
+        all_lines.extend([self._line_pred_const, self._line_pred_trend])
+        if self._ideal_line_temp1 is not None:
+            all_lines.append(self._ideal_line_temp1)
+        if self._ideal_line_ror is not None:
+            all_lines.append(self._ideal_line_ror)
         ax.legend(all_lines, [l.get_label() for l in all_lines], loc='upper right')
 
     def _draw_phase_bar(self, ax):
@@ -1005,9 +1277,14 @@ class StatisticsPanel(ttk.Frame):
         self.canvas.draw()
 
     def _on_canvas_resize(self, event):
-        """tkinter画布尺寸变化回调：按当前尺寸重新布局+失效blit缓存"""
+        """tkinter画布尺寸变化回调：按显示器真实DPI设fig尺寸 + 重新布局"""
         self._blit_bg = None
         try:
+            w, h = event.width, event.height
+            if w > 10 and h > 10:
+                dpi = self.canvas.get_tk_widget().winfo_fpixels('1i')
+                self.fig.set_size_inches(w / dpi, h / dpi, forward=False)
+                self.fig.set_dpi(dpi)
             self.fig.tight_layout()
             # 重新计算布局参数（用当前图表高度，而非旧值）
             adj = {}
@@ -1063,10 +1340,15 @@ class StatisticsPanel(ttk.Frame):
         # 3. Blit — 只画垂直线和固定信息框
         cur_ax = self.main_ax if self.main_ax is not None else ax
         if self._blit_bg is not None:
-            self.canvas.restore_region(self._blit_bg)
-            cur_ax.draw_artist(self.cursor_line)
-            cur_ax.draw_artist(self.cursor_info)
-            self.canvas.blit(self.fig.bbox)
+            try:
+                self.canvas.restore_region(self._blit_bg)
+                cur_ax.draw_artist(self.cursor_line)
+                cur_ax.draw_artist(self.cursor_info)
+                self.canvas.blit(self.fig.bbox)
+            except Exception:
+                # blit 失败时（如 cursor 对象失效），退化为常规绘制
+                self._blit_bg = None
+                self.canvas.draw_idle()
         else:
             self.canvas.draw_idle()
 
@@ -1098,35 +1380,6 @@ class StatisticsPanel(ttk.Frame):
         """重新计算并更新图表"""
         self.process_data()
         self.plot_charts()
-
-    def export_data(self):
-        """导出数据为.slog格式（JSON，包含results和events）"""
-        if not self.results:
-            from tkinter import messagebox
-            messagebox.showwarning("警告", "没有可导出的数据")
-            return
-
-        from tkinter import filedialog
-
-        # 构建导出数据
-        export = {
-            'version': 1,
-            'results': self.results,
-            'events': self.events,
-            'heater_initial': self.heater_initial,
-            'fan_initial': self.fan_initial,
-        }
-
-        file_path = filedialog.asksaveasfilename(
-            defaultextension=".slog",
-            filetypes=[("Slog files", "*.slog"), ("All files", "*.*")]
-        )
-
-        if file_path:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(export, f, indent=2, ensure_ascii=False)
-            self.status_var.set(f"数据已导出到: {file_path}")
-
 
     def save_chart(self):
         """保存图表为图片"""

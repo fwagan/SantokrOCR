@@ -24,7 +24,9 @@ class Signal:
             try:
                 callback(*args, **kwargs)
             except Exception as e:
+                import traceback
                 print(f"信号回调出错: {e}")
+                traceback.print_exc()
 
 
 class CameraProcessingThread(threading.Thread):
@@ -57,6 +59,9 @@ class CameraProcessingThread(threading.Thread):
 
         self.results = []
 
+        # 摄像头是否意外断开（区别于用户主动停止）
+        self.camera_lost = False
+
         # 失败帧缓存（用于调试，最多10帧）
         self._failed_frames = []  # [(frame_num, frame_bgr, result_dict), ...]
         self._failed_frames_lock = threading.Lock()
@@ -82,6 +87,9 @@ class CameraProcessingThread(threading.Thread):
 
         self.status_signal.emit("实时识别已启动")
 
+        read_fail_count = 0
+        max_read_fails = 5
+
         while not self._stop_event.is_set():
             # 处理暂停
             while not self._pause_event.is_set() and not self._stop_event.is_set():
@@ -92,9 +100,15 @@ class CameraProcessingThread(threading.Thread):
 
             ret, frame = cap.read()
             if not ret:
-                self.status_signal.emit("摄像头读取失败，正在重试...")
+                read_fail_count += 1
+                if read_fail_count >= max_read_fails:
+                    self.camera_lost = True
+                    cap.release()
+                    self.finished_signal.emit(False, "摄像头已断开")
+                    return
                 time.sleep(0.5)
                 continue
+            read_fail_count = 0
 
             loop_start = time.time()
 

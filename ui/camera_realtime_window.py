@@ -9,15 +9,19 @@
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import cv2
 import time
+import os
+import json
+import threading
 from PIL import Image, ImageTk
 
 from core.video_extractor import VideoDigitExtractor
 from core.camera_capture import CameraProcessingThread
 from ui.data_table import DataTable
 from ui.statistics_panel import StatisticsPanel
+from ui.slog_comparer import extract_valid_data, resample_data, smooth_data, compute_ror
 from utils.screen_utils import center_window
 
 
@@ -26,6 +30,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def __init__(self, parent):
         super().__init__(parent)
+
         self.parent = parent
 
         # 数据源
@@ -36,12 +41,21 @@ class CameraRealtimeWindow(tk.Toplevel):
         # 线程
         self.processing_thread = None
 
+        # 理想曲线
+        self.ideal_data = None
+
         # 预览
-        self._preview_cap = None
         self._preview_after_id = None
         self._preview_img_id = None
         self._preview_tk_image = None
         self._no_data_text_id = None
+        self._retry_text_id = None
+        self._preview_thread = None
+        self._preview_thread_running = False
+        self._preview_frame = None
+        self._preview_frame_event = threading.Event()
+        self._preview_lost = False
+        self._preview_fail_count = 0
 
         # 窗口设置（自适应屏幕90%，不超过3200x1900）
         self.title("实时识别 - 摄像头")
@@ -57,13 +71,33 @@ class CameraRealtimeWindow(tk.Toplevel):
         # 创建UI
         self._create_ui()
 
-        # 强制布局，确保图表canvas有正确尺寸后再绘制
+        # 强制布局计算
         self.update_idletasks()
-        self.stats_panel.fig.tight_layout()
-        self.stats_panel.canvas.draw()
+        # 延迟到窗口映射后按真实DPI设fig尺寸并重绘
+        self.after_idle(self._fit_chart)
 
         # 启动预览
         self._start_preview()
+
+        # 自动检测并选择第一个可用摄像头
+        self._auto_select_first_camera()
+
+    def _fit_chart(self):
+        """窗口映射后按显示器真实DPI设fig尺寸并重绘"""
+        try:
+            cw = self.stats_panel.canvas.get_tk_widget()
+            w, h = cw.winfo_width(), cw.winfo_height()
+            if w < 10 or h < 10:
+                self.after(50, self._fit_chart)
+                return
+            dpi = cw.winfo_fpixels('1i')
+            self.stats_panel.fig.set_size_inches(w / dpi, h / dpi, forward=False)
+            self.stats_panel.fig.set_dpi(dpi)
+            self.stats_panel.fig.tight_layout()
+            self.stats_panel.canvas.draw()
+            print(f"[debug] _fit_chart done at {time.time():.3f}")
+        except Exception:
+            pass
 
     # ═══════════════════════════════════════════════════════════
     # UI创建
@@ -75,16 +109,16 @@ class CameraRealtimeWindow(tk.Toplevel):
         top_bar = ttk.Frame(self, padding=8)
         top_bar.pack(fill="x")
 
-        # 数据源选择（打开下拉时动态检测可用摄像头）
+        # 数据源选择
         ttk.Label(top_bar, text="数据源:").pack(side="left", padx=(0, 4))
+        ttk.Button(top_bar, text="刷新数据源", command=self._detect_cameras).pack(side="left", padx=(0, 4))
         self.source_var = tk.StringVar()
         self.source_combo = ttk.Combobox(top_bar, textvariable=self.source_var,
-                                          state="readonly", width=30,
-                                          postcommand=self._detect_cameras)
+                                          state="readonly", width=30)
         self.source_combo.pack(side="left", padx=4)
         self.source_combo.bind("<<ComboboxSelected>>", self._on_source_changed)
 
-        # 选择ROI按钮
+        # 选择ROI按钮（临时：点击时保存 cProfile dump）
         ttk.Button(top_bar, text="选择ROI", command=self._select_roi).pack(side="left", padx=8)
         self.roi_status_var = tk.StringVar(value="未配置")
         ttk.Label(top_bar, textvariable=self.roi_status_var, width=16, relief="sunken", padding=3).pack(side="left", padx=4)
@@ -98,6 +132,21 @@ class CameraRealtimeWindow(tk.Toplevel):
         ttk.Label(top_bar, text="旋转角度:").pack(side="left", padx=(12, 4))
         self.rotation_var = tk.StringVar(value="5")
         ttk.Entry(top_bar, textvariable=self.rotation_var, width=5).pack(side="left", padx=4)
+
+        # 操作按钮（旋转角度右侧）
+        self.start_btn = ttk.Button(top_bar, text="开始实时识别", command=self._start_realtime, state="disabled")
+        self.start_btn.pack(side="left", padx=(12, 4))
+
+        self.pause_btn = ttk.Button(top_bar, text="暂停", command=self._pause_realtime, state="disabled")
+        self.pause_btn.pack(side="left", padx=4)
+
+        self.stop_btn = ttk.Button(top_bar, text="停止", command=self._stop_realtime, state="disabled")
+        self.stop_btn.pack(side="left", padx=4)
+
+        self.clear_btn = ttk.Button(top_bar, text="清空已识别数据", command=self._clear_all_data)
+        self.clear_btn.pack(side="left", padx=4)
+
+        ttk.Button(top_bar, text="导出数据", command=self._export_data).pack(side="left", padx=(4, 0))
 
         # ── 主体：预览 + 右侧Notebook ──
         main = ttk.PanedWindow(self, orient="horizontal")
@@ -116,12 +165,17 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.notebook = ttk.Notebook(right_frame)
         self.notebook.pack(fill="both", expand=True)
 
-        # Tab 1: 实时曲线
+        # Tab 1: 理想曲线
+        ideal_tab = ttk.Frame(self.notebook)
+        self.notebook.add(ideal_tab, text="理想曲线")
+        self._create_ideal_curve_tab(ideal_tab)
+
+        # Tab 2: 实时曲线
         curve_tab = ttk.Frame(self.notebook)
         curve_tab.pack_propagate(False)  # 阻止FigureCanvasTkAgg塌缩父容器
         self.notebook.add(curve_tab, text="实时曲线")
 
-        self.stats_panel = StatisticsPanel(curve_tab, results=[])
+        self.stats_panel = StatisticsPanel(curve_tab, results=[], figsize=(7, 5))
         self.stats_panel.pack(side="top", fill="both", expand=True)
 
         # 曲线控制 dock bottom（实时模式：仅显示原曲线checkbox）
@@ -129,28 +183,13 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.create_controls(ctrl_row, realtime_mode=True)
         ctrl_row.pack(side="bottom", fill="x", pady=(4, 0))
 
-        # Tab 2: 数据表格
+        # Tab 3: 数据表格
         table_tab = ttk.Frame(self.notebook)
         self.notebook.add(table_tab, text="数据表格")
 
         self.data_table = DataTable(table_tab)
         self.data_table.pack(fill="both", expand=True)
         self.data_table.set_view_frame_callback(self._on_view_frame)
-
-        # ── 中部按钮栏 ──
-        btn_bar = ttk.Frame(self, padding=8)
-        btn_bar.pack(side="bottom", fill="x")
-
-        self.start_btn = ttk.Button(btn_bar, text="开始实时识别", command=self._start_realtime, state="disabled")
-        self.start_btn.pack(side="left", padx=4)
-
-        self.pause_btn = ttk.Button(btn_bar, text="暂停", command=self._pause_realtime, state="disabled")
-        self.pause_btn.pack(side="left", padx=4)
-
-        self.stop_btn = ttk.Button(btn_bar, text="停止", command=self._stop_realtime, state="disabled")
-        self.stop_btn.pack(side="left", padx=4)
-
-        ttk.Button(btn_bar, text="导出数据", command=self._export_data).pack(side="right", padx=4)
 
         # ── 状态栏 ──
         status_bar = ttk.Frame(self, relief="sunken", borderwidth=1)
@@ -163,37 +202,220 @@ class CameraRealtimeWindow(tk.Toplevel):
         ttk.Label(status_bar, textvariable=self.time_var, padding=(8, 4)).pack(side="right")
 
     # ═══════════════════════════════════════════════════════════
+    # 理想曲线
+    # ═══════════════════════════════════════════════════════════
+
+    def _create_ideal_curve_tab(self, parent):
+        """创建理想曲线Tab UI"""
+        # 文件选择行
+        file_frame = ttk.Frame(parent, padding=8)
+        file_frame.pack(fill="x")
+        ttk.Button(file_frame, text="选择.slog文件", command=self._select_ideal_slog).pack(side="left", padx=(0, 8))
+        self.ideal_file_label = ttk.Label(file_frame, text="未选择")
+        self.ideal_file_label.pack(side="left")
+
+        # 显示选项
+        opt_frame = ttk.LabelFrame(parent, text="显示选项", padding=8)
+        opt_frame.pack(fill="x", padx=8, pady=4)
+        self.ideal_bean_var = tk.BooleanVar(value=True)
+        self.ideal_ror_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(opt_frame, text="显示豆温曲线", variable=self.ideal_bean_var,
+                        command=self._on_ideal_curve_changed).pack(anchor="w")
+        ttk.Checkbutton(opt_frame, text="显示ROR曲线", variable=self.ideal_ror_var,
+                        command=self._on_ideal_curve_changed).pack(anchor="w")
+
+        # 信息区域
+        info_frame = ttk.LabelFrame(parent, text="理想曲线信息", padding=8)
+        info_frame.pack(fill="both", expand=True, padx=8, pady=4)
+        self.ideal_info_text = tk.Text(info_frame, height=12, state="disabled", wrap="word")
+        self.ideal_info_text.pack(fill="both", expand=True)
+
+        # 清除按钮
+        btn_frame = ttk.Frame(parent, padding=8)
+        btn_frame.pack(fill="x")
+        ttk.Button(btn_frame, text="清除理想曲线", command=self._clear_ideal_slog).pack(side="left")
+
+    def _select_ideal_slog(self):
+        """打开文件选择对话框加载理想曲线"""
+        path = filedialog.askopenfilename(
+            title="选择理想曲线文件",
+            filetypes=[("Slog文件", "*.slog"), ("所有文件", "*.*")]
+        )
+        if not path:
+            return
+        self._load_ideal_slog(path)
+
+    def _load_ideal_slog(self, path):
+        """加载并处理.slog文件作为理想曲线"""
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            messagebox.showerror("错误", f"无法加载文件:\n{path}\n{e}")
+            return
+
+        results = data.get('results', [])
+        events = data.get('events', [])
+
+        if not results:
+            messagebox.showwarning("警告", "文件没有有效数据")
+            return
+
+        # 处理数据：提取→重采样→平滑→ROR
+        timestamps, temp1, temp2 = extract_valid_data(results)
+        if len(timestamps) < 2:
+            messagebox.showwarning("警告", "有效数据不足")
+            return
+
+        sampling_interval = 1.0
+        smooth_window = 15
+        smooth_polyorder = 3
+        ror_interval = 15.0
+
+        resampled_time, resampled_temp1 = resample_data(timestamps, temp1, sampling_interval)
+        _, resampled_temp2 = resample_data(timestamps, temp2, sampling_interval)
+        smooth_temp1 = smooth_data(resampled_time, resampled_temp1, smooth_window, smooth_polyorder)
+        smooth_temp2 = smooth_data(resampled_time, resampled_temp2, smooth_window, smooth_polyorder)
+        ror_time, ror_values = compute_ror(resampled_time, smooth_temp1, sampling_interval, ror_interval)
+
+        # 提取对齐事件时间
+        alignment = {}
+        for ev_type in ['入豆', '回温', '一爆开始']:
+            t_val = 0.0
+            for ev in events:
+                if ev.get('type') == ev_type:
+                    t_val = ev.get('time', 0.0)
+                    break
+            alignment[ev_type] = t_val
+
+        # 查找阶段边界
+        charge_time = alignment.get('入豆', None)
+        end_time = None
+        for ev in events:
+            if ev.get('type') == '烘焙结束':
+                end_time = ev.get('time', None)
+                break
+
+        self.ideal_data = {
+            'path': path,
+            'name': os.path.basename(path),
+            'resampled_time': resampled_time,
+            'smooth_temp1': smooth_temp1,
+            'smooth_temp2': smooth_temp2,
+            'ror_time': ror_time,
+            'ror_values': ror_values,
+            'events': events,
+            'alignment': alignment,
+            'charge_time': charge_time if charge_time else 0.0,
+            'end_time': end_time,
+        }
+
+        # 更新UI
+        self.ideal_file_label.config(text=os.path.basename(path))
+        self._update_ideal_info()
+
+        # 传递给统计面板
+        self.stats_panel.set_ideal_curve(
+            self.ideal_data,
+            show_bean=self.ideal_bean_var.get(),
+            show_ror=self.ideal_ror_var.get()
+        )
+
+    def _clear_ideal_slog(self):
+        """清除理想曲线"""
+        self.ideal_data = None
+        self.ideal_file_label.config(text="未选择")
+        self.ideal_info_text.config(state="normal")
+        self.ideal_info_text.delete("1.0", "end")
+        self.ideal_info_text.config(state="disabled")
+        self.stats_panel.clear_ideal_curve()
+
+    def _on_ideal_curve_changed(self):
+        """理想曲线显示选项变更"""
+        if self.ideal_data is not None:
+            self.stats_panel.set_ideal_curve(
+                self.ideal_data,
+                show_bean=self.ideal_bean_var.get(),
+                show_ror=self.ideal_ror_var.get()
+            )
+
+    def _update_ideal_info(self):
+        """更新理想曲线信息显示"""
+        if self.ideal_data is None:
+            return
+        data = self.ideal_data
+        lines = [
+            f"文件: {data['name']}",
+            f"数据点: {len(data['resampled_time'])}",
+            f"时长: {data['resampled_time'][-1] - data['resampled_time'][0]:.1f}秒",
+        ]
+        # 事件信息
+        for ev in data['events']:
+            ev_type = ev.get('type', '')
+            ev_time = ev.get('time', 0)
+            if ev_type in ('入豆', '回温', '一爆开始', '烘焙结束'):
+                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}")
+            elif ev_type in ('调整火力', '调整风门'):
+                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d} → {ev.get('value', '?')}%")
+        # 温度范围
+        if data['smooth_temp1'] is not None and len(data['smooth_temp1']) > 0:
+            lines.append(f"豆温范围: {float(min(data['smooth_temp1'])):.1f} ~ {float(max(data['smooth_temp1'])):.1f}℃")
+        if data['smooth_temp2'] is not None and len(data['smooth_temp2']) > 0:
+            lines.append(f"风温范围: {float(min(data['smooth_temp2'])):.1f} ~ {float(max(data['smooth_temp2'])):.1f}℃")
+
+        self.ideal_info_text.config(state="normal")
+        self.ideal_info_text.delete("1.0", "end")
+        self.ideal_info_text.insert("1.0", "\n".join(lines))
+        self.ideal_info_text.config(state="disabled")
+
+    # ═══════════════════════════════════════════════════════════
     # 数据源管理
     # ═══════════════════════════════════════════════════════════
 
-    _MAX_CAMERA_INDEX = 9
+    def _auto_select_first_camera(self):
+        """自动检测并选中第一个可用摄像头"""
+        self._detect_cameras()
+        available = self.source_combo["values"]
+        if available:
+            self.source_var.set(available[0])
+            self._on_source_changed()
 
     def _detect_cameras(self):
-        """检测可用摄像头并刷新下拉列表"""
+        """检测可用摄像头（DSHOW 索引从 0 起连续，首个失败即停止）"""
         available = []
         self._source_map = {}
-        for i in range(self._MAX_CAMERA_INDEX + 1):
+        for i in range(10):
             try:
                 cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-                if cap.isOpened():
-                    ret, _ = cap.read()
-                    if ret:
-                        label = f"摄像头 {i}"
-                        available.append(label)
-                        self._source_map[label] = i
+                if not cap.isOpened():
+                    cap.release()
+                    break
+                ret, _ = cap.read()
                 cap.release()
+                if not ret:
+                    break
+                label = f"摄像头 {i}"
+                available.append(label)
+                self._source_map[label] = i
             except Exception:
-                pass
+                break
 
-        self.source_combo["values"] = available
-
-        # 清除不再有效的选中项
-        sel = self.source_var.get()
-        if sel not in available:
-            self.source_var.set("")
+        if not available:
+            self.source_combo["values"] = ["无可用数据源"]
+            self.source_var.set("无可用数据源")
+            self.source_combo.configure(state="disabled")
             self.rois = None
             self.roi_status_var.set("未配置")
             self.start_btn.config(state="disabled")
+        else:
+            self.source_combo.configure(state="readonly")
+            self.source_combo["values"] = available
+            sel = self.source_var.get()
+            if sel not in available:
+                self.source_var.set("")
+                self.rois = None
+                self.roi_status_var.set("未配置")
+                self.start_btn.config(state="disabled")
 
     def _on_source_changed(self, event=None):
         """数据源切换"""
@@ -222,7 +444,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         cw = self.preview_canvas.winfo_width()
         ch = self.preview_canvas.winfo_height()
         if cw < 10 or ch < 10:
-            self.after(200, self._show_no_data)
+            self._preview_after_id = self.after(200, self._show_no_data)
             return
         self.preview_canvas.delete("all")
         self._no_data_text_id = self.preview_canvas.create_text(
@@ -231,74 +453,142 @@ class CameraRealtimeWindow(tk.Toplevel):
         )
 
     def _start_preview(self):
-        """启动/重启摄像头预览"""
+        """启动/重启摄像头预览（后台线程读取，UI线程轮询显示）"""
         self._stop_preview()
 
-        # 清除"无数据"文字
+        # 清除"无数据"和重试文字
         if self._no_data_text_id:
             self.preview_canvas.delete(self._no_data_text_id)
             self._no_data_text_id = None
+        self._clear_retry_message()
 
         if not hasattr(self, '_current_source'):
             self._show_no_data()
             return
 
-        source = self._current_source
-        self._preview_cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-        if not self._preview_cap.isOpened():
-            self._preview_cap = None
-            self._show_no_data()
-            return
-
-        # 获取源帧率，决定预览刷新间隔
-        src_fps = self._preview_cap.get(cv2.CAP_PROP_FPS)
-        if src_fps > 0:
-            self._preview_interval = int(1000 / src_fps)  # ms per frame
-        else:
-            self._preview_interval = 33  # 默认~30fps
-        self._preview_interval = max(16, min(self._preview_interval, 100))  # 限幅 10-60fps
-
-        self._preview_retry_count = 0
-        self._preview_loop()
+        self._preview_lost = False
+        self._preview_frame = None
+        self._preview_frame_event.clear()
+        self._preview_thread_running = True
+        self._preview_thread = threading.Thread(
+            target=self._preview_read_thread,
+            args=(self._current_source,),
+            daemon=True
+        )
+        self._preview_thread.start()
+        self._preview_after_id = self.after(30, self._preview_poll)
 
     def _stop_preview(self):
         """停止预览"""
+        self._preview_thread_running = False
         if self._preview_after_id:
             self.after_cancel(self._preview_after_id)
             self._preview_after_id = None
-        if self._preview_cap:
-            self._preview_cap.release()
-            self._preview_cap = None
+        self._preview_frame = None
+        self._preview_frame_event.clear()
 
-    def _preview_loop(self):
-        """预览循环"""
-        if not self._preview_cap or not self._preview_cap.isOpened():
-            self._preview_retry_count += 1
-            if self._preview_retry_count < 30:
-                self._preview_after_id = self.after(self._preview_interval, self._preview_loop)
+    def _preview_read_thread(self, source):
+        """后台线程：持续读取摄像头帧，存入 self._preview_frame"""
+        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            self._preview_lost = True
+            self._preview_frame_event.set()
             return
 
-        ret, frame = self._preview_cap.read()
-        if not ret:
-            self._preview_retry_count += 1
-            if self._preview_retry_count > 30:
+        fail_count = 0
+        while self._preview_thread_running:
+            _t0 = time.time()
+            ret, frame = cap.read()
+            elapsed = time.time() - _t0
+
+            if not self._preview_thread_running:
+                break
+
+            if not ret or elapsed > 0.5:
+                fail_count += 1
+                self._preview_fail_count = fail_count
+                if fail_count >= 9:
+                    self._preview_lost = True
+                self._preview_frame_event.set()
+                if fail_count >= 9:
+                    break
+                time.sleep(0.1)
+                continue
+
+            fail_count = 0
+            self._preview_fail_count = 0
+            self._preview_frame = frame
+            self._preview_frame_event.set()
+
+        try:
+            cap.release()
+        except Exception:
+            pass
+
+    def _preview_poll(self):
+        """UI线程（after回调）：轮询最新帧并显示"""
+        if not self._preview_thread_running:
+            return
+        if self._preview_frame_event.is_set():
+            self._preview_frame_event.clear()
+            if self._preview_lost:
+                self._on_camera_lost()
                 return
-            self._preview_after_id = self.after(self._preview_interval, self._preview_loop)
+            fail = self._preview_fail_count
+            if fail > 0:
+                self._show_retry_message(fail)
+                self._preview_after_id = self.after(30, self._preview_poll)
+                return
+            self._clear_retry_message()
+            frame = self._preview_frame
+            if frame is None:
+                self._preview_after_id = self.after(30, self._preview_poll)
+                return
+            # 绘制ROI叠加框
+            if self.rois:
+                for name, (x, y, w, h) in self.rois.items():
+                    color = self.extractor.get_roi_color(name)
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            self._display_preview_frame(frame)
+        self._preview_after_id = self.after(30, self._preview_poll)
+
+    def _show_retry_message(self, count):
+        """在预览画布上显示重试提示"""
+        cw = self.preview_canvas.winfo_width()
+        ch = self.preview_canvas.winfo_height()
+        if cw < 10 or ch < 10:
             return
+        text = f"信号丢失，获取中...({count}/9)"
+        if self._retry_text_id is None:
+            # 第一次创建，先清"无数据"文字
+            if self._no_data_text_id:
+                self.preview_canvas.delete(self._no_data_text_id)
+                self._no_data_text_id = None
+            self._retry_text_id = self.preview_canvas.create_text(
+                cw // 2, ch // 2, text=text,
+                fill="#FFA500", font=("", 20), anchor="center"
+            )
+        else:
+            self.preview_canvas.itemconfigure(self._retry_text_id, text=text)
 
-        self._preview_retry_count = 0
+    def _clear_retry_message(self):
+        """清除重试提示文字"""
+        if self._retry_text_id is not None:
+            self.preview_canvas.delete(self._retry_text_id)
+            self._retry_text_id = None
 
-        # 先调度下一次循环，保证帧率不受当前帧处理耗时影响
-        self._preview_after_id = self.after(self._preview_interval, self._preview_loop)
-
-        # 绘制ROI叠加框
-        if self.rois:
-            for name, (x, y, w, h) in self.rois.items():
-                color = self.extractor.get_roi_color(name)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-
-        # 缩放并显示
-        self._display_preview_frame(frame)
+    def _on_camera_lost(self):
+        """摄像头断开 — 停止预览、清空数据源/ROI状态"""
+        self._stop_preview()
+        self._show_no_data()
+        self.source_combo.configure(state="disabled")
+        self.source_combo["values"] = ["无可用数据源"]
+        self.source_var.set("无可用数据源")
+        self.rois = None
+        self.roi_status_var.set("未配置")
+        self.start_btn.config(state="disabled")
+        self.status_var.set("摄像头已断开")
+        self._log("摄像头已断开")
 
     def _display_preview_frame(self, frame_bgr):
         """在预览画布上显示一帧（全部用OpenCV缩放，PIL仅做PhotoImage转换）"""
@@ -307,10 +597,11 @@ class CameraRealtimeWindow(tk.Toplevel):
         if cw < 10 or ch < 10:
             return
 
-        # 清除"无数据"文字
+        # 清除"无数据"和重试文字
         if self._no_data_text_id:
             self.preview_canvas.delete(self._no_data_text_id)
             self._no_data_text_id = None
+        self._clear_retry_message()
 
         h, w = frame_bgr.shape[:2]
 
@@ -340,6 +631,22 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _select_roi(self):
         """从当前数据源捕获一帧用于ROI框选"""
+        # 识别中：停止并清空数据
+        if self.processing_thread and not self.processing_thread.is_stopped():
+            if not messagebox.askyesno("确认", "选择ROI将停止当前识别并清空所有数据，是否继续？"):
+                return
+            self._stop_realtime()
+            self.results.clear()
+            self.data_table.clear()
+            self.stats_panel.clear_data()
+        elif self.results:
+            # 停止后有残留数据
+            if not messagebox.askyesno("确认", "选择ROI将清空当前数据，是否继续？"):
+                return
+            self.results.clear()
+            self.data_table.clear()
+            self.stats_panel.clear_data()
+
         # 先停止预览，释放摄像头独占连接
         self._stop_preview()
 
@@ -386,6 +693,14 @@ class CameraRealtimeWindow(tk.Toplevel):
         except ValueError:
             messagebox.showerror("错误", "采样间隔必须大于0")
             return
+
+        # 检查残留数据（停止后重新开始）
+        if self.results:
+            if not messagebox.askyesno("新一轮识别", "开始新一轮识别将清空当前数据，是否继续？"):
+                return
+            self.results.clear()
+            self.data_table.clear()
+            self.stats_panel.clear_data()
 
         # 更新旋转角度
         try:
@@ -448,6 +763,16 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.processing_thread.stop()
         self._reset_buttons()
 
+    def _clear_all_data(self):
+        """清空所有已识别的数据（表格 + 图表 + events）"""
+        if not self.results:
+            return
+        if not messagebox.askyesno("确认清空", "确定要清空所有已识别的数据吗？\n此操作不可撤销。"):
+            return
+        self.results.clear()
+        self.data_table.clear()
+        self.stats_panel.clear_data()
+
     def _reset_buttons(self):
         """重置按钮状态"""
         self.start_btn.config(state="normal" if self.rois else "disabled")
@@ -493,13 +818,22 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._log(message)
 
     def _on_finished(self, success, message):
-        """处理完成"""
+        """处理完成信号（由识别线程触发，调度到UI线程）"""
+        camera_lost = self.processing_thread is not None and self.processing_thread.camera_lost
+        self.after_idle(self._on_finished_ui, success, message, camera_lost)
+
+    def _on_finished_ui(self, success, message, camera_lost):
+        """在UI线程中执行完成清理"""
+        if not self.winfo_exists():
+            return
         self._reset_buttons()
         self.status_var.set(message)
         self._log(message)
         self.processing_thread = None
-        # 恢复独立预览循环
-        self._start_preview()
+        if not success and camera_lost:
+            self._on_camera_lost()
+        else:
+            self._start_preview()
 
     # ═══════════════════════════════════════════════════════════
     # 其他
@@ -613,20 +947,17 @@ class CameraRealtimeWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="关闭", command=win.destroy).pack(side="right")
 
     def _export_data(self):
-        """导出数据为.slog"""
+        """导出数据为.slog（含events）"""
         if not self.results:
             messagebox.showwarning("警告", "没有可导出的数据")
             return
 
-        from tkinter import filedialog
-        import json
-
         export = {
             'version': 1,
             'results': self.results,
-            'events': [],
-            'heater_initial': 0,
-            'fan_initial': 0,
+            'events': self.stats_panel.events if hasattr(self.stats_panel, 'events') else [],
+            'heater_initial': self.stats_panel.heater_initial if hasattr(self.stats_panel, 'heater_initial') else 0,
+            'fan_initial': self.stats_panel.fan_initial if hasattr(self.stats_panel, 'fan_initial') else 0,
         }
 
         path = filedialog.asksaveasfilename(
