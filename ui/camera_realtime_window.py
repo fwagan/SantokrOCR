@@ -174,7 +174,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         curve_tab.pack_propagate(False)  # 阻止FigureCanvasTkAgg塌缩父容器
         self.notebook.add(curve_tab, text="实时曲线")
 
-        self.stats_panel = StatisticsPanel(curve_tab, results=[], figsize=(7, 5))
+        self.stats_panel = StatisticsPanel(curve_tab, results=[], figsize=(7, 5), show_prediction=True)
         self.stats_panel.pack(side="top", fill="both", expand=True)
 
         # 曲线控制 dock bottom（实时模式：仅显示原曲线checkbox）
@@ -889,7 +889,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             ttk.Label(right, text=f"豆温: {result.get('temp1_full', '?')}").pack(anchor="w")
             ttk.Label(
                 right, text=f"豆温正常位: {result.get('temp1_normal', '?')}",
-                foreground="red" if result.get('temp1_full') == '????' else "black"
+                foreground="red" if '?' in str(result.get('temp1_full', '')) else "black"
             ).pack(anchor="w")
             ttk.Label(
                 right, text=f"故障位: {result.get('temp1_faulty_digit', '?')}",
@@ -897,7 +897,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             ).pack(anchor="w")
             ttk.Label(
                 right, text=f"风温: {result.get('temp2', '?')}",
-                foreground="red" if result.get('temp2') == '????' else "black"
+                foreground="red" if '?' in str(result.get('temp2', '')) else "black"
             ).pack(anchor="w")
 
             # 显示各ROI裁剪图

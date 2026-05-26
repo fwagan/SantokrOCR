@@ -133,7 +133,7 @@ def extract_valid_data(results):
     temp2_values = []
 
     for result in results:
-        if result.get('temp1_full') == '????' or result.get('temp2') == '????':
+        if '?' in str(result.get('temp1_full', '')) or '?' in str(result.get('temp2', '')):
             continue
         try:
             timestamp = float(result['timestamp'])

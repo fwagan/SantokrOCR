@@ -225,7 +225,7 @@ class MainWindow(tk.Tk):
 
         # 统计非法数据
         def is_invalid(r):
-            return r.get('temp1_full') == '????' or r.get('temp1_faulty_digit') == -1
+            return '?' in str(r.get('temp1_full', '')) or r.get('temp1_faulty_digit') == -1
 
         invalid_count = sum(1 for r in self.results if is_invalid(r))
         if invalid_count == 0:
@@ -294,7 +294,7 @@ class MainWindow(tk.Tk):
             curr_temp_str = curr_result.get('temp1_full', '')
 
             # 跳过非法温度值
-            if prev_temp_str == '????' or curr_temp_str == '????':
+            if '?' in prev_temp_str or '?' in curr_temp_str:
                 continue
 
             try:
@@ -334,7 +334,7 @@ class MainWindow(tk.Tk):
         if selected == "红色-识别失败":
             count = 0
             for result in self.results:
-                if result.get('temp1_faulty_digit') == -1 or result.get('temp2', '') == '????':
+                if result.get('temp1_faulty_digit') == -1 or '?' in str(result.get('temp2', '')):
                     self.data_table.add_row(result)
                     count += 1
             self.log(f"筛选完成，显示 {count} 条识别失败记录")
@@ -718,9 +718,6 @@ class MainWindow(tk.Tk):
                 self.log("错误：缺少必要ROI（temp1_normal / temp1_faulty）")
                 cap.release()
                 return
-            has_temp2_new = 'temp2_normal_3digits' in self.rois and 'temp2_normal_lastdigit' in self.rois
-            has_temp2_old = 'temp2_normal' in self.rois
-
             recognizer = self.extractor._get_digit_recognizer()
 
             for i, frame_num in enumerate(frame_nums):
@@ -735,12 +732,9 @@ class MainWindow(tk.Tk):
                 temp1_faulty_img = self.extractor.crop_roi(frame, self.rois['temp1_faulty'])
 
                 # temp2
-                if has_temp2_new:
+                if 'temp2_normal_3digits' in self.rois and 'temp2_normal_lastdigit' in self.rois:
                     temp2_3digits_img = self.extractor.crop_roi(frame, self.rois['temp2_normal_3digits'])
                     temp2_lastdigit_img = self.extractor.crop_roi(frame, self.rois['temp2_normal_lastdigit'])
-                elif has_temp2_old:
-                    temp2_3digits_img = self.extractor.crop_roi(frame, self.rois['temp2_normal'])
-                    temp2_lastdigit_img = None
                 else:
                     temp2_3digits_img = None
                     temp2_lastdigit_img = None
@@ -758,32 +752,34 @@ class MainWindow(tk.Tk):
                 # temp2 识别
                 if temp2_lastdigit_img is not None:
                     temp2_3digits_text, temp2_3digits_conf = recognizer.recognize_temperature(temp2_3digits_img, digit_count=3)
-                    temp2_lastdigit, temp2_lastdigit_conf, _ = recognizer.multi_digit_recognizer.recognize_single_digit(temp2_lastdigit_img)
-                    if temp2_3digits_text and len(temp2_3digits_text) >= 3 and temp2_lastdigit >= 0:
-                        temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
+                    # 先分割再识别最后一位（分割后才能正确判断宽高比，否则数字1无法识别）
+                    _seg_result = recognizer.multi_digit_recognizer.segmenter.segment_digits(temp2_lastdigit_img)
+                    if _seg_result:
+                        temp2_lastdigit, temp2_lastdigit_conf, _ = recognizer.multi_digit_recognizer.recognize_single_digit(_seg_result[0]['image'])
                     else:
-                        temp2_text = "????"
-                elif temp2_3digits_img is not None:
-                    temp2_text, _ = recognizer.recognize_temperature(temp2_3digits_img, digit_count=4)
+                        temp2_lastdigit, temp2_lastdigit_conf = -1, 0.0
+                    digit3 = (temp2_3digits_text or "???")[:3].ljust(3, "?")
+                    lastdigit_str = str(temp2_lastdigit) if temp2_lastdigit >= 0 else "?"
+                    temp2_text = f"{digit3}.{lastdigit_str}"
                 else:
                     temp2_text = "????"
 
                 # 故障位
                 faulty_digit_result, method = self.extractor.recognize_faulty_digit(temp1_faulty_img)
 
+                faulty_digit = -1
+                temp1_full = f"{(temp1_normal_text or '???')[:3].ljust(3, '?')}.?"
+
                 if temp1_normal_text and len(temp1_normal_text) >= 3:
                     if faulty_digit_result == -2:
                         faulty_digit = -2
-                        temp1_full = "????"
+                        temp1_full = f"{temp1_normal_text[:3]}.?"
                     elif faulty_digit_result != -1:
                         faulty_digit = faulty_digit_result
-                        temp1_full = temp1_normal_text + "." + str(faulty_digit)
+                        temp1_full = f"{temp1_normal_text[:3]}.{faulty_digit}"
                     else:
                         faulty_digit = -1
-                        temp1_full = "????"
-                else:
-                    faulty_digit = -1
-                    temp1_full = "????"
+                        temp1_full = f"{temp1_normal_text[:3]}.?"
 
                 result = self.extractor.build_result(
                     frame=frame_num,
@@ -964,6 +960,10 @@ class MainWindow(tk.Tk):
         except Exception as e:
             self.log(f"保存结果到缓存失败: {e}")
 
+        # 重置筛选到全部
+        self.filter_color_var.set("全部")
+        self.apply_color_filter()
+
         # 重置按钮状态
         self.start_button.config(state="normal")
         self.pause_button.config(state="disabled")
@@ -1037,9 +1037,14 @@ class MainWindow(tk.Tk):
         if self._slog_viewer is not None:
             try:
                 if self._slog_viewer.winfo_exists():
-                    self._slog_viewer.lift()
-                    self._slog_viewer.focus_set()
-                    return
+                    if not messagebox.askyesno(
+                        "确认",
+                        "重新绘制曲线会丢失当前已修改的烘焙信息，是否继续？"
+                    ):
+                        self._slog_viewer.lift()
+                        return
+                    self._slog_viewer.destroy()
+                    self._slog_viewer = None
             except tk.TclError:
                 pass  # 窗口已销毁，重新创建
 
@@ -1177,18 +1182,33 @@ class MainWindow(tk.Tk):
 
     def on_edit_record(self, frame_num, temp1_value, temp2_value):
         """帧查看器中手动修正后的回调"""
+        updated_result = None
         for result in self.results:
             if result.get('frame') == frame_num:
                 if temp1_value is not None:
                     result['temp1_full'] = temp1_value
                 if temp2_value is not None:
                     result['temp2'] = temp2_value
+                updated_result = result
                 break
 
-        # 刷新表格显示
-        self.data_table.clear()
-        for result in self.results:
-            self.data_table.add_row(result)
+        if updated_result:
+            # 尝试原地更新，失败则全量刷新（例如筛选后清除重建导致 item 失效）
+            if not self.data_table.update_edited_row(updated_result):
+                self.apply_color_filter()
+                self.log(f"帧 {frame_num} 已手动修正: 豆温={temp1_value}, 风温={temp2_value}")
+                self.update_cache()
+                return
+
+            # 检查编辑后的行是否仍符合当前筛选
+            selected = self.filter_color_var.get()
+            if selected == "红色-识别失败":
+                if not (updated_result.get('temp1_faulty_digit') == -1 or '?' in str(updated_result.get('temp2', ''))):
+                    self.data_table.remove_edited_row()
+            elif selected == "温差异常":
+                if updated_result.get('abnormal_category') != 'temperature_diff':
+                    self.data_table.remove_edited_row()
+
         self.log(f"帧 {frame_num} 已手动修正: 豆温={temp1_value}, 风温={temp2_value}")
         self.update_cache()
 

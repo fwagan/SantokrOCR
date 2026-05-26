@@ -236,45 +236,30 @@ class VideoDigitExtractor:
                     temp1_normal_img = self.crop_roi(frame, rois['temp1_normal'])
                     temp1_faulty_img = self.crop_roi(frame, rois['temp1_faulty'])
 
-                    # temp2 ROI处理（支持新旧格式）
+                    # temp2 ROI处理（新格式：3位数 + 最后一位 两个ROI）
                     temp2_3digits_img = None
                     temp2_lastdigit_img = None
-                    temp2_normal_img = None  # 旧格式
 
                     if 'temp2_normal_3digits' in rois and 'temp2_normal_lastdigit' in rois:
-                        # 新格式：两个ROI
                         temp2_3digits_img = self.crop_roi(frame, rois['temp2_normal_3digits'])
                         temp2_lastdigit_img = self.crop_roi(frame, rois['temp2_normal_lastdigit'])
-                    elif 'temp2_normal' in rois:
-                        # 旧格式：单个ROI包含4位数字
-                        temp2_normal_img = self.crop_roi(frame, rois['temp2_normal'])
-                        temp2_3digits_img = temp2_normal_img  # 用于向后兼容
-                    else:
-                        # 没有temp2 ROI
-                        pass
 
                     recognizer.set_mode('normal')
                     temp1_normal_text, temp1_conf = recognizer.recognize_temperature(temp1_normal_img, digit_count=3)
-                    # 识别temp2（支持新旧格式）
+                    # 识别temp2
                     if temp2_lastdigit_img is not None:
-                        # 新格式：两个ROI分别识别
                         temp2_3digits_text, temp2_3digits_conf = recognizer.recognize_temperature(temp2_3digits_img, digit_count=3)
-                        # 识别最后一位数字：先分割再识别（匹配debug标签页的正确做法）
+                        # 识别最后一位数字：先分割再识别
                         _seg_result = recognizer.multi_digit_recognizer.segmenter.segment_digits(temp2_lastdigit_img)
                         if _seg_result:
                             temp2_lastdigit, temp2_lastdigit_conf, _ = recognizer.multi_digit_recognizer.recognize_single_digit(_seg_result[0]['image'])
                         else:
                             temp2_lastdigit, temp2_lastdigit_conf = -1, 0.0
-                        # 组合temp2温度值：xxx.x格式
-                        if temp2_3digits_text and len(temp2_3digits_text) >= 3 and temp2_lastdigit >= 0:
-                            temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
-                            temp2_conf = (temp2_3digits_conf + temp2_lastdigit_conf) / 2
-                        else:
-                            temp2_text = "????"
-                            temp2_conf = 0.0
-                    elif temp2_normal_img is not None:
-                        # 旧格式：单个ROI包含4位数字
-                        temp2_text, temp2_conf = recognizer.recognize_temperature(temp2_normal_img, digit_count=4)
+                        # 组合temp2温度值：保留部分识别结果，？标记失败位
+                        digit3 = (temp2_3digits_text or "???")[:3].ljust(3, "?")
+                        lastdigit_str = str(temp2_lastdigit) if temp2_lastdigit >= 0 else "?"
+                        temp2_text = f"{digit3}.{lastdigit_str}"
+                        temp2_conf = temp2_3digits_conf if temp2_3digits_text else 0.0
                     else:
                         # 没有temp2 ROI
                         temp2_text = "????"
@@ -283,25 +268,20 @@ class VideoDigitExtractor:
                     # 故障位数字识别
                     faulty_digit_result, method = self.recognize_faulty_digit(temp1_faulty_img)
 
-                    # 初始化完整温度值
-                    temp1_full = "????"
+                    # 初始化完整温度值（保留部分识别结果，？标记失败位）
                     faulty_digit = -1
+                    temp1_full = f"{(temp1_normal_text or '???')[:3].ljust(3, '?')}.?"
 
-                    # 如果正常位识别成功，尝试组合完整温度值
                     if temp1_normal_text and len(temp1_normal_text) >= 3:
-                        # 故障位识别结果处理
                         if faulty_digit_result == -2:
                             faulty_digit = -2
-                            temp1_full = "????"
+                            temp1_full = f"{temp1_normal_text[:3]}.?"
                         elif faulty_digit_result != -1:
                             faulty_digit = faulty_digit_result
-                            temp1_full = temp1_normal_text + "." + str(faulty_digit)
+                            temp1_full = f"{temp1_normal_text[:3]}.{faulty_digit}"
                         else:
                             faulty_digit = -1
-                            temp1_full = "????"
-                    else:
-                        faulty_digit = -1
-                        temp1_full = "????"
+                            temp1_full = f"{temp1_normal_text[:3]}.?"
 
                     # 记录结果
                     result = self.build_result(

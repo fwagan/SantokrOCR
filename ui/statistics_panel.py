@@ -78,7 +78,7 @@ setup_chinese_font()
 class StatisticsPanel(ttk.Frame):
     """统计面板（嵌入版本）"""
 
-    def __init__(self, parent, results=None, figsize=(14, 8)):
+    def __init__(self, parent, results=None, figsize=(14, 8), show_prediction=False):
         """
         初始化统计面板
 
@@ -91,6 +91,7 @@ class StatisticsPanel(ttk.Frame):
         self.parent = parent
         self.results = results if results is not None else []
         self._figsize = figsize
+        self._show_prediction = show_prediction
 
         # 配置参数
         self.sampling_interval = 1.0  # 重采样间隔（秒）
@@ -251,7 +252,8 @@ class StatisticsPanel(ttk.Frame):
         self.window_var, _ = add_spinrow("平滑窗口(秒):", tk.IntVar, self.smooth_window, 3, 60, 1)
         self.polyorder_var, _ = add_spinrow("多项式阶数:", tk.IntVar, self.smooth_polyorder, 1, 5, 1)
         self.ror_interval_var, _ = add_spinrow("ROR步长(秒):", tk.DoubleVar, self.ror_interval, 1, 30, 1)
-        self.pred_window_var, _ = add_spinrow("ROR趋势窗口(秒):", tk.IntVar, self.pred_window, 10, 120, 5, fmt='int')
+        if self._show_prediction:
+            self.pred_window_var, _ = add_spinrow("ROR趋势窗口(秒):", tk.IntVar, self.pred_window, 10, 120, 5, fmt='int')
 
         # 按钮行
         btn_frame = ttk.Frame(control_frame)
@@ -447,7 +449,7 @@ class StatisticsPanel(ttk.Frame):
 
         for result in self.results:
             # 跳过非法数据
-            if result.get('temp1_full') == '????' or result.get('temp2') == '????':
+            if '?' in str(result.get('temp1_full', '')) or '?' in str(result.get('temp2', '')):
                 continue
 
             try:
@@ -778,7 +780,8 @@ class StatisticsPanel(ttk.Frame):
         self.smooth_window = self.window_var.get()
         self.smooth_polyorder = self.polyorder_var.get()
         self.ror_interval = self.ror_interval_var.get()
-        self.pred_window = self.pred_window_var.get()
+        if self._show_prediction:
+            self.pred_window = self.pred_window_var.get()
 
         # 重采样
         self.resampled_time, self.resampled_temp1 = self.resample_data(

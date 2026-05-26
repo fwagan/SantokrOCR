@@ -52,6 +52,9 @@ class DataTable(ttk.Frame):
         self.scrollbar_v.grid(row=0, column=1, sticky="ns")
         self.scrollbar_h.grid(row=1, column=0, sticky="ew")
 
+        # 帧查看器编辑的行 item_id（用于原地更新）
+        self._editing_item = None
+
         # 绑定事件
         self.tree.bind("<Double-1>", self.on_row_double_click)
 
@@ -86,46 +89,45 @@ class DataTable(ttk.Frame):
 
         self.tree.bind("<Button-3>", self.show_context_menu)
 
-    def add_row(self, data):
-        """添加一行数据"""
+    def _row_values(self, data):
         values = []
         for col_id, _, _ in self.columns:
             value = data.get(col_id, "")
-            # 转换数字为字符串
             if isinstance(value, (int, float)):
                 value = str(value)
             values.append(value)
+        return values
 
+    def _row_tags(self, data):
         tags = []
-
         abnormal_category = data.get('abnormal_category')
         if abnormal_category == 'temperature_diff':
             tags.append('abnormal_temp')
-        elif data.get('temp1_faulty_digit') == -1 or data.get('temp2', '') == '????':
+        elif data.get('temp1_faulty_digit') == -1 or '?' in str(data.get('temp2', '')):
             tags.append('recognition_failed')
+        return tags
 
-        item = self.tree.insert("", "end", values=values, tags=tuple(tags))
+    def add_row(self, data):
+        item = self.tree.insert("", "end", values=self._row_values(data), tags=tuple(self._row_tags(data)))
         return item
 
     def load_all(self, results):
-        """批量加载所有结果到表格（一次性插入）"""
         self.clear()
         for data in results:
-            values = []
-            for col_id, _, _ in self.columns:
-                value = data.get(col_id, "")
-                if isinstance(value, (int, float)):
-                    value = str(value)
-                values.append(value)
+            self.tree.insert("", "end", values=self._row_values(data), tags=tuple(self._row_tags(data)))
 
-            tags = []
-            abnormal_category = data.get('abnormal_category')
-            if abnormal_category == 'temperature_diff':
-                tags.append('abnormal_temp')
-            elif data.get('temp1_faulty_digit') == -1 or data.get('temp2', '') == '????':
-                tags.append('recognition_failed')
+    def update_edited_row(self, data):
+        if not self._editing_item or not self.tree.exists(self._editing_item):
+            return False
 
-            self.tree.insert("", "end", values=values, tags=tuple(tags))
+        self.tree.item(self._editing_item, values=self._row_values(data), tags=tuple(self._row_tags(data)))
+        return True
+
+    def remove_edited_row(self):
+        """从视图中移除正在编辑的行（不再匹配筛选时）"""
+        if self._editing_item and self.tree.exists(self._editing_item):
+            self.tree.delete(self._editing_item)
+        self._editing_item = None
 
     def add_separator(self):
         """添加灰色分隔行（3行）"""
@@ -135,8 +137,8 @@ class DataTable(ttk.Frame):
 
     def clear(self):
         """清空所有数据"""
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        self.tree.delete(*self.tree.get_children())
+        self._editing_item = None
 
     def get_selected_row(self):
         """获取选中行的数据"""
@@ -212,6 +214,10 @@ class DataTable(ttk.Frame):
             timestamp = float(data.get('timestamp', 0))
         except (ValueError, KeyError):
             return
+
+        # 保存当前选中行的 item_id，供编辑后原地更新
+        items = self.tree.selection()
+        self._editing_item = items[0] if items else None
 
         # 如果有回调函数，调用它（传入时间戳用于定位帧）
         if self.on_view_frame_callback:
@@ -297,7 +303,9 @@ class DataTable(ttk.Frame):
                     deleted_data.append(data)
             self.on_rows_deleted_callback(selected_items, deleted_data)
 
-        # 从treeview中删除
+        if self._editing_item in selected_items:
+            self._editing_item = None
+
         for item in selected_items:
             self.tree.delete(item)
 

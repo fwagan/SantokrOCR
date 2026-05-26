@@ -784,7 +784,7 @@ class FrameViewer(tk.Toplevel):
 
         if abnormal == 'temperature_diff':
             return 'black'
-        if faulty == -1 or temp1 == '????':
+        if faulty == -1 or '?' in temp1:
             return 'red'
         return 'lightgreen'
 
@@ -799,8 +799,7 @@ class FrameViewer(tk.Toplevel):
         temp2_value = self.edit_temp2_var.get().strip()
 
         if not temp1_value and not temp2_value:
-            from tkinter import messagebox
-            messagebox.showwarning("输入错误", "至少输入一个值")
+            tk.messagebox.showwarning("输入错误", "至少输入一个值")
             return
 
         if self.on_edit_callback:
@@ -809,8 +808,8 @@ class FrameViewer(tk.Toplevel):
                 temp1_value if temp1_value else None,
                 temp2_value if temp2_value else None
             )
-            from tkinter import messagebox
-            messagebox.showinfo("修改成功", "值已更新")
+            tk.messagebox.showinfo("修改成功", "值已更新")
+            self.destroy()
 
     def _ensure_video_info(self):
         """懒加载视频 fps、总帧数和帧间隔（委托 extractor，共享缓存）"""

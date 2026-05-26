@@ -166,7 +166,7 @@ class CameraProcessingThread(threading.Thread):
             self.result_signal.emit(result)
 
             # 缓存失败帧用于调试（至多10帧，满了不再追加）
-            if (temp1_full == '????' or temp2_text == '????') and len(self._failed_frames) < 10:
+            if ('?' in str(temp1_full) or '?' in str(temp2_text)) and len(self._failed_frames) < 10:
                 with self._failed_frames_lock:
                     if len(self._failed_frames) < 10:
                         self._failed_frames.append((frame_count, frame.copy(), dict(result)))

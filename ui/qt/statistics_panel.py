@@ -293,7 +293,7 @@ class StatisticsPanel(QWidget):
         temp2_values = []
         time_str_labels = []
         for result in self._results:
-            if result.get('temp1_full') == '????' or result.get('temp2') == '????':
+            if '?' in str(result.get('temp1_full', '')) or '?' in str(result.get('temp2', '')):
                 continue
             try:
                 timestamp = float(result['timestamp'])
