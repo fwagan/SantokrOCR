@@ -385,26 +385,23 @@ class VideoDigitExtractor:
 
         return frame_with_rois
 
-    def get_frame_with_rois_cropped(self, video_path, timestamp, rois, expand_ratio=0.1,
-                                    downward_expand_ratio=0.0, extend_right=False):
+    def crop_and_annotate_frame(self, frame, rois, expand_ratio=0.1,
+                                 downward_expand_ratio=0.0, extend_right=False):
         """
-        获取帧并裁剪到只包含所有ROI区域（外扩指定比例）
+        对已加载的帧进行ROI裁剪和标注（不涉及视频文件读取）
 
         Args:
-            video_path: 视频文件路径
-            timestamp: 时间戳
+            frame: BGR numpy array（来自缓存或视频的完整帧）
             rois: ROI字典
             expand_ratio: 外扩比例（默认10%，四个方向均匀扩展）
             downward_expand_ratio: 额外向下扩展比例（相对于裁剪高度，默认0%）
             extend_right: 是否将裁剪右边界扩展到视频最右侧
 
         Returns:
-            裁剪到ROI区域的图像，坐标已偏移
+            裁剪到ROI区域的图像，坐标已偏移，带ROI框和标签
         """
-        frame = self.get_frame_at_timestamp(video_path, timestamp)
         if frame is None:
             return None
-
         if not rois:
             return frame
 
@@ -444,6 +441,28 @@ class VideoDigitExtractor:
                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
         return cropped
+
+    def get_frame_with_rois_cropped(self, video_path, timestamp, rois, expand_ratio=0.1,
+                                    downward_expand_ratio=0.0, extend_right=False):
+        """
+        获取帧并裁剪到只包含所有ROI区域（外扩指定比例）
+
+        Args:
+            video_path: 视频文件路径
+            timestamp: 时间戳
+            rois: ROI字典
+            expand_ratio: 外扩比例（默认10%，四个方向均匀扩展）
+            downward_expand_ratio: 额外向下扩展比例
+            extend_right: 是否向右扩展（用于完整显示最后一位）
+
+        Returns:
+            裁剪到ROI区域的图像，坐标已偏移
+        """
+        frame = self.get_frame_at_timestamp(video_path, timestamp)
+        if frame is None:
+            return None
+        return self.crop_and_annotate_frame(frame, rois, expand_ratio,
+                                            downward_expand_ratio, extend_right)
 
     def get_processing_stats(self):
         """

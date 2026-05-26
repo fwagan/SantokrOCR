@@ -8,6 +8,7 @@
 
 import tkinter as tk
 from tkinter import ttk
+import os
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
@@ -31,13 +32,14 @@ class FrameViewer(tk.Toplevel):
                  results=None, events=None, on_mark_event_callback=None,
                  heater_initial=50.0, fan_initial=80.0,
                  rotate_angle: float = 5,
-                 on_edit_callback=None):
+                 on_edit_callback=None,
+                 cache_dir=None):
         """
         初始化帧查看器
         Args:
             parent: 父窗口
             extractor: VideoDigitExtractor实例
-            video_path: 视频文件路径
+            video_path: 视频文件路径（cache模式下为None）
             rois: ROI字典
             frame_num: 帧号
             timestamp: 时间戳
@@ -49,11 +51,13 @@ class FrameViewer(tk.Toplevel):
             rotate_angle: 旋转角度（正数=逆时针，0=不旋转）
             interval: 采样间隔（秒），用于计算记录帧之间的步长
             on_edit_callback: 手动修正回调函数(frame_num, temp1_value, temp2_value)
+            cache_dir: 帧缓存目录（设置后使用缓存帧而非视频文件）
         """
         super().__init__(parent)
 
         self.extractor = extractor
         self.video_path = video_path
+        self.cache_dir = cache_dir
         self.rois = rois
         self.current_frame_num = frame_num
         self.current_timestamp = timestamp
@@ -338,6 +342,24 @@ class FrameViewer(tk.Toplevel):
 
     def load_and_display_frame(self):
         """加载并显示当前帧（裁剪到只包含ROI区域，向下扩展100%以显示更多数据）"""
+        # cache 模式：直接同步从文件加载（本地文件，无需线程）
+        if self.cache_dir is not None:
+            frame = self._load_full_frame_from_cache(self.current_frame_num)
+            if frame is not None:
+                frame = self.extractor.crop_and_annotate_frame(
+                    frame, self.rois,
+                    expand_ratio=0.1,
+                    downward_expand_ratio=1.0,
+                    extend_right=True
+                )
+            if frame is not None:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                self.display_frame(frame_rgb)
+            # 调试标签页检查（与 video 模式一致）
+            if hasattr(self, 'notebook') and self.notebook.index(self.notebook.select()) == 1:
+                self._generate_debug_visualization()
+            return
+
         # 在新线程中加载帧，避免阻塞UI
         def load_frame():
             # 获取裁剪到ROI区域的帧（外扩10%，再额外向下扩展100%高度）
@@ -519,10 +541,12 @@ class FrameViewer(tk.Toplevel):
         def generate():
             try:
                 # 获取原始帧（不带ROI框）
-                frame = self.extractor.get_frame_at_timestamp(
-                    self.video_path,
-                    self.current_timestamp
-                )
+                if self.cache_dir is not None:
+                    frame = self._load_full_frame_from_cache(self.current_frame_num)
+                else:
+                    frame = self.extractor.get_frame_at_timestamp(
+                        self.video_path, self.current_timestamp
+                    )
                 if frame is None:
                     return
 
@@ -815,8 +839,21 @@ class FrameViewer(tk.Toplevel):
         """懒加载视频 fps、总帧数和帧间隔（委托 extractor，共享缓存）"""
         if self._video_fps is not None:
             return
+        if self.cache_dir is not None:
+            # cache 模式：无视频信息，帧间隔=1
+            self._video_fps = None
+            self._total_frames = None
+            self._frame_interval = 1
+            return
         self._video_fps, self._total_frames = self.extractor.get_video_info(self.video_path)
         self._frame_interval = max(1, int(self._video_fps * self.interval))
+
+    def _load_full_frame_from_cache(self, frame_num):
+        """从缓存目录加载完整帧（cache 模式）。返回 BGR ndarray 或 None"""
+        path = os.path.join(self.cache_dir, f"{frame_num:06d}.jpg")
+        if os.path.exists(path):
+            return cv2.imread(path)
+        return None
 
     def _update_frame_display(self):
         """更新帧号和时间戳显示"""
@@ -832,10 +869,18 @@ class FrameViewer(tk.Toplevel):
         self._ensure_video_info()
         if target < 0:
             return
-        if 0 < self._total_frames <= target:
-            return
-        self.current_frame_num = target
-        self.current_timestamp = target / self._video_fps
+        if self.cache_dir is not None:
+            # cache 模式：检查文件存在性，防止跳转到不存在的帧
+            if not os.path.exists(os.path.join(self.cache_dir, f"{target:06d}.jpg")):
+                return
+            self.current_frame_num = target
+            # 近似时间戳：帧号 × 采样间隔
+            self.current_timestamp = target * self.interval
+        else:
+            if 0 < self._total_frames <= target:
+                return
+            self.current_frame_num = target
+            self.current_timestamp = target / self._video_fps
         self._update_frame_display()
         self.load_and_display_frame()
 
@@ -858,7 +903,6 @@ class FrameViewer(tk.Toplevel):
     def save_screenshot(self):
         """保存当前显示的帧为图片"""
         from tkinter import filedialog
-        import os
 
         file_path = filedialog.asksaveasfilename(
             title="保存截图",
@@ -868,10 +912,12 @@ class FrameViewer(tk.Toplevel):
 
         if file_path:
             # 获取原始帧（不带ROI框）
-            frame = self.extractor.get_frame_at_timestamp(
-                self.video_path,
-                self.current_timestamp
-            )
+            if self.cache_dir is not None:
+                frame = self._load_full_frame_from_cache(self.current_frame_num)
+            else:
+                frame = self.extractor.get_frame_at_timestamp(
+                    self.video_path, self.current_timestamp
+                )
 
             if frame is not None:
                 # 保存图像

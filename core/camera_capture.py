@@ -32,19 +32,21 @@ class Signal:
 class CameraProcessingThread(threading.Thread):
     """摄像头实时处理线程"""
 
-    def __init__(self, extractor, get_frame, rois, interval=0.25):
+    def __init__(self, extractor, get_frame, rois, interval=0.25, cache=None):
         """
         Args:
             extractor: VideoDigitExtractor 实例
             get_frame: 可调用，返回当前帧 BGR ndarray（由预览线程提供）
             rois: ROI字典
             interval: 采样间隔（秒）
+            cache: RealTimeProcessCache 实例（可选）
         """
         super().__init__(daemon=True)
         self.extractor = extractor
         self._get_frame = get_frame
         self.rois = rois
         self.interval = interval
+        self.cache = cache
 
         # 信号
         self.result_signal = Signal()   # (result_dict)
@@ -165,6 +167,10 @@ class CameraProcessingThread(threading.Thread):
             self.results.append(result)
             self.result_signal.emit(result)
 
+            # 异步缓存帧（仅在配置了 cache 时）
+            if self.cache is not None:
+                self.cache.save_frame(frame.copy(), frame_count)
+
             # 缓存失败帧用于调试（至多10帧，满了不再追加）
             if ('?' in str(temp1_full) or '?' in str(temp2_text)) and len(self._failed_frames) < 10:
                 with self._failed_frames_lock:
@@ -186,6 +192,8 @@ class CameraProcessingThread(threading.Thread):
 
     def stop(self):
         self._stop_event.set()
+        if self.cache is not None:
+            self.cache.stop_writer()
 
     def pause(self):
         self._pause_event.clear()

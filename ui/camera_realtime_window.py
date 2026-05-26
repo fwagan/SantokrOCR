@@ -19,8 +19,10 @@ from PIL import Image, ImageTk
 
 from core.video_extractor import VideoDigitExtractor
 from core.camera_capture import CameraProcessingThread
+from core.realtime_cache import RealTimeProcessCache
 from ui.data_table import DataTable
 from ui.statistics_panel import StatisticsPanel
+from ui.frame_viewer import FrameViewer
 from ui.slog_comparer import extract_valid_data, resample_data, smooth_data, compute_ror
 from utils.screen_utils import center_window
 
@@ -40,6 +42,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 线程
         self.processing_thread = None
+
+        # 帧缓存
+        self._cache = RealTimeProcessCache()
 
         # 理想曲线
         self.ideal_data = None
@@ -81,6 +86,10 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 自动检测并选择第一个可用摄像头
         self._auto_select_first_camera()
+
+        # 后台清理旧缓存会话
+        threading.Thread(target=RealTimeProcessCache.cleanup_old_sessions,
+                         args=(5,), daemon=True).start()
 
     def _fit_chart(self):
         """窗口映射后按显示器真实DPI设fig尺寸并重绘"""
@@ -146,6 +155,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.clear_btn.pack(side="left", padx=4)
 
         ttk.Button(top_bar, text="导出数据", command=self._export_data).pack(side="left", padx=(4, 0))
+        self.export_session_btn = ttk.Button(top_bar, text="导出会话", command=self._export_session, state="disabled")
+        self.export_session_btn.pack(side="left", padx=4)
 
         # ── 主体：预览 + 右侧Notebook ──
         main = ttk.PanedWindow(self, orient="horizontal")
@@ -238,7 +249,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         """打开文件选择对话框加载理想曲线"""
         path = filedialog.askopenfilename(
             title="选择理想曲线文件",
-            filetypes=[("Slog文件", "*.slog"), ("所有文件", "*.*")]
+            filetypes=[("Slog文件", "*.slog"), ("所有文件", "*.*")],
+            parent=self
         )
         if not path:
             return
@@ -250,20 +262,20 @@ class CameraRealtimeWindow(tk.Toplevel):
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception as e:
-            messagebox.showerror("错误", f"无法加载文件:\n{path}\n{e}")
+            messagebox.showerror("错误", f"无法加载文件:\n{path}\n{e}", parent=self)
             return
 
         results = data.get('results', [])
         events = data.get('events', [])
 
         if not results:
-            messagebox.showwarning("警告", "文件没有有效数据")
+            messagebox.showwarning("警告", "文件没有有效数据", parent=self)
             return
 
         # 处理数据：提取→重采样→平滑→ROR
         timestamps, temp1, temp2 = extract_valid_data(results)
         if len(timestamps) < 2:
-            messagebox.showwarning("警告", "有效数据不足")
+            messagebox.showwarning("警告", "有效数据不足", parent=self)
             return
 
         sampling_interval = 1.0
@@ -478,7 +490,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._preview_after_id = self.after(30, self._preview_poll)
 
     def _stop_preview(self):
-        """停止预览（等待后台线程释放摄像头，避免后续cap打开时DSHOW冲突）"""
+        """停止预览（等待后台线程释放摄像头）"""
         self._preview_thread_running = False
         if self._preview_after_id:
             self.after_cancel(self._preview_after_id)
@@ -497,35 +509,38 @@ class CameraRealtimeWindow(tk.Toplevel):
             self._preview_frame_event.set()
             return
 
+        self._cap = cap  # 存为属性，支持从 UI 线程强制 release
         fail_count = 0
-        while self._preview_thread_running:
-            _t0 = time.time()
-            ret, frame = cap.read()
-            elapsed = time.time() - _t0
-
-            if not self._preview_thread_running:
-                break
-
-            if not ret or elapsed > 0.5:
-                fail_count += 1
-                self._preview_fail_count = fail_count
-                if fail_count >= 9:
-                    self._preview_lost = True
-                self._preview_frame_event.set()
-                if fail_count >= 9:
-                    break
-                time.sleep(0.1)
-                continue
-
-            fail_count = 0
-            self._preview_fail_count = 0
-            self._preview_frame = frame
-            self._preview_frame_event.set()
-
         try:
-            cap.release()
-        except Exception:
-            pass
+            while self._preview_thread_running:
+                _t0 = time.time()
+                ret, frame = cap.read()
+                elapsed = time.time() - _t0
+
+                if not self._preview_thread_running:
+                    break
+
+                if not ret or elapsed > 0.5:
+                    fail_count += 1
+                    self._preview_fail_count = fail_count
+                    if fail_count >= 9:
+                        self._preview_lost = True
+                    self._preview_frame_event.set()
+                    if fail_count >= 9:
+                        break
+                    time.sleep(0.1)
+                    continue
+
+                fail_count = 0
+                self._preview_fail_count = 0
+                self._preview_frame = frame
+                self._preview_frame_event.set()
+        finally:
+            try:
+                cap.release()
+            except Exception:
+                pass
+            self._cap = None
 
     def _preview_poll(self):
         """UI线程（after回调）：轮询最新帧并显示"""
@@ -652,7 +667,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         """从当前数据源捕获一帧用于ROI框选"""
         # 识别中：停止并清空数据
         if self.processing_thread and not self.processing_thread.is_stopped():
-            if not messagebox.askyesno("确认", "选择ROI将停止当前识别并清空所有数据，是否继续？"):
+            if not messagebox.askyesno("确认", "选择ROI将停止当前识别并清空所有数据，是否继续？", parent=self):
                 return
             self._stop_realtime()
             self.results.clear()
@@ -660,7 +675,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.stats_panel.clear_data()
         elif self.results:
             # 停止后有残留数据
-            if not messagebox.askyesno("确认", "选择ROI将清空当前数据，是否继续？"):
+            if not messagebox.askyesno("确认", "选择ROI将清空当前数据，是否继续？", parent=self):
                 return
             self.results.clear()
             self.data_table.clear()
@@ -668,7 +683,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 取预览线程最新帧
         if self._preview_frame is None:
-            messagebox.showerror("错误", "无可用预览帧")
+            messagebox.showerror("错误", "无可用预览帧", parent=self)
             return
         frame = self._preview_frame.copy()
 
@@ -688,7 +703,7 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _start_realtime(self):
         """开始实时识别"""
         if not self.rois:
-            messagebox.showwarning("警告", "请先选择ROI")
+            messagebox.showwarning("警告", "请先选择ROI", parent=self)
             return
 
         try:
@@ -696,12 +711,12 @@ class CameraRealtimeWindow(tk.Toplevel):
             if interval <= 0:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("错误", "采样间隔必须大于0")
+            messagebox.showerror("错误", "采样间隔必须大于0", parent=self)
             return
 
         # 检查残留数据（停止后重新开始）
         if self.results:
-            if not messagebox.askyesno("新一轮识别", "开始新一轮识别将清空当前数据，是否继续？"):
+            if not messagebox.askyesno("新一轮识别", "开始新一轮识别将清空当前数据，是否继续？", parent=self):
                 return
             self.results.clear()
             self.data_table.clear()
@@ -721,11 +736,16 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.set_results([])
         self.stats_panel.set_update_interval(interval)
 
+        # 启动帧缓存会话
+        if self._cache.has_session():
+            self._cache.clear()
+        self._cache.start_writer()
         self.processing_thread = CameraProcessingThread(
             extractor=self.extractor,
             get_frame=lambda: self._preview_frame,
             rois=self.rois,
-            interval=interval
+            interval=interval,
+            cache=self._cache
         )
 
         # 连接信号
@@ -740,6 +760,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.start_btn.config(state="disabled")
         self.pause_btn.config(state="normal")
         self.stop_btn.config(state="normal")
+        self.export_session_btn.config(state="disabled")
         self._start_time = time.time()
         self._update_elapsed_time()
 
@@ -768,7 +789,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         """清空所有已识别的数据（表格 + 图表 + events）"""
         if not self.results:
             return
-        if not messagebox.askyesno("确认清空", "确定要清空所有已识别的数据吗？\n此操作不可撤销。"):
+        if not messagebox.askyesno("确认清空", "确定要清空所有已识别的数据吗？\n此操作不可撤销。", parent=self):
             return
         self.results.clear()
         self.data_table.clear()
@@ -779,6 +800,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.start_btn.config(state="normal" if self.rois else "disabled")
         self.pause_btn.config(state="disabled", text="暂停")
         self.stop_btn.config(state="disabled")
+        self.export_session_btn.config(state="normal")
 
     def _update_elapsed_time(self):
         """更新运行时长显示"""
@@ -819,121 +841,73 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._log(message)
         self.processing_thread = None
 
+
     # ═══════════════════════════════════════════════════════════
     # 其他
     # ═══════════════════════════════════════════════════════════
 
     def _on_view_frame(self, frame_num, timestamp, data):
-        """双击表格行：显示缓存的失败帧用于调试"""
-        if self.processing_thread:
-            failed = self.processing_thread.get_failed_frames()
-            if failed:
-                self._show_failed_frames_debug(failed)
-            else:
-                messagebox.showinfo("提示", "没有缓存的失败帧")
-        else:
-            messagebox.showinfo("提示", "实时识别未运行")
+        """双击表格行：打开 FrameViewer（cache 模式）"""
+        if self._cache and self._cache.cached_count() > 0:
+            try:
+                FrameViewer(
+                    parent=self,
+                    extractor=self.extractor,
+                    video_path=None,
+                    cache_dir=self._cache.session_dir(),
+                    rois=self.rois,
+                    frame_num=frame_num,
+                    timestamp=timestamp,
+                    interval=float(self.interval_var.get()),
+                    results=data,
+                    rotate_angle=float(self.rotation_var.get()),
+                )
+            except Exception as e:
+                messagebox.showerror("错误", f"打开帧查看器失败: {e}", parent=self)
+                import traceback
+                traceback.print_exc()
+            return
+        messagebox.showwarning("警告", "没有可用的缓存帧数据", parent=self)
 
-    def _show_failed_frames_debug(self, failed_frames):
-        """显示缓存失败帧的调试窗口"""
-        win = tk.Toplevel(self)
-        win.title("失败帧调试 - 最近10帧")
-        win.geometry("1400x900")
-        center_window(win, 1400, 900)
+    def _export_session(self):
+        """导出当前会话为 .srlog（ZIP 含帧截图 + 结果数据）"""
+        if not self._cache or self._cache.cached_count() == 0:
+            messagebox.showwarning("警告", "没有可导出的会话数据", parent=self)
+            return
 
-        # 使用Notebook切换不同失败帧
-        nb = ttk.Notebook(win)
-        nb.pack(fill="both", expand=True, padx=8, pady=8)
+        default_name = os.path.basename(self._cache.session_dir().rstrip("/\\")) + ".srlog"
+        path = filedialog.asksaveasfilename(
+            title="导出会话",
+            defaultextension=".srlog",
+            initialfile=default_name,
+            filetypes=[("会话文件", "*.srlog"), ("所有文件", "*.*")],
+            parent=self
+        )
+        if not path:
+            return
 
-        for frame_num, frame_bgr, result in failed_frames:
-            tab = ttk.Frame(nb)
-            nb.add(tab, text=f"帧{frame_num}")
-
-            # 左侧：完整帧（带ROI标注）
-            left = ttk.Frame(tab)
-            left.pack(side="left", fill="both", expand=True, padx=4, pady=4)
-
-            frame_display = frame_bgr.copy()
-            if self.rois:
-                for name, (x, y, w, h) in self.rois.items():
-                    color = self.extractor.get_roi_color(name)
-                    cv2.rectangle(frame_display, (x, y), (x + w, y + h), color, 2)
-
-            canvas = tk.Canvas(left, bg="#222222")
-            canvas.pack(fill="both", expand=True)
-
-            # 缩放帧到画布
-            def _show_on_canvas(c, img, ev=None):
-                cw, ch = c.winfo_width(), c.winfo_height()
-                if cw < 10 or ch < 10:
-                    return
-                h, w = img.shape[:2]
-                s = min(cw / w, ch / h)
-                tw, th = int(w * s), int(h * s)
-                small = cv2.resize(img, (tw, th), interpolation=cv2.INTER_NEAREST)
-                rgb = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                pil = Image.fromarray(rgb)
-                tk_img = ImageTk.PhotoImage(pil)
-                c.delete("all")
-                c.create_image((cw - tw) // 2, (ch - th) // 2, anchor="nw", image=tk_img)
-                c._tk_img = tk_img  # 保持引用
-
-            canvas.bind("<Configure>", lambda e, c=canvas, img=frame_display: _show_on_canvas(c, img, e))
-
-            # 右侧：识别结果
-            right = ttk.Frame(tab)
-            right.pack(side="right", fill="y", padx=4, pady=4)
-
-            ttk.Label(right, text=f"帧号: {frame_num}", font=("", 11, "bold")).pack(anchor="w", pady=2)
-            ttk.Label(right, text=f"时间戳: {result.get('timestamp', '?')}").pack(anchor="w")
-            ttk.Label(right, text=f"豆温: {result.get('temp1_full', '?')}").pack(anchor="w")
-            ttk.Label(
-                right, text=f"豆温正常位: {result.get('temp1_normal', '?')}",
-                foreground="red" if '?' in str(result.get('temp1_full', '')) else "black"
-            ).pack(anchor="w")
-            ttk.Label(
-                right, text=f"故障位: {result.get('temp1_faulty_digit', '?')}",
-                foreground="red" if result.get('temp1_faulty_digit', -1) == -1 else "black"
-            ).pack(anchor="w")
-            ttk.Label(
-                right, text=f"风温: {result.get('temp2', '?')}",
-                foreground="red" if '?' in str(result.get('temp2', '')) else "black"
-            ).pack(anchor="w")
-
-            # 显示各ROI裁剪图
-            ttk.Separator(right, orient="horizontal").pack(fill="x", pady=8)
-            ttk.Label(right, text="ROI裁剪区域:", font=("", 10, "bold")).pack(anchor="w")
-
-            roi_frame = ttk.Frame(right)
-            roi_frame.pack(fill="x", pady=4)
-
-            for name in ['temp1_normal', 'temp1_faulty', 'temp2_normal_3digits', 'temp2_normal_lastdigit', 'temp2_normal']:
-                if name not in self.rois:
-                    continue
-                x, y, w, h = self.rois[name]
-                crop = frame_bgr[y:y+h, x:x+w].copy()
-                # 放大2倍
-                crop_big = cv2.resize(crop, (w * 2, h * 2), interpolation=cv2.INTER_NEAREST)
-                crop_rgb = cv2.cvtColor(crop_big, cv2.COLOR_BGR2RGB)
-                pil = Image.fromarray(crop_rgb)
-                tk_img = ImageTk.PhotoImage(pil)
-
-                item_frame = ttk.Frame(roi_frame)
-                item_frame.pack(anchor="w", pady=2)
-                ttk.Label(item_frame, text=name, font=("", 8)).pack()
-                lbl = ttk.Label(item_frame, image=tk_img)
-                lbl.image = tk_img  # 保持引用
-                lbl.pack()
-
-        # 底部按钮
-        btn_frame = ttk.Frame(win)
-        btn_frame.pack(fill="x", padx=8, pady=(0, 8))
-        ttk.Button(btn_frame, text="关闭", command=win.destroy).pack(side="right")
+        try:
+            events = self.stats_panel.events if hasattr(self.stats_panel, 'events') else []
+            self._cache.export_as_srlog(
+                output_path=path,
+                results=self.results,
+                rois=self.rois,
+                interval=float(self.interval_var.get()),
+                rotate_angle=float(self.rotation_var.get()),
+                source=self._get_source_label(),
+                events=events,
+            )
+            self._log(f"会话已导出: {path}")
+            messagebox.showinfo("导出成功", f"会话已保存到:\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showerror("导出失败", str(e), parent=self)
+            import traceback
+            traceback.print_exc()
 
     def _export_data(self):
         """导出数据为.slog（含events）"""
         if not self.results:
-            messagebox.showwarning("警告", "没有可导出的数据")
+            messagebox.showwarning("警告", "没有可导出的数据", parent=self)
             return
 
         export = {
@@ -945,8 +919,10 @@ class CameraRealtimeWindow(tk.Toplevel):
         }
 
         path = filedialog.asksaveasfilename(
+            title="导出数据",
             defaultextension=".slog",
-            filetypes=[("Slog files", "*.slog"), ("All files", "*.*")]
+            filetypes=[("Slog files", "*.slog"), ("All files", "*.*")],
+            parent=self
         )
         if path:
             with open(path, 'w', encoding='utf-8') as f:
@@ -958,12 +934,24 @@ class CameraRealtimeWindow(tk.Toplevel):
         if hasattr(self.parent, 'log'):
             self.parent.log(f"[实时] {message}")
 
+    def destroy(self):
+        """重写 destroy：确保所有路径（包括父窗口关闭）都释放摄像头"""
+        self._stop_preview()
+        # 兜底：_stop_preview 超时后线程可能还卡在 cap.read() 中
+        if hasattr(self, '_cap') and self._cap is not None:
+            try:
+                self._cap.release()
+            except Exception:
+                pass
+        if self._cache:
+            self._cache.stop_writer()
+        super().destroy()
+
     def _on_closing(self):
-        """窗口关闭"""
+        """WM_DELETE_WINDOW 协议：处理线程确认 + 关闭"""
         if self.processing_thread and not self.processing_thread.is_stopped():
-            if messagebox.askyesno("确认退出", "实时识别正在运行，确定退出吗？"):
+            if messagebox.askyesno("确认退出", "实时识别正在运行，确定退出吗？", parent=self):
                 self.processing_thread.stop()
             else:
                 return
-        self._stop_preview()
         self.destroy()

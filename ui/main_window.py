@@ -11,7 +11,6 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
-from queue import Queue
 import time
 import cv2
 import sys
@@ -40,6 +39,8 @@ class MainWindow(tk.Tk):
         self._slog_viewer = None  # 单例slog viewer窗口
         self.cache_manager = get_cache_manager()
         self._realtime_window = None  # 实时识别窗口单例
+        self._mode = 'video'          # 'video' | 'srlog'
+        self._srlog_cache_dir = None  # .srlog 会话帧的解压缓存目录
 
         # 配置窗口
         self.title("SantokrOCR - 视频数字提取工具")
@@ -59,47 +60,18 @@ class MainWindow(tk.Tk):
             pass
 
         # 创建UI组件
-        self.create_menu()
         self.create_center_panel()
         self.create_bottom_panel()
+
+        # 绑定快捷键
+        self.bind('<Control-o>', lambda e: self.open_video())
+        self.bind('<Control-q>', lambda e: self.on_closing())
 
         # 初始化状态
         self.update_status("就绪")
 
         # 绑定窗口关闭事件
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
-
-    def create_menu(self):
-        """创建菜单栏"""
-        menubar = tk.Menu(self)
-
-        # 文件菜单
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="打开视频", command=self.open_video, accelerator="Ctrl+O")
-        file_menu.add_separator()
-        file_menu.add_command(label="实时识别 (摄像头)", command=self.open_realtime)
-        file_menu.add_separator()
-        file_menu.add_command(label="退出", command=self.on_closing, accelerator="Ctrl+Q")
-        menubar.add_cascade(label="文件", menu=file_menu)
-
-        # 视图菜单
-        view_menu = tk.Menu(menubar, tearoff=0)
-        self.show_log_var = tk.BooleanVar(value=True)
-        view_menu.add_checkbutton(label="显示日志", variable=self.show_log_var,
-                                  command=self.toggle_log_display)
-        menubar.add_cascade(label="视图", menu=view_menu)
-
-        # 帮助菜单
-        help_menu = tk.Menu(menubar, tearoff=0)
-        help_menu.add_command(label="使用说明", command=self.show_help)
-        help_menu.add_command(label="关于", command=self.show_about)
-        menubar.add_cascade(label="帮助", menu=help_menu)
-
-        self.config(menu=menubar)
-
-        # 绑定快捷键
-        self.bind('<Control-o>', lambda e: self.open_video())
-        self.bind('<Control-q>', lambda e: self.on_closing())
 
     def create_top_panel(self, parent=None):
         """创建顶部控制面板"""
@@ -112,10 +84,10 @@ class MainWindow(tk.Tk):
         video_row = ttk.Frame(top_frame)
         video_row.pack(fill="x", pady=5)
 
-        ttk.Label(video_row, text="视频文件:").pack(side="left", padx=(0, 5))
+        ttk.Label(video_row, text="数据源文件:").pack(side="left", padx=(0, 5))
         self.video_label = ttk.Label(video_row, text="未选择", width=60, relief="sunken", padding=5)
         self.video_label.pack(side="left", padx=5, fill="x", expand=True)
-        ttk.Button(video_row, text="选择视频", command=self.open_video).pack(side="left", padx=5)
+        ttk.Button(video_row, text="选择数据源", command=self.open_video).pack(side="left", padx=5)
 
         # ROI配置行
         roi_row = ttk.Frame(top_frame)
@@ -124,10 +96,12 @@ class MainWindow(tk.Tk):
         ttk.Label(roi_row, text="ROI配置:").pack(side="left", padx=(0, 5))
         self.roi_status_label = ttk.Label(roi_row, text="未配置", width=40, relief="sunken", padding=5)
         self.roi_status_label.pack(side="left", padx=5, fill="x", expand=True)
-        ttk.Button(roi_row, text="框选ROI", command=self.select_roi,
-                  state="disabled").pack(side="left", padx=5)
-        ttk.Button(roi_row, text="查看ROI预览", command=self.show_roi_preview,
-                  state="disabled").pack(side="left", padx=5)
+        self.roi_btn = ttk.Button(roi_row, text="框选ROI", command=self.select_roi,
+                  state="disabled")
+        self.roi_btn.pack(side="left", padx=5)
+        self.roi_preview_btn = ttk.Button(roi_row, text="查看ROI预览", command=self.show_roi_preview,
+                  state="disabled")
+        self.roi_preview_btn.pack(side="left", padx=5)
 
         # 参数设置行
         params_row = ttk.Frame(top_frame)
@@ -135,7 +109,8 @@ class MainWindow(tk.Tk):
 
         ttk.Label(params_row, text="采样间隔 (秒):").pack(side="left", padx=(0, 5))
         self.interval_var = tk.StringVar(value="0.25")
-        ttk.Entry(params_row, textvariable=self.interval_var, width=10).pack(side="left", padx=5)
+        self.interval_entry = ttk.Entry(params_row, textvariable=self.interval_var, width=10)
+        self.interval_entry.pack(side="left", padx=5)
 
         # 测试模式开关
         ttk.Label(params_row, text="测试模式:").pack(side="left", padx=(20, 5))
@@ -146,7 +121,8 @@ class MainWindow(tk.Tk):
         # 旋转角度输入
         ttk.Label(params_row, text="旋转角度(°):").pack(side="left", padx=(20, 5))
         self.rotation_angle_var = tk.StringVar(value="5")
-        ttk.Entry(params_row, textvariable=self.rotation_angle_var, width=6).pack(side="left", padx=5)
+        self.rotation_entry = ttk.Entry(params_row, textvariable=self.rotation_angle_var, width=6)
+        self.rotation_entry.pack(side="left", padx=5)
 
         # 处理控制按钮
         control_row = ttk.Frame(top_frame)
@@ -445,6 +421,8 @@ class MainWindow(tk.Tk):
 
     def update_cache(self):
         """更新缓存：将当前results和events保存到缓存"""
+        if self._mode == 'srlog':
+            return
         try:
             if self.video_path and self.results is not None:
                 video_hash = self.cache_manager.compute_video_hash(self.video_path)
@@ -516,79 +494,173 @@ class MainWindow(tk.Tk):
     # ===== 事件处理方法 =====
 
     def open_video(self):
-        """打开视频文件"""
-        video_path = self.extractor.select_video()
-        if video_path:
-            # 清空上一个视频的数据
-            self.clear_video_data()
+        """打开数据源文件（视频或 .srlog 会话）"""
+        path = filedialog.askopenfilename(
+            title="选择数据源文件",
+            filetypes=[
+                ("支持的文件", "*.mp4 *.mov *.avi *.mkv *.srlog"),
+                ("视频文件", "*.mp4 *.mov *.avi *.mkv"),
+                ("会话文件", "*.srlog"),
+                ("所有文件", "*.*")
+            ]
+        )
+        if not path:
+            return
 
-            self.video_path = video_path
-            self.video_label.config(text=os.path.basename(video_path))
-            self.update_status(f"已选择视频: {os.path.basename(video_path)}")
+        self._cleanup_srlog_cache()
+        self._mode = 'video'
 
-            # 计算视频hash
-            try:
-                video_hash = self.cache_manager.compute_video_hash(video_path)
-                self.log(f"视频hash: {video_hash}")
+        if path.lower().endswith('.srlog'):
+            self._open_srlog(path)
+        else:
+            self._open_video(path)
 
-                # 检查缓存是否有效
-                if self.cache_manager.check_cache_valid(video_path, video_hash):
-                    self.log("缓存有效，尝试加载缓存数据...")
+    def _open_video(self, video_path):
+        """加载视频文件（原 open_video 逻辑）"""
+        self.clear_video_data()
 
-                    # 加载ROI配置
-                    cached_data = self.cache_manager.load_rois(video_hash)
-                    if cached_data:
-                        self.rois = cached_data['rois']
-                        self.roi_status_label.config(text="已配置（从缓存）")
-                        self.log(f"从缓存加载ROI配置: {len(self.rois)}个区域")
+        self.video_path = video_path
+        self.video_label.config(text=os.path.basename(video_path))
+        self.update_status(f"已选择视频: {os.path.basename(video_path)}")
 
-                        # 恢复旋转角度
-                        angle = cached_data.get('rotation_angle')
-                        if angle is not None:
-                            self.rotation_angle_var.set(str(angle))
-                            self.extractor.rotation_angle = float(angle)
-                            self.log(f"从缓存恢复旋转角度: {angle}")
+        # 计算视频hash
+        try:
+            video_hash = self.cache_manager.compute_video_hash(video_path)
+            self.log(f"视频hash: {video_hash}")
 
-                        # 加载识别结果
-                        cached_results = self.cache_manager.load_results(video_hash)
-                        if cached_results:
-                            self.results = cached_results
-                            self.data_table.clear()
-                            for result in self.results:
-                                self.data_table.add_row(result)
-                            self.log(f"从缓存加载识别结果: {len(cached_results)}条记录")
-                            self.update_status(f"已从缓存加载{len(cached_results)}条记录")
+            # 检查缓存是否有效
+            if self.cache_manager.check_cache_valid(video_path, video_hash):
+                self.log("缓存有效，尝试加载缓存数据...")
 
-                            # 从缓存加载事件
-                            cached_events = self.cache_manager.load_events(video_hash)
-                            if cached_events:
-                                self.events = cached_events
-                                self.log(f"从缓存加载事件: {len(cached_events)}条")
-                                self.refresh_events_display()
+                # 加载ROI配置
+                cached_data = self.cache_manager.load_rois(video_hash)
+                if cached_data:
+                    self.rois = cached_data['rois']
+                    self.roi_status_label.config(text="已配置（从缓存）")
+                    self.log(f"从缓存加载ROI配置: {len(self.rois)}个区域")
 
-                            # 启用异常检测相关控件
-                            self.temp_diff_entry.config(state="normal")
-                            self.detect_abnormal_button.config(state="normal")
+                    # 恢复旋转角度
+                    angle = cached_data.get('rotation_angle')
+                    if angle is not None:
+                        self.rotation_angle_var.set(str(angle))
+                        self.extractor.rotation_angle = float(angle)
+                        self.log(f"从缓存恢复旋转角度: {angle}")
 
-                        # 启用开始处理按钮和ROI按钮
-                        self.start_button.config(state="normal")
-                        self.enable_roi_buttons()
-                        self.log("缓存加载完成，可以开始处理或重新框选ROI")
-                    else:
-                        self.log("缓存中没有ROI配置，需要手动框选")
-                        # 启用ROI选择按钮
-                        self.enable_roi_buttons()
-                else:
-                    self.log("缓存无效或不存在，需要手动框选ROI")
-                    # 启用ROI选择按钮
+                    # 加载识别结果
+                    cached_results = self.cache_manager.load_results(video_hash)
+                    if cached_results:
+                        self.results = cached_results
+                        self.data_table.clear()
+                        for result in self.results:
+                            self.data_table.add_row(result)
+                        self.log(f"从缓存加载识别结果: {len(cached_results)}条记录")
+                        self.update_status(f"已从缓存加载{len(cached_results)}条记录")
+
+                        # 从缓存加载事件
+                        cached_events = self.cache_manager.load_events(video_hash)
+                        if cached_events:
+                            self.events = cached_events
+                            self.log(f"从缓存加载事件: {len(cached_events)}条")
+                            self.refresh_events_display()
+
+                        # 启用异常检测相关控件
+                        self.temp_diff_entry.config(state="normal")
+                        self.detect_abnormal_button.config(state="normal")
+
+                    # 启用开始处理按钮和ROI按钮
+                    self.start_button.config(state="normal")
                     self.enable_roi_buttons()
-
-            except Exception as e:
-                self.log(f"缓存检查失败: {e}")
-                # 出错时启用ROI选择按钮
+                    self.log("缓存加载完成，可以开始处理或重新框选ROI")
+                else:
+                    self.log("缓存中没有ROI配置，需要手动框选")
+                    self.enable_roi_buttons()
+            else:
+                self.log("缓存无效或不存在，需要手动框选ROI")
                 self.enable_roi_buttons()
 
-            self.log(f"打开视频: {video_path}")
+        except Exception as e:
+            self.log(f"缓存检查失败: {e}")
+            self.enable_roi_buttons()
+
+        self.log(f"打开视频: {video_path}")
+
+    def _open_srlog(self, path):
+        """加载 .srlog 会话文件"""
+        import zipfile, json, tempfile, shutil
+
+        self.clear_video_data()
+        self._mode = 'srlog'
+        self.video_path = path
+        self.video_label.config(text=os.path.basename(path))
+        self.update_status(f"正在加载会话: {os.path.basename(path)}")
+
+        try:
+            with zipfile.ZipFile(path, 'r') as zf:
+                metadata = json.loads(zf.read('metadata.json'))
+                results = json.loads(zf.read('results.json'))
+
+                rois = metadata.get('rois')
+                if rois:
+                    self.rois = rois
+                    self.roi_status_label.config(text="已配置（来自会话文件）")
+
+                angle = metadata.get('rotate_angle', 5)
+                self.rotation_angle_var.set(str(angle))
+                interval = metadata.get('interval', 0.25)
+                self.interval_var.set(str(interval))
+
+                events = metadata.get('events', [])
+                if events:
+                    self.events = events
+                    self.refresh_events_display()
+
+                self.results = results
+                self.data_table.clear()
+                for result in self.results:
+                    self.data_table.add_row(result)
+
+                # 解压帧到缓存目录
+                temp_dir = tempfile.mkdtemp(prefix='srlog_')
+                zf.extractall(temp_dir)
+                frames_dir = os.path.join(temp_dir, 'frames')
+                self._srlog_cache_dir = frames_dir if os.path.isdir(frames_dir) else None
+
+                self.log(f"已加载会话: {os.path.basename(path)}, "
+                         f"{len(results)} 条记录"
+                         f"{', 帧数: ' + str(len(os.listdir(frames_dir))) if self._srlog_cache_dir else ''}")
+
+        except Exception as e:
+            self._cleanup_srlog_cache()
+            self.clear_video_data()
+            self.video_label.config(text="未选择")
+            messagebox.showerror("错误", f"加载会话文件失败:\n{e}")
+            import traceback
+            traceback.print_exc()
+            return
+
+        self._set_srlog_mode(True)
+        self.update_status(f"已加载会话: {os.path.basename(path)}, {len(self.results)} 条记录")
+
+    def _set_srlog_mode(self, active):
+        """srlog 模式下禁用不兼容控件"""
+        state = 'disabled' if active else 'normal'
+        self.roi_btn.config(state=state)
+        self.roi_preview_btn.config(state=state)
+        self.interval_entry.config(state=state)
+        self.rotation_entry.config(state=state)
+        self.test_checkbox.config(state=state)
+        self.start_button.config(state=state)
+        self.pause_button.config(state=state)
+        self.stop_button.config(state=state)
+
+    def _cleanup_srlog_cache(self):
+        """清理 srlog 解压目录"""
+        if self._srlog_cache_dir and os.path.isdir(self._srlog_cache_dir):
+            parent = os.path.dirname(self._srlog_cache_dir)
+            if os.path.isdir(parent):
+                import shutil
+                shutil.rmtree(parent, ignore_errors=True)
+        self._srlog_cache_dir = None
 
     def select_roi(self):
         """选择ROI区域"""
@@ -970,52 +1042,22 @@ class MainWindow(tk.Tk):
         self.stop_button.config(state="disabled")
         self.pause_button.config(text="暂停", command=self.pause_processing)
 
-    def toggle_log_display(self):
-        """切换日志显示"""
-        if self.show_log_var.get():
-            self.notebook.add(self.log_text, text="日志")
-        else:
-            # 隐藏日志标签页
-            index = self.notebook.index("日志")
-            if index >= 0:
-                self.notebook.forget(index)
-
-    def show_help(self):
-        """显示帮助信息"""
-        help_text = """使用说明：
-
-1. 选择视频：点击"选择视频"按钮选择要处理的视频文件
-2. 框选ROI：选择视频后，点击"框选ROI"按钮，按照提示框选三个区域：
-   - 温度正常位区域
-   - 温度故障位区域
-   - 风温区域
-3. 设置参数：调整采样间隔（默认0.25秒）
-4. 开始处理：点击"开始处理"按钮开始异步处理
-5. 查看结果：在数据表格中查看识别结果，双击行可查看对应帧截图
-
-快捷键：
-- Ctrl+O: 打开视频
-- Ctrl+Q: 退出程序"""
-        messagebox.showinfo("使用说明", help_text)
-
-    def show_about(self):
-        """显示关于信息"""
-        about_text = """SantokrOCR 视频数字提取工具
-
-版本: 1.0.0
-作者: SantokrOCR Team
-描述: 基于OpenCV和自定义分类器的视频数字提取工具
-
-功能：
-- 视频选择与ROI框选
-- 异步视频处理
-- 数据表格预览与验证
-- 故障位LED数字识别
-- 结果导出为.slog格式"""
-        messagebox.showinfo("关于", about_text)
-
     def on_closing(self):
         """窗口关闭事件处理"""
+        self._cleanup_srlog_cache()
+
+        # 先关闭实时窗口（会弹出确认对话框）
+        if self._realtime_window is not None:
+            try:
+                if self._realtime_window.winfo_exists():
+                    self._realtime_window._on_closing()
+                    # 用户点了取消 → 实时窗口还在 → 主窗口也不关
+                    if self._realtime_window.winfo_exists():
+                        return
+            except tk.TclError:
+                pass
+            self._realtime_window = None
+
         if self.processing_thread and self.processing_thread.is_alive():
             if messagebox.askyesno("确认退出", "处理仍在进行中，确定要退出吗？"):
                 self.extractor.stop_processing()
@@ -1107,6 +1149,7 @@ class MainWindow(tk.Tk):
 
     def clear_video_data(self):
         """清空当前视频数据（切换到新视频时使用）"""
+        self._mode = 'video'
         # 停止任何正在进行的处理
         if self.processing_thread and self.processing_thread.is_alive():
             self.extractor.stop_processing()
@@ -1148,12 +1191,14 @@ class MainWindow(tk.Tk):
             messagebox.showwarning("警告", "请先选择视频和配置ROI")
             return
 
+        if self._mode == 'srlog' and not self._srlog_cache_dir:
+            messagebox.showinfo("提示", "该会话文件不包含帧截图，无法打开帧查看器")
+            return
+
         try:
-            # 创建并显示帧查看器窗口
-            viewer = FrameViewer(
+            kwargs = dict(
                 parent=self,
                 extractor=self.extractor,
-                video_path=self.video_path,
                 rois=self.rois,
                 frame_num=frame_num,
                 timestamp=timestamp,
@@ -1164,8 +1209,14 @@ class MainWindow(tk.Tk):
                 heater_initial=self.heater_initial_var.get(),
                 fan_initial=self.fan_initial_var.get(),
                 rotate_angle=float(self.rotation_angle_var.get()),
-                on_edit_callback=self.on_edit_record
+                on_edit_callback=self.on_edit_record,
             )
+            if self._mode == 'srlog' and self._srlog_cache_dir:
+                kwargs['video_path'] = None
+                kwargs['cache_dir'] = self._srlog_cache_dir
+            else:
+                kwargs['video_path'] = self.video_path
+            viewer = FrameViewer(**kwargs)
             self.log(f"打开帧查看器: 帧号={frame_num}, 时间戳={timestamp}")
         except Exception as e:
             error_msg = f"打开帧查看器失败: {e}"
