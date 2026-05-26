@@ -1,13 +1,13 @@
 """
 摄像头实时处理线程
 
-支持真实摄像头数据源：
-- source=int  → cv2.VideoCapture(索引) 真实摄像头
+从预览线程取帧，不直接操作摄像头。
 """
 
 import threading
 import time
-import cv2
+
+_NONE_FRAME_RETRY_INTERVAL = 0.05  # 取到空帧时的重试间隔（秒）
 
 
 class Signal:
@@ -32,23 +32,22 @@ class Signal:
 class CameraProcessingThread(threading.Thread):
     """摄像头实时处理线程"""
 
-    def __init__(self, extractor, source, rois, interval=0.25):
+    def __init__(self, extractor, get_frame, rois, interval=0.25):
         """
         Args:
             extractor: VideoDigitExtractor 实例
-            source: 摄像头索引 (int)
+            get_frame: 可调用，返回当前帧 BGR ndarray（由预览线程提供）
             rois: ROI字典
             interval: 采样间隔（秒）
         """
         super().__init__(daemon=True)
         self.extractor = extractor
-        self.source = source
+        self._get_frame = get_frame
         self.rois = rois
         self.interval = interval
 
         # 信号
         self.result_signal = Signal()   # (result_dict)
-        self.frame_signal = Signal()    # (numpy_frame) 用于预览
         self.status_signal = Signal()   # (message)
         self.finished_signal = Signal() # (success_bool, message)
 
@@ -59,36 +58,20 @@ class CameraProcessingThread(threading.Thread):
 
         self.results = []
 
-        # 摄像头是否意外断开（区别于用户主动停止）
-        self.camera_lost = False
-
         # 失败帧缓存（用于调试，最多10帧）
         self._failed_frames = []  # [(frame_num, frame_bgr, result_dict), ...]
         self._failed_frames_lock = threading.Lock()
 
     def run(self):
-        cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            self.finished_signal.emit(False, f"无法打开摄像头 {self.source}")
-            return
-
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30.0
-
         recognizer = self.extractor._get_digit_recognizer()
         frame_count = 0
         start_time = time.time()
-        last_preview_emit = 0
 
         # 检查ROI格式
         has_temp2_new = 'temp2_normal_3digits' in self.rois and 'temp2_normal_lastdigit' in self.rois
         has_temp2_old = 'temp2_normal' in self.rois
 
         self.status_signal.emit("实时识别已启动")
-
-        read_fail_count = 0
-        max_read_fails = 5
 
         while not self._stop_event.is_set():
             # 处理暂停
@@ -98,29 +81,17 @@ class CameraProcessingThread(threading.Thread):
             if self._stop_event.is_set():
                 break
 
-            ret, frame = cap.read()
-            if not ret:
-                read_fail_count += 1
-                if read_fail_count >= max_read_fails:
-                    self.camera_lost = True
-                    cap.release()
-                    self.finished_signal.emit(False, "摄像头已断开")
-                    return
-                time.sleep(0.5)
+            frame = self._get_frame()
+            if frame is None:
+                time.sleep(_NONE_FRAME_RETRY_INTERVAL)
                 continue
-            read_fail_count = 0
 
             loop_start = time.time()
 
             # 时间戳
             timestamp = time.time() - start_time
 
-            # 发送预览帧（降频：每秒约5帧）
-            if frame_count - last_preview_emit >= max(1, int(1.0 / self.interval / 5)):
-                self.frame_signal.emit(frame.copy())
-                last_preview_emit = frame_count
-
-            # ──── ROI裁剪与识别（与 process_video_async 完全相同） ────
+            # ──── ROI裁剪与识别 ────
 
             temp1_normal_img = self.extractor.crop_roi(frame, self.rois['temp1_normal'])
             temp1_faulty_img = self.extractor.crop_roi(frame, self.rois['temp1_faulty'])
@@ -207,8 +178,6 @@ class CameraProcessingThread(threading.Thread):
             sleep_time = max(0, self.interval - elapsed)
             if sleep_time > 0:
                 time.sleep(sleep_time)
-
-        cap.release()
 
         if self._stop_event.is_set():
             self.finished_signal.emit(False, "处理已停止")

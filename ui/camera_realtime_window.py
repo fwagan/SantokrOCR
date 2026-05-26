@@ -95,7 +95,6 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.stats_panel.fig.set_dpi(dpi)
             self.stats_panel.fig.tight_layout()
             self.stats_panel.canvas.draw()
-            print(f"[debug] _fit_chart done at {time.time():.3f}")
         except Exception:
             pass
 
@@ -479,11 +478,14 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._preview_after_id = self.after(30, self._preview_poll)
 
     def _stop_preview(self):
-        """停止预览"""
+        """停止预览（等待后台线程释放摄像头，避免后续cap打开时DSHOW冲突）"""
         self._preview_thread_running = False
         if self._preview_after_id:
             self.after_cancel(self._preview_after_id)
             self._preview_after_id = None
+        if self._preview_thread and self._preview_thread.is_alive():
+            self._preview_thread.join(timeout=2.0)
+        self._preview_thread = None
         self._preview_frame = None
         self._preview_frame_event.clear()
 
@@ -544,12 +546,26 @@ class CameraRealtimeWindow(tk.Toplevel):
             if frame is None:
                 self._preview_after_id = self.after(30, self._preview_poll)
                 return
-            # 绘制ROI叠加框
-            if self.rois:
-                for name, (x, y, w, h) in self.rois.items():
-                    color = self.extractor.get_roi_color(name)
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             self._display_preview_frame(frame)
+            # ROI框叠加（画在canvas上，不修改帧）
+            if self.rois:
+                cw = self.preview_canvas.winfo_width()
+                ch = self.preview_canvas.winfo_height()
+                h, w = frame.shape[:2]
+                scale = min(cw / w, ch / h)
+                target_w = int(w * scale)
+                target_h = int(h * scale)
+                ox = (cw - target_w) // 2
+                oy = (ch - target_h) // 2
+                self.preview_canvas.delete("roi")
+                for name, (x, y, rw, rh) in self.rois.items():
+                    color = self.extractor.get_roi_color(name)
+                    hex_color = '#%02x%02x%02x' % (color[2], color[1], color[0])
+                    self.preview_canvas.create_rectangle(
+                        ox + x * scale, oy + y * scale,
+                        ox + (x + rw) * scale, oy + (y + rh) * scale,
+                        outline=hex_color, width=2, tags="roi"
+                    )
         self._preview_after_id = self.after(30, self._preview_poll)
 
     def _show_retry_message(self, count):
@@ -578,7 +594,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             self._retry_text_id = None
 
     def _on_camera_lost(self):
-        """摄像头断开 — 停止预览、清空数据源/ROI状态"""
+        """摄像头断开 — 停止预览+处理、清空数据源/ROI状态"""
+        # 先停止识别线程
+        if self.processing_thread and not self.processing_thread.is_stopped():
+            self.processing_thread.stop()
         self._stop_preview()
         self._show_no_data()
         self.source_combo.configure(state="disabled")
@@ -647,34 +666,20 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.data_table.clear()
             self.stats_panel.clear_data()
 
-        # 先停止预览，释放摄像头独占连接
-        self._stop_preview()
-
-        source = self._current_source
-        cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            messagebox.showerror("错误", "无法打开数据源")
-            self._start_preview()
+        # 取预览线程最新帧
+        if self._preview_frame is None:
+            messagebox.showerror("错误", "无可用预览帧")
             return
+        frame = self._preview_frame.copy()
 
-        ret, frame = cap.read()
-        cap.release()
-        if not ret:
-            messagebox.showerror("错误", "无法从数据源读取帧")
-            self._start_preview()
-            return
-
-        try:
-            from ui.roi_selector import RoiSelector
-            selector = RoiSelector(parent=self, frame=frame)
-            rois = selector.get_results()
-            if rois:
-                self.rois = rois
-                self.roi_status_var.set("已配置")
-                self.start_btn.config(state="normal")
-                self._log(f"ROI选择完成: {len(rois)}个区域")
-        finally:
-            self._start_preview()
+        from ui.roi_selector import RoiSelector
+        selector = RoiSelector(parent=self, frame=frame)
+        rois = selector.get_results()
+        if rois:
+            self.rois = rois
+            self.roi_status_var.set("已配置")
+            self.start_btn.config(state="normal")
+            self._log(f"ROI选择完成: {len(rois)}个区域")
 
     # ═══════════════════════════════════════════════════════════
     # 实时处理控制
@@ -716,19 +721,15 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.set_results([])
         self.stats_panel.set_update_interval(interval)
 
-        # 先停止预览，释放摄像头独占连接，再创建处理线程
-        self._stop_preview()
-
         self.processing_thread = CameraProcessingThread(
             extractor=self.extractor,
-            source=self._current_source,
+            get_frame=lambda: self._preview_frame,
             rois=self.rois,
             interval=interval
         )
 
         # 连接信号
         self.processing_thread.result_signal.connect(self._on_result)
-        self.processing_thread.frame_signal.connect(self._on_processing_frame)
         self.processing_thread.status_signal.connect(self._on_status)
         self.processing_thread.finished_signal.connect(self._on_finished)
 
@@ -800,18 +801,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         # 更新实时曲线
         self.stats_panel.append_data(result)
 
-    def _on_processing_frame(self, frame):
-        """处理线程发来的帧 — 调度到UI线程显示（替代独立预览循环）"""
-        self.after_idle(lambda f=frame.copy(): self._display_processing_frame(f))
-
-    def _display_processing_frame(self, frame):
-        """在UI线程绘制 ROI 叠加框并显示"""
-        if self.rois:
-            for name, (x, y, w, h) in self.rois.items():
-                color = self.extractor.get_roi_color(name)
-                cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-        self._display_preview_frame(frame)
-
     def _on_status(self, message):
         """处理状态更新"""
         self.status_var.set(message)
@@ -819,10 +808,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _on_finished(self, success, message):
         """处理完成信号（由识别线程触发，调度到UI线程）"""
-        camera_lost = self.processing_thread is not None and self.processing_thread.camera_lost
-        self.after_idle(self._on_finished_ui, success, message, camera_lost)
+        self.after_idle(self._on_finished_ui, success, message)
 
-    def _on_finished_ui(self, success, message, camera_lost):
+    def _on_finished_ui(self, success, message):
         """在UI线程中执行完成清理"""
         if not self.winfo_exists():
             return
@@ -830,10 +818,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.status_var.set(message)
         self._log(message)
         self.processing_thread = None
-        if not success and camera_lost:
-            self._on_camera_lost()
-        else:
-            self._start_preview()
 
     # ═══════════════════════════════════════════════════════════
     # 其他
