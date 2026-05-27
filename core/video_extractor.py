@@ -2,23 +2,16 @@
 视频数字提取器
 
 主要功能：
-1. 视频选择和ROI框选
+1. ROI框选
 2. 自动定位启动时间点
 3. 异步视频处理
 4. 帧缓存和快速帧访问
 """
 
 import cv2
-import numpy as np
 from .digit_recognizer import DigitRecognizer
-import tkinter as tk
-from tkinter import filedialog, messagebox
-import os
-from datetime import datetime
 import threading
-from functools import lru_cache
 import time
-from queue import Queue
 
 from .led_classifier import LEDDigitClassifier
 
@@ -148,16 +141,6 @@ class VideoDigitExtractor:
             from .digit_recognition_pipeline import DigitRecognitionPipeline
             self._pipeline = DigitRecognitionPipeline(is_debug=False, rotate_angle=self.rotation_angle)
         return self._pipeline
-
-    def select_video(self):
-        """选择视频文件"""
-        root = tk.Tk()
-        root.withdraw()
-        video_path = filedialog.askopenfilename(
-            title="选择视频文件",
-            filetypes=[("视频文件", "*.mp4 *.mov *.avi *.mkv"), ("所有文件", "*.*")]
-        )
-        return video_path
 
     def process_video_async(self, video_path, rois, interval=0.25,
                           progress_callback=None, status_callback=None, result_callback=None):
@@ -478,23 +461,6 @@ class VideoDigitExtractor:
         """裁剪ROI区域"""
         x, y, w, h = roi
         return frame[y:y+h, x:x+w]
-
-
-
-
-    def get_screen_resolution(self):
-        """获取屏幕分辨率"""
-        try:
-            # 使用tkinter获取屏幕分辨率
-            root = tk.Tk()
-            root.withdraw()  # 不显示窗口
-            screen_width = root.winfo_screenwidth()
-            screen_height = root.winfo_screenheight()
-            root.destroy()
-            return screen_width, screen_height
-        except:
-            # 默认返回常见分辨率
-            return 1920, 1080
 
     def get_roi_color(self, roi_name):
         """获取ROI对应的颜色"""
