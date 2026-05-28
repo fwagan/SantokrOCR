@@ -8,24 +8,7 @@
 import threading
 import time
 
-
-class Signal:
-    """简单的信号类，用于线程间通信"""
-
-    def __init__(self):
-        self._callbacks = []
-
-    def connect(self, callback):
-        """连接回调函数"""
-        self._callbacks.append(callback)
-
-    def emit(self, *args, **kwargs):
-        """触发信号"""
-        for callback in self._callbacks:
-            try:
-                callback(*args, **kwargs)
-            except Exception as e:
-                print(f"信号回调出错: {e}")
+from utils.signal import Signal
 
 
 class ProcessingThread(threading.Thread):

@@ -7,26 +7,9 @@
 import threading
 import time
 
+from utils.signal import Signal
+
 _NONE_FRAME_RETRY_INTERVAL = 0.05  # 取到空帧时的重试间隔（秒）
-
-
-class Signal:
-    """简单的信号类，用于线程间通信（与 async_worker.Signal 相同接口）"""
-
-    def __init__(self):
-        self._callbacks = []
-
-    def connect(self, callback):
-        self._callbacks.append(callback)
-
-    def emit(self, *args, **kwargs):
-        for callback in self._callbacks:
-            try:
-                callback(*args, **kwargs)
-            except Exception as e:
-                import traceback
-                print(f"信号回调出错: {e}")
-                traceback.print_exc()
 
 
 class CameraProcessingThread(threading.Thread):

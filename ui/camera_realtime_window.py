@@ -816,20 +816,30 @@ class CameraRealtimeWindow(tk.Toplevel):
     # ═══════════════════════════════════════════════════════════
 
     def _on_result(self, result):
-        """处理识别结果"""
+        """处理识别结果（由后台线程触发，调度到主线程）"""
+        self.after_idle(self._on_result_ui, result)
+
+    def _on_result_ui(self, result):
+        """在主线程中执行识别结果处理"""
+        if not self.winfo_exists():
+            return
         self.results.append(result)
-        # 只在最近50条内追加到表格
         self.data_table.add_row(result)
-        # 更新实时曲线
         self.stats_panel.append_data(result)
 
     def _on_status(self, message):
-        """处理状态更新"""
+        """处理状态更新（由后台线程触发，调度到主线程）"""
+        self.after_idle(self._on_status_ui, message)
+
+    def _on_status_ui(self, message):
+        """在主线程中执行状态更新"""
+        if not self.winfo_exists():
+            return
         self.status_var.set(message)
         self._log(message)
 
     def _on_finished(self, success, message):
-        """处理完成信号（由识别线程触发，调度到UI线程）"""
+        """处理完成信号（由后台线程触发，调度到主线程）"""
         self.after_idle(self._on_finished_ui, success, message)
 
     def _on_finished_ui(self, success, message):
