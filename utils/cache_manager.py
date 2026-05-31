@@ -461,6 +461,63 @@ class CacheManager:
                 os.makedirs(self.base_dir, exist_ok=True)
                 logger.info(f"已清除所有缓存: {self.base_dir}")
 
+    # ── Camera ROI Cache ──
+    CAMERA_ROI_CACHE_FILE = "camera_roi_cache.json"
+
+    def save_camera_rois(self, camera_index: int, rois: dict) -> None:
+        """保存摄像头ROI配置到持久缓存（按摄像头索引）"""
+        cache_file = os.path.join(self.base_dir, self.CAMERA_ROI_CACHE_FILE)
+        cache = {}
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cache = json.load(f)
+            except Exception:
+                pass
+
+        serializable = {}
+        for name, roi in rois.items():
+            if isinstance(roi, (tuple, list)) and len(roi) == 4:
+                serializable[name] = [int(v) for v in roi]
+            else:
+                serializable[name] = str(roi)
+
+        cache[str(camera_index)] = {
+            'rois': serializable,
+            'save_time': time.time(),
+        }
+
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+        logger.info(f"摄像头ROI已缓存: camera {camera_index} ({len(serializable)}个ROI)")
+
+    def load_camera_rois(self, camera_index: int) -> Optional[dict]:
+        """加载缓存中的摄像头ROI配置"""
+        cache_file = os.path.join(self.base_dir, self.CAMERA_ROI_CACHE_FILE)
+        if not os.path.exists(cache_file):
+            return None
+
+        try:
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+        except Exception as e:
+            logger.error(f"加载摄像头ROI缓存失败: {e}")
+            return None
+
+        entry = cache.get(str(camera_index))
+        if not entry or 'rois' not in entry:
+            return None
+
+        rois = {}
+        for name, roi_data in entry['rois'].items():
+            if isinstance(roi_data, list) and len(roi_data) == 4:
+                rois[name] = tuple(roi_data)
+            else:
+                rois[name] = roi_data
+
+        logger.info(f"摄像头ROI已加载: camera {camera_index} ({len(rois)}个ROI)")
+        return rois
+
     def get_cache_size(self) -> int:
         """
         获取缓存总大小（字节）

@@ -26,6 +26,7 @@ from ui.statistics_panel import StatisticsPanel
 from ui.frame_viewer import FrameViewer
 from ui.slog_comparer import extract_valid_data, resample_data, smooth_data, compute_ror
 from utils.screen_utils import center_window
+from utils.cache_manager import get_cache_manager
 
 
 class CameraRealtimeWindow(tk.Toplevel):
@@ -46,6 +47,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 帧缓存
         self._cache = RealTimeProcessCache()
+
+        # 持久缓存（摄像头ROI持久化，防止摄像头断开/窗口关闭后丢失）
+        self._cache_manager = get_cache_manager()
 
         # 理想曲线
         self.ideal_data = None
@@ -434,35 +438,61 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.source_combo["values"] = ["无可用数据源"]
             self.source_var.set("无可用数据源")
             self.source_combo.configure(state="disabled")
-            self.rois = None
-            self.roi_status_var.set("未配置")
+            # 不清除ROI — 缓存后摄像头重连可恢复
             self.start_btn.config(state="disabled")
         else:
             self.source_combo.configure(state="readonly")
             self.source_combo["values"] = available
             sel = self.source_var.get()
             if sel not in available:
+                # 旧摄像头已不可用，缓存其ROI
+                if hasattr(self, '_current_source') and self.rois:
+                    self._save_camera_rois()
                 self.source_var.set("")
                 self.rois = None
                 self.roi_status_var.set("未配置")
                 self.start_btn.config(state="disabled")
 
     def _on_source_changed(self, event=None):
-        """数据源切换"""
+        """数据源切换 — 保存旧摄像头ROI，加载新摄像头的缓存ROI"""
         sel = self.source_var.get()
         if not sel:
             return
+
+        # 保存当前ROI到旧摄像头的缓存
+        if hasattr(self, '_current_source') and self.rois:
+            self._save_camera_rois()
+
         self._current_source = self._source_map[sel]
-        # 清除之前摄像头的ROI
-        self.rois = None
-        self.roi_status_var.set("未配置")
-        self.start_btn.config(state="disabled")
+
+        # 尝试加载新摄像头的缓存ROI
+        loaded = self._load_camera_rois()
+        if loaded:
+            self.rois = loaded
+            self.roi_status_var.set("已配置")
+            self.start_btn.config(state="normal")
+        else:
+            self.rois = None
+            self.roi_status_var.set("未配置")
+            self.start_btn.config(state="disabled")
+
         self._start_preview()
 
     def _get_source_label(self):
         """返回当前数据源的友好名称"""
         sel = self.source_var.get()
         return sel if sel else str(self._current_source)
+
+    def _save_camera_rois(self):
+        """缓存当前摄像头ROI到磁盘（按摄像头索引持久化）"""
+        if hasattr(self, '_current_source') and self.rois:
+            self._cache_manager.save_camera_rois(self._current_source, self.rois)
+
+    def _load_camera_rois(self):
+        """从磁盘加载当前摄像头的缓存ROI"""
+        if hasattr(self, '_current_source'):
+            return self._cache_manager.load_camera_rois(self._current_source)
+        return None
 
     # ═══════════════════════════════════════════════════════════
     # 预览循环
@@ -628,17 +658,19 @@ class CameraRealtimeWindow(tk.Toplevel):
             self._retry_text_id = None
 
     def _on_camera_lost(self):
-        """摄像头断开 — 停止预览+处理、清空数据源/ROI状态"""
+        """摄像头断开 — 停止预览+处理，缓存ROI供下次使用"""
         # 先停止识别线程
         if self.processing_thread and not self.processing_thread.is_stopped():
             self.processing_thread.stop()
+        # 缓存ROI（摄像头断开、重连后自动恢复）
+        if self.rois:
+            self._save_camera_rois()
         self._stop_preview()
         self._show_no_data()
         self.source_combo.configure(state="disabled")
         self.source_combo["values"] = ["无可用数据源"]
         self.source_var.set("无可用数据源")
-        self.rois = None
-        self.roi_status_var.set("未配置")
+        # 不清除ROI — 下次摄像头可用时直接恢复
         self.start_btn.config(state="disabled")
         self.status_var.set("摄像头已断开")
         self._log("摄像头已断开")
@@ -711,6 +743,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         rois = selector.get_results()
         if rois:
             self.rois = rois
+            self._save_camera_rois()
             self.roi_status_var.set("已配置")
             self.start_btn.config(state="normal")
             self._log(f"ROI选择完成: {len(rois)}个区域")
@@ -964,7 +997,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.parent.log(f"[实时] {message}")
 
     def destroy(self):
-        """重写 destroy：确保所有路径（包括父窗口关闭）都释放摄像头"""
+        """重写 destroy：缓存ROI，释放摄像头"""
+        # 窗口关闭前持久化ROI
+        if self.rois:
+            self._save_camera_rois()
         self._stop_preview()
         # 兜底：_stop_preview 超时后线程可能还卡在 cap.read() 中
         if hasattr(self, '_cap') and self._cap is not None:
