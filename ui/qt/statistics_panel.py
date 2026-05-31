@@ -594,6 +594,9 @@ class StatisticsPanel(QWidget):
                 ax.set_xticks(tick_times)
                 ax.set_xticklabels(tick_labels, rotation=45)
 
+        if len(self.resampled_time) > 1:
+            min_end = self.resampled_time[0] + 480  # 至少显示 8 分钟
+            ax.set_xlim(self.resampled_time[0], max(self.resampled_time[-1], min_end))
         ax.set_xlabel('时间 (mm:ss)')
         ax.set_ylabel('温度 (℃)', color=temp1_color)
         ax.tick_params(axis='y', labelcolor=temp1_color)

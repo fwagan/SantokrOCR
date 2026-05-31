@@ -974,7 +974,8 @@ class StatisticsPanel(ttk.Frame):
         ax.grid(True, alpha=0.3)
         ax.set_title('温度曲线和ROR分析', y=1.18)
         ax.set_ylim(100, 230)
-        ax.set_xlim(0, 480)
+        if len(self.resampled_time) > 1:
+            ax.set_xlim(0, max(self.resampled_time[-1], 480))  # 至少 8 分钟，按需扩展
         ax.legend(all_lines, [l.get_label() for l in all_lines], loc='upper right')
 
         # 7. 事件标记
