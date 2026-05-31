@@ -15,6 +15,7 @@ import time
 import os
 import json
 import threading
+import numpy as np
 from PIL import Image, ImageTk
 
 from core.video_extractor import VideoDigitExtractor
@@ -319,6 +320,8 @@ class CameraRealtimeWindow(tk.Toplevel):
             'alignment': alignment,
             'charge_time': charge_time if charge_time else 0.0,
             'end_time': end_time,
+            'heater_initial': data.get('heater_initial', 50.0),
+            'fan_initial': data.get('fan_initial', 80.0),
         }
 
         # 更新UI
@@ -365,9 +368,25 @@ class CameraRealtimeWindow(tk.Toplevel):
             ev_type = ev.get('type', '')
             ev_time = ev.get('time', 0)
             if ev_type in ('入豆', '回温', '一爆开始', '烘焙结束'):
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}")
+                rt = data['resampled_time']
+                st1 = data['smooth_temp1']
+                temp_str = ''
+                if rt is not None and st1 is not None and len(rt) > 0:
+                    idx = np.abs(rt - ev_time).argmin()
+                    if idx < len(st1):
+                        temp_str = f" ({st1[idx]:.1f}℃)"
+                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str}")
+                if ev_type == '回温':
+                    lines.append(f"    初始火力: {data.get('heater_initial', '?')}%  初始风门: {data.get('fan_initial', '?')}%")
             elif ev_type in ('调整火力', '调整风门'):
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d} → {ev.get('value', '?')}%")
+                rt = data['resampled_time']
+                st1 = data['smooth_temp1']
+                temp_str = ''
+                if rt is not None and st1 is not None and len(rt) > 0:
+                    idx = np.abs(rt - ev_time).argmin()
+                    if idx < len(st1):
+                        temp_str = f" ({st1[idx]:.1f}℃)"
+                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str} → {ev.get('value', '?')}%")
         # 温度范围
         if data['smooth_temp1'] is not None and len(data['smooth_temp1']) > 0:
             lines.append(f"豆温范围: {float(min(data['smooth_temp1'])):.1f} ~ {float(max(data['smooth_temp1'])):.1f}℃")
