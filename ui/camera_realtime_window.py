@@ -13,7 +13,6 @@ from tkinter import ttk, messagebox, filedialog
 import cv2
 import time
 import os
-import json
 import threading
 import numpy as np
 from PIL import Image, ImageTk
@@ -27,6 +26,7 @@ from ui.frame_viewer import FrameViewer
 from ui.slog_comparer import extract_valid_data, resample_data, smooth_data, compute_ror
 from utils.screen_utils import center_window
 from utils.cache_manager import get_cache_manager
+from data.serializers.slog import SlogSerializer
 
 
 class CameraRealtimeWindow(tk.Toplevel):
@@ -264,9 +264,11 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _load_ideal_slog(self, path):
         """加载并处理.slog文件作为理想曲线"""
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception as e:
+            data = SlogSerializer.read(path)
+        except FileNotFoundError:
+            messagebox.showerror("错误", f"文件不存在:\n{path}", parent=self)
+            return
+        except ValueError as e:
             messagebox.showerror("错误", f"无法加载文件:\n{path}\n{e}", parent=self)
             return
 
@@ -324,8 +326,8 @@ class CameraRealtimeWindow(tk.Toplevel):
             'alignment': alignment,
             'charge_time': charge_time if charge_time else 0.0,
             'end_time': end_time,
-            'heater_initial': data.get('heater_initial', 50.0),
-            'fan_initial': data.get('fan_initial', 80.0),
+            'heater_initial': data['heater_initial'],
+            'fan_initial': data['fan_initial'],
         }
 
         # 更新UI
@@ -972,24 +974,23 @@ class CameraRealtimeWindow(tk.Toplevel):
             messagebox.showwarning("警告", "没有可导出的数据", parent=self)
             return
 
-        export = {
-            'version': 1,
-            'results': self.results,
-            'events': self.stats_panel.events if hasattr(self.stats_panel, 'events') else [],
-            'heater_initial': self.stats_panel.heater_initial if hasattr(self.stats_panel, 'heater_initial') else 0,
-            'fan_initial': self.stats_panel.fan_initial if hasattr(self.stats_panel, 'fan_initial') else 0,
-        }
-
         path = filedialog.asksaveasfilename(
             title="导出数据",
             defaultextension=".slog",
             filetypes=[("Slog files", "*.slog"), ("All files", "*.*")],
             parent=self
         )
-        if path:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(export, f, indent=2, ensure_ascii=False)
-            self._log(f"数据已导出: {path}")
+        if not path:
+            return
+
+        session = {
+            'results': self.results,
+            'events': self.stats_panel.events if hasattr(self.stats_panel, 'events') else [],
+            'heater_initial': self.stats_panel.heater_initial if hasattr(self.stats_panel, 'heater_initial') else 0,
+            'fan_initial': self.stats_panel.fan_initial if hasattr(self.stats_panel, 'fan_initial') else 0,
+        }
+        SlogSerializer.write(path, session)
+        self._log(f"数据已导出: {path}")
 
     def _log(self, message):
         """记录日志（转发到父窗口的log方法）"""

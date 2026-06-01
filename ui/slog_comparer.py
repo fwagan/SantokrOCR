@@ -17,7 +17,6 @@ except Exception:
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import json
 import os
 import sys
 
@@ -44,6 +43,8 @@ def _setup_path():
 
 
 _setup_path()
+
+from data.serializers.slog import SlogSerializer
 
 # ====== 常量 ======
 MAX_SLOG_COUNT = 5
@@ -462,21 +463,23 @@ class SlogComparer(tk.Toplevel):
     def _load_slog(self, file_path):
         """加载单个slog文件"""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception as e:
-            messagebox.showerror("错误", f"无法加载文件:\n{file_path}\n{e}")
+            data = SlogSerializer.read(file_path)
+        except FileNotFoundError:
+            messagebox.showerror("错误", f"文件不存在:\n{file_path}", parent=self)
+            return
+        except ValueError as e:
+            messagebox.showerror("错误", f"无法加载文件:\n{file_path}\n{e}", parent=self)
             return
 
-        version = data.get('version', 0)
+        version = data.get('_version', 0)
         if version < 1:
             if not messagebox.askyesno("警告", "文件格式版本过低，是否继续加载?"):
                 return
 
         results = data.get('results', [])
         events = data.get('events', [])
-        heater_initial = data.get('heater_initial', 50.0)
-        fan_initial = data.get('fan_initial', 80.0)
+        heater_initial = data['heater_initial']
+        fan_initial = data['fan_initial']
 
         if not results:
             messagebox.showwarning("警告", f"{os.path.basename(file_path)} 没有有效数据")

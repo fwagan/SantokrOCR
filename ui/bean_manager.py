@@ -8,11 +8,11 @@
 4. 修改追踪：黄色背景、未保存提示
 """
 
-import os
-import json
 import copy
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+from data.json.bean_repo import JsonBeanRepository
 
 BEAN_FIELDS = [
     ('name', '名称:'),
@@ -24,12 +24,6 @@ BEAN_FIELDS = [
     ('moisture', '含水率(%):'),
     ('season', '产季:'),
 ]
-
-
-def _get_bean_json_path():
-    """返回 beans.json 路径"""
-    app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
-    return os.path.join(app_data, 'SantokrOCR', 'BeanInfo', 'beans.json')
 
 
 class BeanManager(tk.Toplevel):
@@ -57,7 +51,8 @@ class BeanManager(tk.Toplevel):
         self._outofstock_var = tk.BooleanVar(value=False)
         self._outofstock_cb = None
 
-        # 加载数据
+        # 数据层
+        self._bean_repo = JsonBeanRepository()
         self._load()
 
         # 创建 UI
@@ -81,27 +76,21 @@ class BeanManager(tk.Toplevel):
         self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _load(self):
-        path = _get_bean_json_path()
         self._beans = []
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    self._beans = json.load(f)
-            except Exception as e:
-                messagebox.showerror("错误", f"加载生豆信息失败:\n{e}")
+        try:
+            self._beans = self._bean_repo.list_all()
+        except Exception as e:
+            messagebox.showerror("错误", f"加载生豆信息失败:\n{e}")
         self._original = copy.deepcopy(self._beans)
         self._new_indices.clear()
         self._deleted_indices.clear()
 
     def _save(self):
-        path = _get_bean_json_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         to_save = [
             b for i, b in enumerate(self._beans)
             if i not in self._deleted_indices and b.get('name', '').strip()
         ]
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(to_save, f, indent=2, ensure_ascii=False)
+        self._bean_repo.save_all(to_save)
 
         # 重置追踪
         self._original = copy.deepcopy(to_save)

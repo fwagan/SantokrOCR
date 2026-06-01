@@ -17,7 +17,6 @@ except Exception:
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import json
 import os
 import sys
 
@@ -32,6 +31,8 @@ def _setup_path():
 
 
 _setup_path()
+from data.json.bean_repo import JsonBeanRepository
+from data.serializers.slog import SlogSerializer
 from ui.statistics_panel import StatisticsPanel
 
 
@@ -282,22 +283,24 @@ class SlogViewer(tk.Toplevel):
     def load_file(self, file_path):
         """从文件加载数据"""
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception as e:
-            messagebox.showerror("错误", f"无法加载文件:\n{e}")
+            data = SlogSerializer.read(file_path)
+        except FileNotFoundError:
+            messagebox.showerror("错误", f"文件不存在:\n{file_path}", parent=self)
+            return
+        except ValueError as e:
+            messagebox.showerror("错误", f"无法加载文件:\n{e}", parent=self)
             return
 
         # 校验版本
-        version = data.get('version', 0)
+        version = data.get('_version', 0)
         if version < 1:
             messagebox.showwarning("警告", "文件格式版本过低，可能无法正确加载")
 
         # 解析数据
         results = data.get('results', [])
         events = data.get('events', [])
-        heater_initial = data.get('heater_initial', 50.0)
-        fan_initial = data.get('fan_initial', 80.0)
+        heater_initial = data['heater_initial']
+        fan_initial = data['fan_initial']
 
         if not results:
             messagebox.showwarning("警告", "文件中没有有效的results数据")
@@ -384,22 +387,15 @@ class SlogViewer(tk.Toplevel):
 
     # ====== 生豆信息管理 ======
 
-    def _get_bean_json_path(self):
-        """返回 beans.json 路径"""
-        app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
-        return os.path.join(app_data, 'SantokrOCR', 'BeanInfo', 'beans.json')
-
     def _load_bean_info(self):
-        """加载 beans.json，刷新 dropdown"""
-        path = self._get_bean_json_path()
+        """加载生豆信息，刷新 dropdown"""
         self._beans_data = []
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    all_beans = json.load(f)
-                self._beans_data = [b for b in all_beans if not b.get('outOfStock', False)]
-            except Exception:
-                self._beans_data = []
+        try:
+            repo = JsonBeanRepository()
+            all_beans = repo.list_all()
+            self._beans_data = [b for b in all_beans if not b.get('outOfStock', False)]
+        except Exception:
+            self._beans_data = []
         names = [b['name'] for b in self._beans_data if b.get('name')]
         self.bean_combo['values'] = names
 
@@ -465,17 +461,14 @@ class SlogViewer(tk.Toplevel):
         if not file_path:
             return
 
-        export = {
-            'version': 1,
+        session = {
             'roast_info': self._collect_roast_info(),
             'results': self.stats_panel.results,
             'events': self.stats_panel.events,
             'heater_initial': self.stats_panel.heater_initial,
             'fan_initial': self.stats_panel.fan_initial,
         }
-
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(export, f, indent=2, ensure_ascii=False)
+        SlogSerializer.write(file_path, session)
 
         self.stats_panel.status_var.set(f"数据已导出到: {file_path}")
 
