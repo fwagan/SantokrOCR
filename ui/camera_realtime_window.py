@@ -13,8 +13,8 @@ from tkinter import ttk, messagebox, filedialog
 import cv2
 import time
 import os
-import json
 import threading
+import numpy as np
 from PIL import Image, ImageTk
 
 from core.video_extractor import VideoDigitExtractor
@@ -25,6 +25,8 @@ from ui.statistics_panel import StatisticsPanel
 from ui.frame_viewer import FrameViewer
 from ui.slog_comparer import extract_valid_data, resample_data, smooth_data, compute_ror
 from utils.screen_utils import center_window
+from utils.cache_manager import get_cache_manager
+from data.serializers.slog import SlogSerializer
 
 
 class CameraRealtimeWindow(tk.Toplevel):
@@ -45,6 +47,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 帧缓存
         self._cache = RealTimeProcessCache()
+
+        # 持久缓存（摄像头ROI持久化，防止摄像头断开/窗口关闭后丢失）
+        self._cache_manager = get_cache_manager()
 
         # 理想曲线
         self.ideal_data = None
@@ -259,9 +264,11 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _load_ideal_slog(self, path):
         """加载并处理.slog文件作为理想曲线"""
         try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception as e:
+            data = SlogSerializer.read(path)
+        except FileNotFoundError:
+            messagebox.showerror("错误", f"文件不存在:\n{path}", parent=self)
+            return
+        except ValueError as e:
             messagebox.showerror("错误", f"无法加载文件:\n{path}\n{e}", parent=self)
             return
 
@@ -319,6 +326,8 @@ class CameraRealtimeWindow(tk.Toplevel):
             'alignment': alignment,
             'charge_time': charge_time if charge_time else 0.0,
             'end_time': end_time,
+            'heater_initial': data['heater_initial'],
+            'fan_initial': data['fan_initial'],
         }
 
         # 更新UI
@@ -365,9 +374,25 @@ class CameraRealtimeWindow(tk.Toplevel):
             ev_type = ev.get('type', '')
             ev_time = ev.get('time', 0)
             if ev_type in ('入豆', '回温', '一爆开始', '烘焙结束'):
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}")
+                rt = data['resampled_time']
+                st1 = data['smooth_temp1']
+                temp_str = ''
+                if rt is not None and st1 is not None and len(rt) > 0:
+                    idx = np.abs(rt - ev_time).argmin()
+                    if idx < len(st1):
+                        temp_str = f" ({st1[idx]:.1f}℃)"
+                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str}")
+                if ev_type == '回温':
+                    lines.append(f"    初始火力: {data.get('heater_initial', '?')}%  初始风门: {data.get('fan_initial', '?')}%")
             elif ev_type in ('调整火力', '调整风门'):
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d} → {ev.get('value', '?')}%")
+                rt = data['resampled_time']
+                st1 = data['smooth_temp1']
+                temp_str = ''
+                if rt is not None and st1 is not None and len(rt) > 0:
+                    idx = np.abs(rt - ev_time).argmin()
+                    if idx < len(st1):
+                        temp_str = f" ({st1[idx]:.1f}℃)"
+                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str} → {ev.get('value', '?')}%")
         # 温度范围
         if data['smooth_temp1'] is not None and len(data['smooth_temp1']) > 0:
             lines.append(f"豆温范围: {float(min(data['smooth_temp1'])):.1f} ~ {float(max(data['smooth_temp1'])):.1f}℃")
@@ -415,35 +440,61 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.source_combo["values"] = ["无可用数据源"]
             self.source_var.set("无可用数据源")
             self.source_combo.configure(state="disabled")
-            self.rois = None
-            self.roi_status_var.set("未配置")
+            # 不清除ROI — 缓存后摄像头重连可恢复
             self.start_btn.config(state="disabled")
         else:
             self.source_combo.configure(state="readonly")
             self.source_combo["values"] = available
             sel = self.source_var.get()
             if sel not in available:
+                # 旧摄像头已不可用，缓存其ROI
+                if hasattr(self, '_current_source') and self.rois:
+                    self._save_camera_rois()
                 self.source_var.set("")
                 self.rois = None
                 self.roi_status_var.set("未配置")
                 self.start_btn.config(state="disabled")
 
     def _on_source_changed(self, event=None):
-        """数据源切换"""
+        """数据源切换 — 保存旧摄像头ROI，加载新摄像头的缓存ROI"""
         sel = self.source_var.get()
         if not sel:
             return
+
+        # 保存当前ROI到旧摄像头的缓存
+        if hasattr(self, '_current_source') and self.rois:
+            self._save_camera_rois()
+
         self._current_source = self._source_map[sel]
-        # 清除之前摄像头的ROI
-        self.rois = None
-        self.roi_status_var.set("未配置")
-        self.start_btn.config(state="disabled")
+
+        # 尝试加载新摄像头的缓存ROI
+        loaded = self._load_camera_rois()
+        if loaded:
+            self.rois = loaded
+            self.roi_status_var.set("已配置")
+            self.start_btn.config(state="normal")
+        else:
+            self.rois = None
+            self.roi_status_var.set("未配置")
+            self.start_btn.config(state="disabled")
+
         self._start_preview()
 
     def _get_source_label(self):
         """返回当前数据源的友好名称"""
         sel = self.source_var.get()
         return sel if sel else str(self._current_source)
+
+    def _save_camera_rois(self):
+        """缓存当前摄像头ROI到磁盘（按摄像头索引持久化）"""
+        if hasattr(self, '_current_source') and self.rois:
+            self._cache_manager.save_camera_rois(self._current_source, self.rois)
+
+    def _load_camera_rois(self):
+        """从磁盘加载当前摄像头的缓存ROI"""
+        if hasattr(self, '_current_source'):
+            return self._cache_manager.load_camera_rois(self._current_source)
+        return None
 
     # ═══════════════════════════════════════════════════════════
     # 预览循环
@@ -609,17 +660,19 @@ class CameraRealtimeWindow(tk.Toplevel):
             self._retry_text_id = None
 
     def _on_camera_lost(self):
-        """摄像头断开 — 停止预览+处理、清空数据源/ROI状态"""
+        """摄像头断开 — 停止预览+处理，缓存ROI供下次使用"""
         # 先停止识别线程
         if self.processing_thread and not self.processing_thread.is_stopped():
             self.processing_thread.stop()
+        # 缓存ROI（摄像头断开、重连后自动恢复）
+        if self.rois:
+            self._save_camera_rois()
         self._stop_preview()
         self._show_no_data()
         self.source_combo.configure(state="disabled")
         self.source_combo["values"] = ["无可用数据源"]
         self.source_var.set("无可用数据源")
-        self.rois = None
-        self.roi_status_var.set("未配置")
+        # 不清除ROI — 下次摄像头可用时直接恢复
         self.start_btn.config(state="disabled")
         self.status_var.set("摄像头已断开")
         self._log("摄像头已断开")
@@ -692,6 +745,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         rois = selector.get_results()
         if rois:
             self.rois = rois
+            self._save_camera_rois()
             self.roi_status_var.set("已配置")
             self.start_btn.config(state="normal")
             self._log(f"ROI选择完成: {len(rois)}个区域")
@@ -816,20 +870,30 @@ class CameraRealtimeWindow(tk.Toplevel):
     # ═══════════════════════════════════════════════════════════
 
     def _on_result(self, result):
-        """处理识别结果"""
+        """处理识别结果（由后台线程触发，调度到主线程）"""
+        self.after_idle(self._on_result_ui, result)
+
+    def _on_result_ui(self, result):
+        """在主线程中执行识别结果处理"""
+        if not self.winfo_exists():
+            return
         self.results.append(result)
-        # 只在最近50条内追加到表格
         self.data_table.add_row(result)
-        # 更新实时曲线
         self.stats_panel.append_data(result)
 
     def _on_status(self, message):
-        """处理状态更新"""
+        """处理状态更新（由后台线程触发，调度到主线程）"""
+        self.after_idle(self._on_status_ui, message)
+
+    def _on_status_ui(self, message):
+        """在主线程中执行状态更新"""
+        if not self.winfo_exists():
+            return
         self.status_var.set(message)
         self._log(message)
 
     def _on_finished(self, success, message):
-        """处理完成信号（由识别线程触发，调度到UI线程）"""
+        """处理完成信号（由后台线程触发，调度到主线程）"""
         self.after_idle(self._on_finished_ui, success, message)
 
     def _on_finished_ui(self, success, message):
@@ -910,24 +974,23 @@ class CameraRealtimeWindow(tk.Toplevel):
             messagebox.showwarning("警告", "没有可导出的数据", parent=self)
             return
 
-        export = {
-            'version': 1,
-            'results': self.results,
-            'events': self.stats_panel.events if hasattr(self.stats_panel, 'events') else [],
-            'heater_initial': self.stats_panel.heater_initial if hasattr(self.stats_panel, 'heater_initial') else 0,
-            'fan_initial': self.stats_panel.fan_initial if hasattr(self.stats_panel, 'fan_initial') else 0,
-        }
-
         path = filedialog.asksaveasfilename(
             title="导出数据",
             defaultextension=".slog",
             filetypes=[("Slog files", "*.slog"), ("All files", "*.*")],
             parent=self
         )
-        if path:
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(export, f, indent=2, ensure_ascii=False)
-            self._log(f"数据已导出: {path}")
+        if not path:
+            return
+
+        session = {
+            'results': self.results,
+            'events': self.stats_panel.events if hasattr(self.stats_panel, 'events') else [],
+            'heater_initial': self.stats_panel.heater_initial if hasattr(self.stats_panel, 'heater_initial') else 0,
+            'fan_initial': self.stats_panel.fan_initial if hasattr(self.stats_panel, 'fan_initial') else 0,
+        }
+        SlogSerializer.write(path, session)
+        self._log(f"数据已导出: {path}")
 
     def _log(self, message):
         """记录日志（转发到父窗口的log方法）"""
@@ -935,7 +998,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.parent.log(f"[实时] {message}")
 
     def destroy(self):
-        """重写 destroy：确保所有路径（包括父窗口关闭）都释放摄像头"""
+        """重写 destroy：缓存ROI，释放摄像头"""
+        # 窗口关闭前持久化ROI
+        if self.rois:
+            self._save_camera_rois()
         self._stop_preview()
         # 兜底：_stop_preview 超时后线程可能还卡在 cap.read() 中
         if hasattr(self, '_cap') and self._cap is not None:
