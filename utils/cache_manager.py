@@ -3,574 +3,152 @@
 
 功能：
 1. 计算视频文件hash（基于文件内容和修改时间）
-2. 管理memory文件夹下的缓存数据
+2. 管理缓存数据
 3. 保存和加载ROI配置、识别结果
 4. 支持缓存失效检查（文件修改时间变化）
 
 缓存结构：
-memory/
+{base_dir}/
   {video_hash}/
     video_info.json    # 视频基本信息（路径、大小、修改时间）
     rois.json          # ROI配置列表
     results.json       # 识别结果列表
-    user_edits.json    # 用户编辑记录（可选）
+    events.json        # 事件列表
 """
 
 import os
-import json
-import hashlib
 import time
-from datetime import datetime
-from typing import Dict, List, Any, Optional
+import json
 import logging
+from typing import Dict, List, Optional
+
+from data.facade import CacheFacade
+from data.json._utils import json_lock, atomic_write, load_json
 
 logger = logging.getLogger(__name__)
 
 
 class CacheManager:
-    """缓存管理器"""
+    """缓存管理器（内部委托给 CacheFacade）"""
 
     def __init__(self, base_dir: str = None):
-        """
-        初始化缓存管理器
-
-        Args:
-            base_dir: 缓存基础目录。
-              打包后默认使用 %APPDATA%/SantokrOCR/memory（Windows）
-              开发环境默认使用项目根目录下的 memory 文件夹
-        """
-        if base_dir is None:
-            import sys
-            app_data = os.environ.get(
-                'APPDATA',
-                os.path.expanduser('~/.local/share')
-            )
-            base_dir = os.path.join(app_data, 'SantokrOCR', 'VideoProcessCache')
-
-        self.base_dir = base_dir
+        self._facade = CacheFacade(base_dir)
+        self.base_dir = self._facade.base_dir
         os.makedirs(self.base_dir, exist_ok=True)
         logger.info(f"缓存目录: {self.base_dir}")
 
+    # ── 视频哈希 ──
+
     def compute_video_hash(self, video_path: str) -> str:
-        """
-        计算视频文件的hash值
-
-        基于文件内容的前1MB + 文件大小 + 最后修改时间计算MD5，
-        避免大文件读取耗时过长。
-
-        Args:
-            video_path: 视频文件路径
-
-        Returns:
-            MD5 hash字符串
-        """
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"视频文件不存在: {video_path}")
-
-        # 获取文件信息
-        stat = os.stat(video_path)
-        file_size = stat.st_size
-        mtime = stat.st_mtime
-
-        # 计算文件内容hash（只读取前1MB和最后1MB，避免大文件）
-        md5 = hashlib.md5()
-
-        # 添加文件大小和修改时间
-        md5.update(str(file_size).encode('utf-8'))
-        md5.update(str(mtime).encode('utf-8'))
-
-        # 读取文件部分内容
-        try:
-            with open(video_path, 'rb') as f:
-                # 读取前1MB
-                data = f.read(1024 * 1024)
-                md5.update(data)
-
-                # 如果文件大于2MB，读取最后1MB
-                if file_size > 2 * 1024 * 1024:
-                    f.seek(-1024 * 1024, os.SEEK_END)
-                    data = f.read(1024 * 1024)
-                    md5.update(data)
-        except Exception as e:
-            logger.warning(f"读取视频文件失败，使用简化hash: {e}")
-            # 如果读取失败，只使用文件信息
-            pass
-
-        return md5.hexdigest()
+        return self._facade.compute_video_hash(video_path)
 
     def get_cache_dir(self, video_hash: str) -> str:
-        """
-        获取视频hash对应的缓存目录
-
-        Args:
-            video_hash: 视频hash值
-
-        Returns:
-            缓存目录路径
-        """
         cache_dir = os.path.join(self.base_dir, video_hash)
         os.makedirs(cache_dir, exist_ok=True)
         return cache_dir
 
+    # ── 视频信息 ──
+
     def save_video_info(self, video_path: str, video_hash: str) -> str:
-        """
-        保存视频基本信息
-
-        Args:
-            video_path: 视频文件路径
-            video_hash: 视频hash值
-
-        Returns:
-            保存的文件路径
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        info_path = os.path.join(cache_dir, 'video_info.json')
-
-        stat = os.stat(video_path)
-        video_info = {
-            'video_path': video_path,
-            'video_hash': video_hash,
-            'file_size': stat.st_size,
-            'modified_time': stat.st_mtime,
-            'created_time': stat.st_ctime,
-            'cache_time': time.time(),
-            'cache_date': datetime.now().isoformat()
-        }
-
-        with open(info_path, 'w', encoding='utf-8') as f:
-            json.dump(video_info, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"视频信息已保存: {info_path}")
-        return info_path
-
-    def save_rois(self, video_hash: str, rois, rotation_angle: float = None, start_frame: int = None) -> str:
-        """
-        保存ROI配置及相关参数
-
-        Args:
-            video_hash: 视频hash值
-            rois: ROI配置（字典：{name: (x, y, w, h)} 或 列表）
-            rotation_angle: 旋转角度
-            start_frame: 启动帧号
-
-        Returns:
-            保存的文件路径
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        rois_path = os.path.join(cache_dir, 'rois.json')
-
-        # 确保ROI数据可序列化
-        serializable_rois = {}
-        if isinstance(rois, dict):
-            # 字典格式：{name: (x, y, w, h)}
-            for name, roi in rois.items():
-                if isinstance(roi, (tuple, list)) and len(roi) == 4:
-                    x, y, w, h = roi
-                    serializable_rois[name] = {'x': int(x), 'y': int(y), 'width': int(w), 'height': int(h)}
-                elif isinstance(roi, dict) and 'x' in roi and 'y' in roi:
-                    # 已经是字典格式
-                    serializable_rois[name] = roi
-                else:
-                    serializable_rois[name] = str(roi)
-        elif isinstance(rois, list):
-            # 列表格式（向后兼容）
-            for roi in rois:
-                if isinstance(roi, dict) and 'name' in roi:
-                    name = roi['name']
-                    if 'x' in roi and 'y' in roi:
-                        serializable_rois[name] = {'x': roi['x'], 'y': roi['y'],
-                                                  'width': roi.get('width', roi.get('w', 0)),
-                                                  'height': roi.get('height', roi.get('h', 0))}
-                elif isinstance(roi, dict):
-                    logger.warning(f"跳过无法处理的ROI格式: {roi}")
-        else:
-            logger.warning(f"未知的ROI格式: {type(rois)}")
-            serializable_rois = {'error': f'unknown_roi_format_{type(rois)}'}
-
-        # 包装为带配置的格式
-        payload = {
-            'rois': serializable_rois,
-        }
-        if rotation_angle is not None:
-            payload['rotation_angle'] = float(rotation_angle)
-        if start_frame is not None:
-            payload['start_frame'] = int(start_frame)
-
-        with open(rois_path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"ROI配置已保存: {rois_path} (共{len(serializable_rois)}个ROI)")
-        return rois_path
-
-    def save_results(self, video_hash: str, results: List[Dict]) -> str:
-        """
-        保存识别结果
-
-        Args:
-            video_hash: 视频hash值
-            results: 识别结果列表
-
-        Returns:
-            保存的文件路径
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        results_path = os.path.join(cache_dir, 'results.json')
-
-        # 转换结果数据为可序列化格式
-        serializable_results = []
-        for result in results:
-            serializable_result = {}
-            for key, value in result.items():
-                # 处理特殊类型
-                if isinstance(value, (int, float, str, bool, type(None))):
-                    serializable_result[key] = value
-                elif hasattr(value, '__dict__'):
-                    # 对象转换为字典
-                    serializable_result[key] = str(value)
-                else:
-                    # 其他类型转换为字符串
-                    serializable_result[key] = str(value)
-            serializable_results.append(serializable_result)
-
-        with open(results_path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"识别结果已保存: {results_path} (共{len(serializable_results)}条记录)")
-        return results_path
+        return self._facade.save_video_info(video_path, video_hash)
 
     def load_video_info(self, video_hash: str) -> Optional[Dict]:
-        """
-        加载视频基本信息
+        return self._facade.load_video_info(video_hash)
 
-        Args:
-            video_hash: 视频hash值
+    # ── ROI ──
 
-        Returns:
-            视频信息字典，如果不存在返回None
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        info_path = os.path.join(cache_dir, 'video_info.json')
-
-        if not os.path.exists(info_path):
-            return None
-
-        try:
-            with open(info_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"加载视频信息失败: {info_path}, 错误: {e}")
-            return None
+    def save_rois(self, video_hash: str, rois, rotation_angle: float = None,
+                  start_frame: int = None) -> str:
+        return self._facade.save_rois(video_hash, rois, rotation_angle, start_frame)
 
     def load_rois(self, video_hash: str):
-        """
-        加载ROI配置及相关参数
+        return self._facade.load_rois(video_hash)
 
-        Args:
-            video_hash: 视频hash值
+    # ── 识别结果 ──
 
-        Returns:
-            dict: {'rois': {name: (x, y, w, h)}, 'rotation_angle': float, 'start_frame': int}
-            旧格式缓存只返回rois字典。如果不存在返回None。
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        rois_path = os.path.join(cache_dir, 'rois.json')
-
-        if not os.path.exists(rois_path):
-            return None
-
-        try:
-            with open(rois_path, 'r', encoding='utf-8') as f:
-                loaded_data = json.load(f)
-
-            rois = {}
-            rotation_angle = None
-            start_frame = None
-
-            if isinstance(loaded_data, dict):
-                # 判断新旧格式
-                if 'rois' in loaded_data:
-                    # 新格式：{'rois': {...}, 'rotation_angle': ..., 'start_frame': ...}
-                    roi_dict = loaded_data['rois']
-                    rotation_angle = loaded_data.get('rotation_angle')
-                    start_frame = loaded_data.get('start_frame')
-                else:
-                    # 旧格式：ROI数据直接在顶层
-                    roi_dict = loaded_data
-
-                for name, roi_data in roi_dict.items():
-                    if isinstance(roi_data, dict) and 'x' in roi_data and 'y' in roi_data:
-                        x = roi_data['x']
-                        y = roi_data['y']
-                        w = roi_data.get('width', roi_data.get('w', 0))
-                        h = roi_data.get('height', roi_data.get('h', 0))
-                        rois[name] = (int(x), int(y), int(w), int(h))
-                    elif isinstance(roi_data, (list, tuple)) and len(roi_data) == 4:
-                        rois[name] = tuple(int(v) for v in roi_data)
-                    else:
-                        logger.warning(f"无法解析ROI数据格式: {name}={roi_data}")
-            elif isinstance(loaded_data, list):
-                # 向后兼容：列表格式
-                for roi_item in loaded_data:
-                    if isinstance(roi_item, dict) and 'name' in roi_item:
-                        name = roi_item['name']
-                        if 'x' in roi_item and 'y' in roi_item:
-                            x = roi_item['x']
-                            y = roi_item['y']
-                            w = roi_item.get('width', roi_item.get('w', 0))
-                            h = roi_item.get('height', roi_item.get('h', 0))
-                            rois[name] = (int(x), int(y), int(w), int(h))
-
-            logger.info(f"ROI配置已加载: {rois_path} (共{len(rois)}个ROI)")
-            if not rois:
-                return None
-
-            result = {'rois': rois}
-            if rotation_angle is not None:
-                result['rotation_angle'] = rotation_angle
-            if start_frame is not None:
-                result['start_frame'] = start_frame
-            return result
-        except Exception as e:
-            logger.error(f"加载ROI配置失败: {rois_path}, 错误: {e}")
-            return None
-
-    def save_events(self, video_hash: str, events: List[Dict]) -> str:
-        """
-        保存事件列表
-
-        Args:
-            video_hash: 视频hash值
-            events: 事件列表
-
-        Returns:
-            保存的文件路径
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        events_path = os.path.join(cache_dir, 'events.json')
-
-        with open(events_path, 'w', encoding='utf-8') as f:
-            json.dump(events, f, indent=2, ensure_ascii=False)
-
-        logger.info(f"事件已保存: {events_path} (共{len(events)}条)")
-        return events_path
-
-    def load_events(self, video_hash: str) -> Optional[List[Dict]]:
-        """
-        加载事件列表
-
-        Args:
-            video_hash: 视频hash值
-
-        Returns:
-            事件列表，如果不存在返回None
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        events_path = os.path.join(cache_dir, 'events.json')
-
-        if not os.path.exists(events_path):
-            return None
-
-        try:
-            with open(events_path, 'r', encoding='utf-8') as f:
-                events = json.load(f)
-                logger.info(f"事件已加载: {events_path} (共{len(events)}条)")
-                return events
-        except Exception as e:
-            logger.error(f"加载事件失败: {events_path}, 错误: {e}")
-            return None
+    def save_results(self, video_hash: str, results: List[Dict]) -> str:
+        return self._facade.save_results(video_hash, results)
 
     def load_results(self, video_hash: str) -> Optional[List[Dict]]:
-        """
-        加载识别结果
+        return self._facade.load_results(video_hash)
 
-        Args:
-            video_hash: 视频hash值
+    # ── 事件 ──
 
-        Returns:
-            识别结果列表，如果不存在返回None
-        """
-        cache_dir = self.get_cache_dir(video_hash)
-        results_path = os.path.join(cache_dir, 'results.json')
+    def save_events(self, video_hash: str, events: List[Dict]) -> str:
+        return self._facade.save_events(video_hash, events)
 
-        if not os.path.exists(results_path):
-            return None
+    def load_events(self, video_hash: str) -> Optional[List[Dict]]:
+        return self._facade.load_events(video_hash)
 
-        try:
-            with open(results_path, 'r', encoding='utf-8') as f:
-                results = json.load(f)
-                logger.info(f"识别结果已加载: {results_path} (共{len(results)}条记录)")
-                return results
-        except Exception as e:
-            logger.error(f"加载识别结果失败: {results_path}, 错误: {e}")
-            return None
+    # ── 摄像头 ROI 持久缓存 ──
 
-    def check_cache_valid(self, video_path: str, video_hash: str) -> bool:
-        """
-        检查缓存是否有效（视频文件未修改）
-
-        Args:
-            video_path: 视频文件路径
-            video_hash: 视频hash值
-
-        Returns:
-            True表示缓存有效，False表示缓存已过期
-        """
-        video_info = self.load_video_info(video_hash)
-        if not video_info:
-            return False
-
-        # 检查文件是否存在
-        if not os.path.exists(video_path):
-            logger.warning(f"视频文件不存在: {video_path}")
-            return False
-
-        # 检查文件大小和修改时间
-        stat = os.stat(video_path)
-        cached_size = video_info.get('file_size')
-        cached_mtime = video_info.get('modified_time')
-
-        if cached_size != stat.st_size or abs(cached_mtime - stat.st_mtime) > 1.0:
-            logger.info(f"缓存已过期: 文件已修改 (大小: {cached_size} -> {stat.st_size}, 时间: {cached_mtime} -> {stat.st_mtime})")
-            return False
-
-        # 重新计算hash验证
-        current_hash = self.compute_video_hash(video_path)
-        if current_hash != video_hash:
-            logger.info(f"缓存已过期: hash不匹配 ({video_hash} -> {current_hash})")
-            return False
-
-        return True
-
-    def clear_cache(self, video_hash: str = None):
-        """
-        清除缓存
-
-        Args:
-            video_hash: 指定视频的缓存，如果为None则清除所有缓存
-        """
-        if video_hash:
-            cache_dir = os.path.join(self.base_dir, video_hash)
-            if os.path.exists(cache_dir):
-                import shutil
-                shutil.rmtree(cache_dir)
-                logger.info(f"已清除缓存: {cache_dir}")
-        else:
-            if os.path.exists(self.base_dir):
-                import shutil
-                shutil.rmtree(self.base_dir)
-                os.makedirs(self.base_dir, exist_ok=True)
-                logger.info(f"已清除所有缓存: {self.base_dir}")
-
-    # ── Camera ROI Cache ──
     CAMERA_ROI_CACHE_FILE = "camera_roi_cache.json"
 
     def save_camera_rois(self, camera_index: int, rois: dict) -> None:
-        """保存摄像头ROI配置到持久缓存（按摄像头索引）"""
         cache_file = os.path.join(self.base_dir, self.CAMERA_ROI_CACHE_FILE)
-        cache = {}
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cache = json.load(f)
-            except Exception:
-                pass
-
-        serializable = {}
-        for name, roi in rois.items():
-            if isinstance(roi, (tuple, list)) and len(roi) == 4:
-                serializable[name] = [int(v) for v in roi]
-            else:
-                serializable[name] = str(roi)
-
-        cache[str(camera_index)] = {
-            'rois': serializable,
-            'save_time': time.time(),
-        }
-
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(cache, f, indent=2, ensure_ascii=False)
+        with json_lock:
+            cache = load_json(cache_file) or {}
+            serializable = {}
+            for name, roi in rois.items():
+                if isinstance(roi, (tuple, list)) and len(roi) == 4:
+                    serializable[name] = [int(v) for v in roi]
+                else:
+                    serializable[name] = str(roi)
+            cache[str(camera_index)] = {
+                'rois': serializable,
+                'save_time': time.time(),
+            }
+            atomic_write(cache_file, cache)
         logger.info(f"摄像头ROI已缓存: camera {camera_index} ({len(serializable)}个ROI)")
 
     def load_camera_rois(self, camera_index: int) -> Optional[dict]:
-        """加载缓存中的摄像头ROI配置"""
         cache_file = os.path.join(self.base_dir, self.CAMERA_ROI_CACHE_FILE)
-        if not os.path.exists(cache_file):
+        cache = load_json(cache_file)
+        if not cache:
             return None
-
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                cache = json.load(f)
-        except Exception as e:
-            logger.error(f"加载摄像头ROI缓存失败: {e}")
-            return None
-
         entry = cache.get(str(camera_index))
         if not entry or 'rois' not in entry:
             return None
-
         rois = {}
         for name, roi_data in entry['rois'].items():
             if isinstance(roi_data, list) and len(roi_data) == 4:
                 rois[name] = tuple(roi_data)
             else:
                 rois[name] = roi_data
-
         logger.info(f"摄像头ROI已加载: camera {camera_index} ({len(rois)}个ROI)")
         return rois
 
+    # ── 缓存管理 ──
+
+    def check_cache_valid(self, video_path: str, video_hash: str) -> bool:
+        return self._facade.check_cache_valid(video_path, video_hash)
+
+    def clear_cache(self, video_hash: str = None):
+        self._facade.clear_cache(video_hash)
+
     def get_cache_size(self) -> int:
-        """
-        获取缓存总大小（字节）
-
-        Returns:
-            缓存目录总大小
-        """
-        total_size = 0
-        if not os.path.exists(self.base_dir):
-            return 0
-
-        for dirpath, dirnames, filenames in os.walk(self.base_dir):
-            for filename in filenames:
-                filepath = os.path.join(dirpath, filename)
-                total_size += os.path.getsize(filepath)
-
-        return total_size
+        return self._facade.get_cache_size()
 
     def list_cached_videos(self) -> List[Dict]:
-        """
-        列出所有缓存的视频
-
-        Returns:
-            缓存视频信息列表
-        """
-        cached_videos = []
-        if not os.path.exists(self.base_dir):
-            return cached_videos
-
-        for video_hash in os.listdir(self.base_dir):
-            cache_dir = os.path.join(self.base_dir, video_hash)
-            if not os.path.isdir(cache_dir):
-                continue
-
-            video_info = self.load_video_info(video_hash)
-            if video_info:
-                cached_videos.append({
-                    'video_hash': video_hash,
-                    'video_path': video_info.get('video_path', '未知'),
-                    'cache_date': video_info.get('cache_date', '未知'),
-                    'has_rois': os.path.exists(os.path.join(cache_dir, 'rois.json')),
-                    'has_results': os.path.exists(os.path.join(cache_dir, 'results.json'))
-                })
-
-        return cached_videos
+        return self._facade.list_cached_videos()
 
 
 # 全局缓存管理器实例
 _cache_manager = None
 
+
 def get_cache_manager() -> CacheManager:
-    """获取全局缓存管理器实例"""
     global _cache_manager
+
+    # 环境变量回退：运行旧版直接 IO 实现
+    # 如需回退：git checkout -- utils/cache_manager.py
+    # 然后在调用前设置 os.environ["SANTOKR_CACHE_BACKEND"] = "legacy"
+    if os.environ.get("SANTOKR_CACHE_BACKEND", "").lower() == "legacy":
+        raise RuntimeError(
+            "SANTOKR_CACHE_BACKEND=legacy 不再可用。"
+            "新版 CacheManager 已内置委托，请移除此环境变量使用新版。"
+        )
+
     if _cache_manager is None:
         _cache_manager = CacheManager()
     return _cache_manager
