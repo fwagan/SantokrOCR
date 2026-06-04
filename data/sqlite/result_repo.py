@@ -1,0 +1,85 @@
+"""SqliteResultRepository：基于 SQLite 的帧温度结果存储"""
+
+from typing import List, Optional
+
+import logging
+
+from data.sqlite.connection import execute_with_lock
+from data.sqlite.schema import ensure_schema
+from data.types import ResultRecord
+
+logger = logging.getLogger(__name__)
+
+_COLUMNS = [
+    'frame', 'timestamp', 'original_timestamp', 'time_str', 'timer',
+    'temp1_full', 'temp1_normal', 'temp1_faulty_digit', 'temp2',
+    'abnormal_category',
+]
+_COL_LIST = ', '.join(_COLUMNS)
+_COL_PLACEHOLDERS = ', '.join('?' for _ in _COLUMNS)
+
+
+def _result_to_row(result: ResultRecord) -> list:
+    return [
+        result.get('frame', 0),
+        result.get('timestamp', 0.0),
+        result.get('original_timestamp'),
+        result.get('time_str', ''),
+        result.get('timer'),
+        result.get('temp1_full', ''),
+        result.get('temp1_normal', ''),
+        result.get('temp1_faulty_digit', -1),
+        result.get('temp2', ''),
+        result.get('abnormal_category'),
+    ]
+
+
+def _row_to_result(row) -> ResultRecord:
+    return {col: row[col] for col in row.keys()}
+
+
+class SqliteResultRepository:
+    """基于 SQLite 的帧温度结果仓库"""
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        ensure_schema(db_path)
+
+    def save(self, session_id: str, results: List[ResultRecord]) -> None:
+        def _save(conn):
+            conn.execute("DELETE FROM result WHERE session_id = ?", (session_id,))
+            cols = 'session_id, ' + _COL_LIST
+            placeholders = '?, ' + _COL_PLACEHOLDERS
+            values_batch = [[session_id] + _result_to_row(r) for r in results]
+            conn.executemany(
+                f"INSERT INTO result ({cols}) VALUES ({placeholders})",
+                values_batch,
+            )
+            conn.commit()
+        execute_with_lock(self.db_path, _save)
+
+    def load(self, session_id: str) -> Optional[List[ResultRecord]]:
+        def _load(conn):
+            rows = conn.execute(
+                f"SELECT {_COL_LIST} FROM result "
+                "WHERE session_id = ? ORDER BY frame",
+                (session_id,),
+            ).fetchall()
+            if not rows:
+                return None
+            return [_row_to_result(r) for r in rows]
+        return execute_with_lock(self.db_path, _load)
+
+    def delete(self, session_id: str) -> None:
+        def _delete(conn):
+            conn.execute("DELETE FROM result WHERE session_id = ?", (session_id,))
+            conn.commit()
+        execute_with_lock(self.db_path, _delete)
+
+    def exists(self, session_id: str) -> bool:
+        def _exists(conn):
+            row = conn.execute(
+                "SELECT 1 FROM result WHERE session_id = ? LIMIT 1", (session_id,)
+            ).fetchone()
+            return row is not None
+        return execute_with_lock(self.db_path, _exists)

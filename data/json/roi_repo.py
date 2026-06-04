@@ -1,11 +1,12 @@
 """JsonRoiRepository：ROI 配置存储（含新旧格式兼容）"""
 
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 import logging
 
 from data.json._utils import json_lock, atomic_write, load_json
+from data.types import RoiConfig, RoiEntry
 
 logger = logging.getLogger(__name__)
 
@@ -27,11 +28,12 @@ class JsonRoiRepository:
     def _file_path(self, video_hash: str) -> str:
         return os.path.join(self.base_dir, video_hash, _FILENAME)
 
-    def save(self, video_hash: str, rois: dict, rotation_angle: Optional[float] = None,
-             start_frame: Optional[int] = None) -> None:
+    def save(self, video_hash: str, config: RoiConfig) -> None:
         path = self._file_path(video_hash)
-        serializable = self._make_serializable(rois)
+        serializable = self._make_serializable(config.get('rois', {}))
         payload: Dict[str, Any] = {'rois': serializable}
+        rotation_angle = config.get('rotation_angle')
+        start_frame = config.get('start_frame')
         if rotation_angle is not None:
             payload['rotation_angle'] = float(rotation_angle)
         if start_frame is not None:
@@ -40,7 +42,7 @@ class JsonRoiRepository:
             atomic_write(path, payload)
         logger.info(f"ROI 已保存: {path} ({len(serializable)} 个)")
 
-    def load(self, video_hash: str) -> Optional[dict]:
+    def load(self, video_hash: str) -> Optional[RoiConfig]:
         """返回 {'rois': {name: (x,y,w,h)}, 'rotation_angle': ..., 'start_frame': ...}
         或 None（不存在时）"""
         path = self._file_path(video_hash)
@@ -54,9 +56,9 @@ class JsonRoiRepository:
             logger.error(f"ROI 配置解析失败: {path}, 错误: {e}")
             return None
 
-    def _parse_loaded(self, loaded) -> Optional[dict]:
+    def _parse_loaded(self, loaded) -> Optional[RoiConfig]:
         """将 JSON 数据解析为标准 ROI 配置格式"""
-        rois: Dict[str, Tuple[int, int, int, int]] = {}
+        rois: Dict[str, dict] = {}
         rotation_angle = None
         start_frame = None
 
@@ -86,7 +88,7 @@ class JsonRoiRepository:
         if not rois:
             return None
 
-        result: dict = {'rois': rois}
+        result: RoiConfig = {'rois': rois}
         if rotation_angle is not None:
             result['rotation_angle'] = rotation_angle
         if start_frame is not None:
@@ -127,15 +129,17 @@ class JsonRoiRepository:
         return result
 
     @staticmethod
-    def _parse_roi_entry(name: str, roi_data) -> Optional[Tuple[int, int, int, int]]:
-        """解析单条 ROI 数据为 (x, y, w, h) 元组"""
+    def _parse_roi_entry(name: str, roi_data) -> Optional[RoiEntry]:
+        """解析单条 ROI 数据为 {x, y, width, height} 字典"""
         if isinstance(roi_data, dict) and 'x' in roi_data and 'y' in roi_data:
-            x = int(roi_data['x'])
-            y = int(roi_data['y'])
-            w = int(roi_data.get('width', roi_data.get('w', 0)))
-            h = int(roi_data.get('height', roi_data.get('h', 0)))
-            return (x, y, w, h)
+            return {
+                'x': int(roi_data['x']),
+                'y': int(roi_data['y']),
+                'width': int(roi_data.get('width', roi_data.get('w', 0))),
+                'height': int(roi_data.get('height', roi_data.get('h', 0))),
+            }
         elif isinstance(roi_data, (list, tuple)) and len(roi_data) == 4:
-            return tuple(int(v) for v in roi_data)
+            x, y, w, h = (int(v) for v in roi_data)
+            return {'x': x, 'y': y, 'width': w, 'height': h}
         logger.warning(f"无法解析 ROI: {name}={roi_data}")
         return None

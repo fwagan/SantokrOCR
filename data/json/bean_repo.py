@@ -7,6 +7,7 @@ from typing import List, Optional
 import logging
 
 from data.json._utils import json_lock, atomic_write, load_json
+from data.types import BeanRecord
 
 logger = logging.getLogger(__name__)
 
@@ -23,26 +24,26 @@ class JsonBeanRepository:
     def __init__(self, path: Optional[str] = None):
         self.path = path or _default_bean_path()
 
-    def list_all(self) -> List[dict]:
+    def list_all(self) -> List[BeanRecord]:
         return self._load_all()
 
-    def save_all(self, beans: List[dict]) -> None:
+    def save_all(self, beans: List[BeanRecord]) -> None:
         with json_lock:
             self._save_all_impl(beans)
 
-    def get_by_name(self, name: str) -> Optional[dict]:
+    def get_by_name(self, name: str) -> Optional[BeanRecord]:
         for bean in self._load_all():
             if bean.get('name') == name:
                 return bean
         return None
 
-    def add(self, bean: dict) -> None:
+    def add(self, bean: BeanRecord) -> None:
         with json_lock:
             beans = self._load_all()
             beans.append(bean)
             self._save_all_impl(beans)
 
-    def update(self, name: str, bean: dict) -> bool:
+    def update(self, name: str, bean: BeanRecord) -> bool:
         with json_lock:
             beans = self._load_all()
             for i, b in enumerate(beans):
@@ -63,7 +64,7 @@ class JsonBeanRepository:
 
     # ── internal（调用者需持有 json_lock） ──
 
-    def _load_all(self) -> List[dict]:
+    def _load_all(self) -> List[BeanRecord]:
         if not os.path.exists(self.path):
             return []
         data = load_json(self.path)
@@ -72,6 +73,6 @@ class JsonBeanRepository:
         logger.warning(f"beans.json 格式异常: {type(data)}")
         return []
 
-    def _save_all_impl(self, beans: List[dict]) -> None:
+    def _save_all_impl(self, beans: List[BeanRecord]) -> None:
         to_save = [b for b in beans if b.get('name', '').strip()]
         atomic_write(self.path, to_save)

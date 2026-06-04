@@ -360,7 +360,7 @@ class VideoDigitExtractor:
 
         # 绘制每个ROI框
         for roi_name, roi in rois.items():
-            x, y, w, h = roi
+            x, y, w, h = roi['x'], roi['y'], roi['width'], roi['height']
             color = self.get_roi_color(roi_name)
             cv2.rectangle(frame_with_rois, (x, y), (x+w, y+h), color, 2)
             cv2.putText(frame_with_rois, roi_name, (x, y-5),
@@ -389,10 +389,10 @@ class VideoDigitExtractor:
             return frame
 
         # 计算所有ROI的边界
-        min_x = min(roi[0] for roi in rois.values())
-        min_y = min(roi[1] for roi in rois.values())
-        max_x = max(roi[0] + roi[2] for roi in rois.values())
-        max_y = max(roi[1] + roi[3] for roi in rois.values())
+        min_x = min(roi['x'] for roi in rois.values())
+        min_y = min(roi['y'] for roi in rois.values())
+        max_x = max(roi['x'] + roi['width'] for roi in rois.values())
+        max_y = max(roi['y'] + roi['height'] for roi in rois.values())
 
         # 外扩
         width = max_x - min_x
@@ -416,7 +416,7 @@ class VideoDigitExtractor:
         offset_x = crop_x1
         offset_y = crop_y1
         for roi_name, roi in rois.items():
-            x, y, w_roi, h_roi = roi
+            x, y, w_roi, h_roi = roi['x'], roi['y'], roi['width'], roi['height']
             color = self.get_roi_color(roi_name)
             cv2.rectangle(cropped, (x - offset_x, y - offset_y),
                          (x + w_roi - offset_x, y + h_roi - offset_y), color, 2)
@@ -459,7 +459,7 @@ class VideoDigitExtractor:
 
     def crop_roi(self, frame, roi):
         """裁剪ROI区域"""
-        x, y, w, h = roi
+        x, y, w, h = roi['x'], roi['y'], roi['width'], roi['height']
         return frame[y:y+h, x:x+w]
 
     def get_roi_color(self, roi_name):

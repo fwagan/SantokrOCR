@@ -7,14 +7,14 @@ saves frames as JPEG via background writer thread, and supports .srlog export.
 
 import os
 import time
-import json
 import queue
 import random
 import string
 import shutil
 import threading
-import zipfile
 import cv2
+
+from data.serializers.srlog import SrlogSerializer
 
 
 class RealTimeProcessCache:
@@ -143,29 +143,16 @@ class RealTimeProcessCache:
         if not self._session_dir or not os.path.isdir(self._session_dir):
             raise RuntimeError("No session to export")
 
-        metadata = {
-            "version": 1,
-            "created": time.strftime('%Y-%m-%dT%H:%M:%S'),
-            "source": source,
-            "interval": interval,
-            "rotate_angle": rotate_angle,
-            "rois": rois,
-            "frame_count": len(results),
-            "duration": results[-1]['timestamp'] if results else 0.0,
-            "events": events or [],
-        }
-
-        with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr('metadata.json', json.dumps(metadata, indent=2, ensure_ascii=False))
-            zf.writestr('results.json', json.dumps(results, indent=2, ensure_ascii=False))
-
-            # Add frame files under frames/ prefix
-            if os.path.isdir(self._session_dir):
-                for fname in sorted(os.listdir(self._session_dir)):
-                    if not fname.endswith('.jpg'):
-                        continue
-                    fpath = os.path.join(self._session_dir, fname)
-                    zf.write(fpath, f"frames/{fname}")
+        SrlogSerializer.write(
+            output_path=output_path,
+            results=results,
+            rois=rois,
+            interval=interval,
+            rotate_angle=rotate_angle,
+            source=source,
+            events=events,
+            frames_dir=self._session_dir,
+        )
 
     @staticmethod
     def cleanup_old_sessions(max_keep=5):

@@ -10,41 +10,39 @@ from .types import (
     BeanRecord,
     EventRecord,
     ResultRecord,
-    RoiConfig,
     RoastSession,
-    VideoInfo,
 )
 
 
 class ResultRepository(Protocol):
-    """单帧温度识别结果"""
+    """帧温度识别结果"""
 
-    def save(self, video_hash: str, results: List[ResultRecord]) -> None:
+    def save(self, session_id: str, results: List[ResultRecord]) -> None:
         """保存识别结果（覆盖写入）"""
 
-    def load(self, video_hash: str) -> Optional[List[ResultRecord]]:
+    def load(self, session_id: str) -> Optional[List[ResultRecord]]:
         """加载识别结果，不存在返回 None"""
 
-    def delete(self, video_hash: str) -> None:
-        """删除指定视频的缓存结果"""
+    def delete(self, session_id: str) -> None:
+        """删除指定会话的缓存结果"""
 
-    def exists(self, video_hash: str) -> bool:
+    def exists(self, session_id: str) -> bool:
         """检查是否有缓存结果"""
 
 
 class EventRepository(Protocol):
     """烘焙事件"""
 
-    def save(self, video_hash: str, events: List[EventRecord]) -> None:
+    def save(self, session_id: str, events: List[EventRecord]) -> None:
         """保存事件列表（覆盖写入）"""
 
-    def load(self, video_hash: str) -> Optional[List[EventRecord]]:
+    def load(self, session_id: str) -> Optional[List[EventRecord]]:
         """加载事件列表，不存在返回 None"""
 
-    def delete(self, video_hash: str) -> None:
-        """删除指定视频的事件"""
+    def delete(self, session_id: str) -> None:
+        """删除指定会话的事件"""
 
-    def exists(self, video_hash: str) -> bool:
+    def exists(self, session_id: str) -> bool:
         """检查是否有缓存事件"""
 
 
@@ -52,10 +50,7 @@ class BeanRepository(Protocol):
     """咖啡豆档案"""
 
     def list_all(self) -> List[BeanRecord]:
-        """获取全部咖啡豆"""
-
-    def save_all(self, beans: List[BeanRecord]) -> None:
-        """覆盖保存全部咖啡豆"""
+        """获取全部咖啡豆（不含已删除）"""
 
     def get_by_name(self, name: str) -> Optional[BeanRecord]:
         """按名称查找咖啡豆"""
@@ -70,41 +65,10 @@ class BeanRepository(Protocol):
         """删除咖啡豆，返回是否找到并删除"""
 
 
-class RoiRepository(Protocol):
-    """ROI 配置"""
-
-    def save(self, video_hash: str, config: RoiConfig) -> None:
-        """保存 ROI 配置（覆盖写入）"""
-
-    def load(self, video_hash: str) -> Optional[RoiConfig]:
-        """加载 ROI 配置，不存在返回 None"""
-
-    def delete(self, video_hash: str) -> None:
-        """删除指定视频的 ROI 配置"""
-
-
-class VideoInfoRepository(Protocol):
-    """视频元信息"""
-
-    def save(self, info: VideoInfo) -> None:
-        """保存视频信息"""
-
-    def load(self, video_hash: str) -> Optional[VideoInfo]:
-        """加载视频信息，不存在返回 None"""
-
-    def delete(self, video_hash: str) -> None:
-        """删除指定视频的缓存信息"""
-
-    def list_all(self) -> List[VideoInfo]:
-        """列出所有缓存的视频信息"""
-
-
 class SessionRepository(Protocol):
-    """烘焙会话（一次烘焙的完整抽象）
+    """烘焙会话
 
-    内部存储层，对应未来 roast_sessions 表。
-    阶段 1-2 的 JSON 后端为 placeholder（仅定义接口，不持久化数据），
-    完整 CRUD 实现在阶段 3（SQLite 后端）。
+    SQLite 持久化层，对应 roast_session 表。
     """
 
     def save(self, session_id: str, session: RoastSession) -> None:

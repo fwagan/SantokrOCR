@@ -21,6 +21,8 @@ from ui.async_worker import ProcessingThread
 from ui.frame_viewer import FrameViewer
 from utils.cache_manager import get_cache_manager
 from utils.screen_utils import center_window
+from data.serializers.slog import SlogSerializer
+from data.serializers.srlog import SrlogSerializer
 
 
 class MainWindow(tk.Tk):
@@ -41,6 +43,7 @@ class MainWindow(tk.Tk):
         self._realtime_window = None  # 实时识别窗口单例
         self._mode = 'video'          # 'video' | 'srlog'
         self._srlog_cache_dir = None  # .srlog 会话帧的解压缓存目录
+        self._srlog_extract_to = None  # 解压根目录（用于清理）
 
         # 配置窗口
         self.title("SantokrOCR - 视频数字提取工具")
@@ -586,8 +589,6 @@ class MainWindow(tk.Tk):
 
     def _open_srlog(self, path):
         """加载 .srlog 会话文件"""
-        import zipfile, json, tempfile, shutil
-
         self.clear_video_data()
         self._mode = 'srlog'
         self.video_path = path
@@ -595,39 +596,42 @@ class MainWindow(tk.Tk):
         self.update_status(f"正在加载会话: {os.path.basename(path)}")
 
         try:
-            with zipfile.ZipFile(path, 'r') as zf:
-                metadata = json.loads(zf.read('metadata.json'))
-                results = json.loads(zf.read('results.json'))
+            srlog = SrlogSerializer.read(path)
+            metadata = srlog['metadata']
+            results = srlog['results']
+            self._srlog_cache_dir = srlog['frames_dir']
+            self._srlog_extract_to = srlog['_extract_to']
 
-                rois = metadata.get('rois')
-                if rois:
-                    self.rois = rois
-                    self.roi_status_label.config(text="已配置（来自会话文件）")
+            rois = metadata.get('rois')
+            if rois:
+                # 兼容旧 .srlog 中存储的 tuple/list 格式 ROI
+                converted = {}
+                for name, value in rois.items():
+                    if isinstance(value, (list, tuple)):
+                        converted[name] = {'x': value[0], 'y': value[1], 'width': value[2], 'height': value[3]}
+                    else:
+                        converted[name] = value
+                self.rois = converted
+                self.roi_status_label.config(text="已配置（来自会话文件）")
 
-                angle = metadata.get('rotate_angle', 5)
-                self.rotation_angle_var.set(str(angle))
-                interval = metadata.get('interval', 0.25)
-                self.interval_var.set(str(interval))
+            angle = metadata.get('rotate_angle', 5)
+            self.rotation_angle_var.set(str(angle))
+            interval = metadata.get('interval', 0.25)
+            self.interval_var.set(str(interval))
 
-                events = metadata.get('events', [])
-                if events:
-                    self.events = events
-                    self.refresh_events_display()
+            events = metadata.get('events', [])
+            if events:
+                self.events = events
+                self.refresh_events_display()
 
-                self.results = results
-                self.data_table.clear()
-                for result in self.results:
-                    self.data_table.add_row(result)
+            self.results = results
+            self.data_table.clear()
+            for result in self.results:
+                self.data_table.add_row(result)
 
-                # 解压帧到缓存目录
-                temp_dir = tempfile.mkdtemp(prefix='srlog_')
-                zf.extractall(temp_dir)
-                frames_dir = os.path.join(temp_dir, 'frames')
-                self._srlog_cache_dir = frames_dir if os.path.isdir(frames_dir) else None
-
-                self.log(f"已加载会话: {os.path.basename(path)}, "
-                         f"{len(results)} 条记录"
-                         f"{', 帧数: ' + str(len(os.listdir(frames_dir))) if self._srlog_cache_dir else ''}")
+            self.log(f"已加载会话: {os.path.basename(path)}, "
+                     f"{len(results)} 条记录"
+                     f"{', 帧数: ' + str(len(os.listdir(self._srlog_cache_dir))) if self._srlog_cache_dir else ''}")
 
         except Exception as e:
             self._cleanup_srlog_cache()
@@ -655,12 +659,11 @@ class MainWindow(tk.Tk):
 
     def _cleanup_srlog_cache(self):
         """清理 srlog 解压目录"""
-        if self._srlog_cache_dir and os.path.isdir(self._srlog_cache_dir):
-            parent = os.path.dirname(self._srlog_cache_dir)
-            if os.path.isdir(parent):
-                import shutil
-                shutil.rmtree(parent, ignore_errors=True)
+        if self._srlog_extract_to and os.path.isdir(self._srlog_extract_to):
+            import shutil
+            shutil.rmtree(self._srlog_extract_to, ignore_errors=True)
         self._srlog_cache_dir = None
+        self._srlog_extract_to = None
 
     def select_roi(self):
         """选择ROI区域"""
@@ -716,7 +719,7 @@ class MainWindow(tk.Tk):
                     angle = float(self.rotation_angle_var.get())
                 except ValueError:
                     angle = 5.0
-                self.cache_manager.save_rois(video_hash, rois, rotation_angle=angle, start_frame=0)
+                self.cache_manager.save_rois(video_hash, {'rois': rois, 'rotation_angle': angle, 'start_frame': 0})
                 self.log(f"ROI配置已保存到缓存 (hash: {video_hash}, 角度: {angle})")
         except Exception as e:
             self.log(f"保存ROI到缓存失败: {e}")
@@ -1091,7 +1094,6 @@ class MainWindow(tk.Tk):
                 pass  # 窗口已销毁，重新创建
 
         import tempfile
-        import json
         from ui.slog_viewer import open_slog_viewer as open_slv
 
         # 生成临时.slog文件
@@ -1103,15 +1105,13 @@ class MainWindow(tk.Tk):
         os.close(fd)
 
         # 构建导出数据
-        data = {
-            'version': 1,
+        session = {
             'results': self.results,
             'events': self.events,
             'heater_initial': self.heater_initial_var.get(),
             'fan_initial': self.fan_initial_var.get(),
         }
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        SlogSerializer.write(path, session)
 
         self.log(f"生成临时数据文件: {path}")
         self._slog_viewer = open_slv(self, path)

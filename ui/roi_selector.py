@@ -5,6 +5,8 @@ ROI选择器 - 基于tkinter的矩形框选对话框
 使用ttk控件展示ROI状态和操作提示，图片上不叠加任何文字。
 """
 
+from typing import Dict, Optional
+
 import tkinter as tk
 from tkinter import ttk
 import cv2
@@ -12,6 +14,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from utils.screen_utils import center_window
+from data.types import RoiEntry
 
 
 # ROI名称 → 中文标签映射
@@ -78,7 +81,7 @@ class RoiSelector(tk.Toplevel):
         self.img_h, self.img_w = self.frame_size
 
         # 状态
-        self.results = {}               # {name: (x, y, w, h)}
+        self.results = {}               # {name: RoiEntry}
         self.current_idx = 0            # 当前正在选择的ROI索引
         self.mouse_x = -1               # 鼠标在图像坐标系中的X
         self.mouse_y = -1               # 鼠标在图像坐标系中的Y
@@ -295,9 +298,10 @@ class RoiSelector(tk.Toplevel):
         self._clear_overlays()
 
         # 绘制已确认的ROI
-        for name, (rx, ry, rw, rh) in self.results.items():
+        for name, roi in self.results.items():
             color = _ROI_COLORS_TK.get(name, '#00FF00')
-            self._draw_roi_rect(rx, ry, rw, rh, outline=color, fill_alpha=0.15)
+            self._draw_roi_rect(roi['x'], roi['y'], roi['width'], roi['height'],
+                                outline=color, fill_alpha=0.15)
 
         # 绘制当前选择的矩形
         if self.rect_start and self.rect_end:
@@ -497,7 +501,7 @@ class RoiSelector(tk.Toplevel):
                 name = self.roi_names[self.current_idx]
                 rx = min(x1, x2)
                 ry = min(y1, y2)
-                self.results[name] = (rx, ry, rw, rh)
+                self.results[name] = {'x': rx, 'y': ry, 'width': rw, 'height': rh}
                 self.current_idx += 1
                 self.rect_start = None
                 self.rect_end = None
@@ -632,6 +636,6 @@ class RoiSelector(tk.Toplevel):
 
     # ──────── 获取结果 ────────
 
-    def get_results(self):
-        """获取ROI选择结果，返回 {name: (x,y,w,h)} 或 None"""
+    def get_results(self) -> Optional[Dict[str, RoiEntry]]:
+        """获取ROI选择结果，返回 {name: RoiEntry} 或 None"""
         return self._result

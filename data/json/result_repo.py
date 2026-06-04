@@ -6,6 +6,7 @@ from typing import List, Optional
 import logging
 
 from data.json._utils import json_lock, atomic_write, load_json, safe_serialize
+from data.types import ResultRecord
 
 logger = logging.getLogger(__name__)
 
@@ -21,14 +22,14 @@ class JsonResultRepository:
     def _file_path(self, video_hash: str) -> str:
         return os.path.join(self.base_dir, video_hash, _FILENAME)
 
-    def save(self, video_hash: str, results: List[dict]) -> None:
+    def save(self, video_hash: str, results: List[ResultRecord]) -> None:
         path = self._file_path(video_hash)
         serialized = safe_serialize(results)
         with json_lock:
             atomic_write(path, serialized)
         logger.info(f"结果已保存: {path} ({len(serialized)} 条)")
 
-    def load(self, video_hash: str) -> Optional[List[dict]]:
+    def load(self, video_hash: str) -> Optional[List[ResultRecord]]:
         path = self._file_path(video_hash)
         data = load_json(path)
         if data is None:

@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 import logging
 
 from data.json._utils import json_lock, atomic_write, load_json
+from data.types import VideoInfo
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class JsonVideoInfoRepository:
     def _file_path(self, video_hash: str) -> str:
         return os.path.join(self.base_dir, video_hash, _FILENAME)
 
-    def save(self, info: dict) -> None:
+    def save(self, info: VideoInfo) -> None:
         """保存视频信息（info 必须包含 video_hash）"""
         video_hash = info.get('video_hash')
         if not video_hash:
@@ -31,7 +32,7 @@ class JsonVideoInfoRepository:
             atomic_write(path, info)
         logger.info(f"视频信息已保存: {path}")
 
-    def load(self, video_hash: str) -> Optional[dict]:
+    def load(self, video_hash: str) -> Optional[VideoInfo]:
         path = self._file_path(video_hash)
         return load_json(path)
 
@@ -42,7 +43,7 @@ class JsonVideoInfoRepository:
                 os.remove(path)
                 logger.info(f"视频信息已删除: {path}")
 
-    def list_all(self) -> List[Dict]:
+    def list_all(self) -> List[VideoInfo]:
         """列举缓存目录中所有视频信息"""
         result = []
         if not os.path.exists(self.base_dir):

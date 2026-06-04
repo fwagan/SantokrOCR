@@ -564,8 +564,9 @@ class FrameViewer(tk.Toplevel):
                         continue
 
                     # 裁剪ROI
-                    x, y, w, h = self.rois[roi_name]
-                    roi_img = self.extractor.crop_roi(frame, self.rois[roi_name])
+                    r = self.rois[roi_name]
+                    x, y, w, h = r['x'], r['y'], r['width'], r['height']
+                    roi_img = self.extractor.crop_roi(frame, r)
                     if roi_img is None or roi_img.size == 0:
                         continue
 

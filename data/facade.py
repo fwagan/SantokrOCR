@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import logging
 
+from data.types import EventRecord, ResultRecord, RoiConfig, VideoInfo
+
 from data.json.bean_repo import JsonBeanRepository
 from data.json.event_repo import JsonEventRepository
 from data.json.result_repo import JsonResultRepository
@@ -86,41 +88,40 @@ class CacheFacade:
         info_path = os.path.join(self.base_dir, video_hash, 'video_info.json')
         return info_path
 
-    def load_video_info(self, video_hash: str) -> Optional[dict]:
+    def load_video_info(self, video_hash: str) -> Optional[VideoInfo]:
         return self.video_info.load(video_hash)
 
     # ============================================================
     # ROI
     # ============================================================
 
-    def save_rois(self, video_hash: str, rois: Any, rotation_angle: Optional[float] = None,
-                  start_frame: Optional[int] = None) -> str:
-        self.roi.save(video_hash, rois, rotation_angle, start_frame)
+    def save_rois(self, video_hash: str, config: RoiConfig) -> str:
+        self.roi.save(video_hash, config)
         return os.path.join(self.base_dir, video_hash, 'rois.json')
 
-    def load_rois(self, video_hash: str) -> Optional[dict]:
+    def load_rois(self, video_hash: str) -> Optional[RoiConfig]:
         return self.roi.load(video_hash)
 
     # ============================================================
     # 识别结果
     # ============================================================
 
-    def save_results(self, video_hash: str, results: List[Dict]) -> str:
+    def save_results(self, video_hash: str, results: List[ResultRecord]) -> str:
         self.result.save(video_hash, results)
         return os.path.join(self.base_dir, video_hash, 'results.json')
 
-    def load_results(self, video_hash: str) -> Optional[List[dict]]:
+    def load_results(self, video_hash: str) -> Optional[List[ResultRecord]]:
         return self.result.load(video_hash)
 
     # ============================================================
     # 事件
     # ============================================================
 
-    def save_events(self, video_hash: str, events: List[Dict]) -> str:
+    def save_events(self, video_hash: str, events: List[EventRecord]) -> str:
         self.event.save(video_hash, events)
         return os.path.join(self.base_dir, video_hash, 'events.json')
 
-    def load_events(self, video_hash: str) -> Optional[List[dict]]:
+    def load_events(self, video_hash: str) -> Optional[List[EventRecord]]:
         return self.event.load(video_hash)
 
     # ============================================================

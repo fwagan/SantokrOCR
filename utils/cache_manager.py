@@ -22,6 +22,8 @@ import json
 import logging
 from typing import Dict, List, Optional
 
+from data.types import RoiConfig, RoiEntry
+
 from data.facade import CacheFacade
 from data.json._utils import json_lock, atomic_write, load_json
 
@@ -57,11 +59,10 @@ class CacheManager:
 
     # ── ROI ──
 
-    def save_rois(self, video_hash: str, rois, rotation_angle: float = None,
-                  start_frame: int = None) -> str:
-        return self._facade.save_rois(video_hash, rois, rotation_angle, start_frame)
+    def save_rois(self, video_hash: str, config: RoiConfig) -> str:
+        return self._facade.save_rois(video_hash, config)
 
-    def load_rois(self, video_hash: str):
+    def load_rois(self, video_hash: str) -> Optional[dict]:
         return self._facade.load_rois(video_hash)
 
     # ── 识别结果 ──
@@ -84,13 +85,15 @@ class CacheManager:
 
     CAMERA_ROI_CACHE_FILE = "camera_roi_cache.json"
 
-    def save_camera_rois(self, camera_index: int, rois: dict) -> None:
+    def save_camera_rois(self, camera_index: int, rois: Dict[str, RoiEntry]) -> None:
         cache_file = os.path.join(self.base_dir, self.CAMERA_ROI_CACHE_FILE)
         with json_lock:
             cache = load_json(cache_file) or {}
             serializable = {}
             for name, roi in rois.items():
-                if isinstance(roi, (tuple, list)) and len(roi) == 4:
+                if isinstance(roi, dict):
+                    serializable[name] = [int(roi['x']), int(roi['y']), int(roi['width']), int(roi['height'])]
+                elif isinstance(roi, (list, tuple)) and len(roi) == 4:
                     serializable[name] = [int(v) for v in roi]
                 else:
                     serializable[name] = str(roi)
@@ -101,7 +104,7 @@ class CacheManager:
             atomic_write(cache_file, cache)
         logger.info(f"摄像头ROI已缓存: camera {camera_index} ({len(serializable)}个ROI)")
 
-    def load_camera_rois(self, camera_index: int) -> Optional[dict]:
+    def load_camera_rois(self, camera_index: int) -> Optional[Dict[str, RoiEntry]]:
         cache_file = os.path.join(self.base_dir, self.CAMERA_ROI_CACHE_FILE)
         cache = load_json(cache_file)
         if not cache:
@@ -111,8 +114,10 @@ class CacheManager:
             return None
         rois = {}
         for name, roi_data in entry['rois'].items():
-            if isinstance(roi_data, list) and len(roi_data) == 4:
-                rois[name] = tuple(roi_data)
+            if isinstance(roi_data, (list, tuple)) and len(roi_data) == 4:
+                rois[name] = {'x': roi_data[0], 'y': roi_data[1], 'width': roi_data[2], 'height': roi_data[3]}
+            elif isinstance(roi_data, dict):
+                rois[name] = roi_data
             else:
                 rois[name] = roi_data
         logger.info(f"摄像头ROI已加载: camera {camera_index} ({len(rois)}个ROI)")
