@@ -4,7 +4,7 @@ from typing import List, Optional
 
 import logging
 
-from data.sqlite.connection import execute_with_lock
+from data.sqlite.connection import execute_with_lock, get_default_db_path
 from data.sqlite.schema import ensure_schema
 from data.types import RoastSession
 
@@ -21,7 +21,7 @@ _SESSION_COLS = [
 ]
 _COL_NAMES = [c for c in _SESSION_COLS if c not in ('created_at', 'updated_at')]
 _COL_LIST = ', '.join(_COL_NAMES)
-_DISPLAY_COLS = ', '.join(c for c in _SESSION_COLS if c != 'created_at')
+_DISPLAY_COLS = ', '.join(_SESSION_COLS)
 _PLACEHOLDERS = ', '.join('?' for _ in _COL_NAMES)
 _UPDATE_SET = ', '.join(f"{c} = excluded.{c}" for c in _COL_NAMES if c != 'session_id')
 _UPSERT_SQL = (
@@ -48,6 +48,8 @@ def _row_to_session(row) -> RoastSession:
         'green_weight': row['green_weight'],
         'roasted_weight': row['roasted_weight'],
         'notes': row['notes'] or '',
+        'created_at': row['created_at'] or '',
+        'updated_at': row['updated_at'] or '',
     }
 
 
@@ -58,9 +60,9 @@ class SqliteSessionRepository:
     results 和 events 由各自的 Repository 管理。
     """
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        ensure_schema(db_path)
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or get_default_db_path()
+        ensure_schema(self.db_path)
 
     def save(self, session_id: str, session: RoastSession) -> None:
         def _save(conn):

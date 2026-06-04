@@ -4,7 +4,7 @@ from typing import List, Optional
 
 import logging
 
-from data.sqlite.connection import execute_with_lock
+from data.sqlite.connection import execute_with_lock, get_default_db_path
 from data.sqlite.schema import ensure_schema
 from data.types import ResultRecord
 
@@ -41,9 +41,9 @@ def _row_to_result(row) -> ResultRecord:
 class SqliteResultRepository:
     """基于 SQLite 的帧温度结果仓库"""
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        ensure_schema(db_path)
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or get_default_db_path()
+        ensure_schema(self.db_path)
 
     def save(self, session_id: str, results: List[ResultRecord]) -> None:
         def _save(conn):
