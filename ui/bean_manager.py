@@ -9,10 +9,11 @@
 """
 
 import copy
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from data.json.bean_repo import JsonBeanRepository
+from data.sqlite.bean_repo import SqliteBeanRepository
 
 BEAN_FIELDS = [
     ('name', '名称:'),
@@ -52,7 +53,9 @@ class BeanManager(tk.Toplevel):
         self._outofstock_cb = None
 
         # 数据层
-        self._bean_repo = JsonBeanRepository()
+        app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
+        db_path = os.path.join(app_data, 'SantokrOCR', 'santokr.db')
+        self._bean_repo = SqliteBeanRepository(db_path)
         self._load()
 
         # 创建 UI
