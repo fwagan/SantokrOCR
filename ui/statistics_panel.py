@@ -650,7 +650,7 @@ class StatisticsPanel(ttk.Frame):
         return {
             'type': '回温', 'frame': 0,
             'time': float(self.resampled_time[min_idx]),
-            'value': float(self.smooth_temp1[min_idx]),
+            'value': None,  # 事件标记事件不设 value（仅 调整火力/调整风门 使用）
         }
 
     def build_heater_fan_data(self):
