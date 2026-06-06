@@ -26,6 +26,11 @@ from ui.frame_viewer import FrameViewer
 from ui.slog_comparer import extract_valid_data, resample_data, smooth_data, compute_ror
 from utils.screen_utils import center_window
 from utils.cache_manager import get_cache_manager
+from utils.file_system import Paths, FileOperations
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
 
 
@@ -50,6 +55,11 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 持久缓存（摄像头ROI持久化，防止摄像头断开/窗口关闭后丢失）
         self._cache_manager = get_cache_manager()
+
+        # 数据库
+        self._session_repo = SqliteSessionRepository()
+        self._result_repo = SqliteResultRepository()
+        self._event_repo = SqliteEventRepository()
 
         # 理想曲线
         self.ideal_data = None
@@ -162,6 +172,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         ttk.Button(top_bar, text="导出数据", command=self._export_data).pack(side="left", padx=(4, 0))
         self.export_session_btn = ttk.Button(top_bar, text="导出会话", command=self._export_session, state="disabled")
         self.export_session_btn.pack(side="left", padx=4)
+
+        self.save_db_btn = ttk.Button(top_bar, text="保存会话到数据库", command=self._save_to_database, state="disabled")
+        self.save_db_btn.pack(side="left", padx=4)
 
         # ── 主体：预览 + 右侧Notebook ──
         main = ttk.PanedWindow(self, orient="horizontal")
@@ -816,6 +829,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.pause_btn.config(state="normal")
         self.stop_btn.config(state="normal")
         self.export_session_btn.config(state="disabled")
+        self.save_db_btn.config(state="disabled")
         self._start_time = time.time()
         self._update_elapsed_time()
 
@@ -849,6 +863,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.results.clear()
         self.data_table.clear()
         self.stats_panel.clear_data()
+        self.save_db_btn.config(state="disabled")
+        self.export_session_btn.config(state="disabled")
 
     def _reset_buttons(self):
         """重置按钮状态"""
@@ -856,6 +872,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.pause_btn.config(state="disabled", text="暂停")
         self.stop_btn.config(state="disabled")
         self.export_session_btn.config(state="normal")
+        self.save_db_btn.config(state="normal")
 
     def _update_elapsed_time(self):
         """更新运行时长显示"""
@@ -968,6 +985,66 @@ class CameraRealtimeWindow(tk.Toplevel):
             messagebox.showerror("导出失败", str(e), parent=self)
             import traceback
             traceback.print_exc()
+
+    def _save_to_database(self):
+        """保存当前会话到数据库（is_raw_data=True）"""
+        if not self.results:
+            messagebox.showwarning("警告", "没有数据可保存", parent=self)
+            return
+
+        from datetime import datetime
+        from tkinter import simpledialog
+
+        default_name = datetime.now().strftime('%Y%m%d_%H%M%S')
+        name = simpledialog.askstring(
+            "保存到数据库",
+            "请输入本次烘焙的名称:",
+            parent=self,
+            initialvalue=default_name,
+        )
+        if not name:
+            return
+
+        # 准备数据
+        from data.tools.import_slog import _next_session_id
+        sid = _next_session_id(self._session_repo.db_path)
+        events = self.stats_panel.events if hasattr(self.stats_panel, 'events') else []
+
+        # 保存会话元信息
+        session = {
+            'session_id': sid,
+            'is_raw_data': True,
+            'notes': name,
+            'heater_initial': (self.stats_panel.heater_initial
+                               if hasattr(self.stats_panel, 'heater_initial') else 0),
+            'fan_initial': (self.stats_panel.fan_initial
+                            if hasattr(self.stats_panel, 'fan_initial') else 0),
+        }
+        # 原子写入（单个事务）
+        writer = SessionWriter(session_repo=self._session_repo,
+                               result_repo=self._result_repo,
+                               event_repo=self._event_repo)
+        try:
+            writer.save_full(sid, session, self.results, events)
+        except Exception as e:
+            self._log(f"保存到数据库失败: {e}")
+            messagebox.showerror("保存失败", f"数据库写入错误:\n{e}", parent=self)
+            return
+
+        # 保存帧截图
+        try:
+            cache_dir = self._cache.session_dir() if self._cache else None
+            if cache_dir and os.path.isdir(cache_dir):
+                target_dir = Paths.ensure_frame_captures(sid)
+                count = FileOperations.copy_frames(cache_dir, target_dir)
+                self._log(f"帧截图已保存: {target_dir} ({count} 帧)")
+        except Exception as e:
+            self._log(f"帧截图保存失败: {e}")
+            messagebox.showwarning("保存完成", f"数据已保存，但帧截图写入失败:\n{e}", parent=self)
+
+        self.save_db_btn.config(state="disabled")
+        self._log(f"已保存到数据库: {sid}")
+        messagebox.showinfo("保存成功", f"会话已保存到数据库\n{sid}: {name}", parent=self)
 
     def _export_data(self):
         """导出数据为.slog（含events）"""

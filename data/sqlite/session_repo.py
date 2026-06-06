@@ -64,30 +64,40 @@ class SqliteSessionRepository:
         self.db_path = db_path or get_default_db_path()
         ensure_schema(self.db_path)
 
+    def _build_values(self, session_id: str, session: RoastSession) -> dict:
+        return {
+            'session_id': session_id,
+            'is_raw_data': 1 if session.get('is_raw_data') else 0,
+            'bean_id': session.get('bean_id'),
+            'heater_initial': session.get('heater_initial', 60.0),
+            'fan_initial': session.get('fan_initial', 50.0),
+            'density_override': session.get('density_override'),
+            'moisture_override': session.get('moisture_override'),
+            'roast_date': session.get('roast_date', ''),
+            'roast_time': session.get('roast_time', ''),
+            'roast_no': session.get('roast_no', ''),
+            'roast_total': session.get('roast_total', ''),
+            'green_weight': session.get('green_weight'),
+            'roasted_weight': session.get('roasted_weight'),
+            'notes': session.get('notes', ''),
+        }
+
     def save(self, session_id: str, session: RoastSession) -> None:
         def _save(conn):
-            values = {
-                'session_id': session_id,
-                'is_raw_data': 1 if session.get('is_raw_data') else 0,
-                'bean_id': session.get('bean_id'),
-                'heater_initial': session.get('heater_initial', 60.0),
-                'fan_initial': session.get('fan_initial', 50.0),
-                'density_override': session.get('density_override'),
-                'moisture_override': session.get('moisture_override'),
-                'roast_date': session.get('roast_date', ''),
-                'roast_time': session.get('roast_time', ''),
-                'roast_no': session.get('roast_no', ''),
-                'roast_total': session.get('roast_total', ''),
-                'green_weight': session.get('green_weight'),
-                'roasted_weight': session.get('roasted_weight'),
-                'notes': session.get('notes', ''),
-            }
-            conn.execute(
-                _UPSERT_SQL,
-                tuple(values[c] for c in _COL_NAMES),
-            )
+            self._upsert(conn, session_id, session)
             conn.commit()
         execute_with_lock(self.db_path, _save)
+
+    def save_with_conn(self, conn, session_id: str, session: RoastSession) -> None:
+        """使用外部连接写入但不提交（用于事务协调）"""
+        self._upsert(conn, session_id, session)
+
+    def _upsert(self, conn, session_id: str, session: RoastSession) -> None:
+        values = self._build_values(session_id, session)
+        conn.execute(
+            _UPSERT_SQL,
+            tuple(values[c] for c in _COL_NAMES),
+        )
 
     def load(self, session_id: str) -> Optional[RoastSession]:
         def _load(conn):

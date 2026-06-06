@@ -26,6 +26,7 @@ from utils.file_system import Paths, FileOperations, FileDialogs
 from data.sqlite.session_repo import SqliteSessionRepository
 from data.sqlite.result_repo import SqliteResultRepository
 from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
 from data.serializers.srlog import SrlogSerializer
 
@@ -1205,6 +1206,12 @@ class RecognitionWindow(tk.Toplevel):
         if self._rw_session_id:
             # 更新已有记录
             sid = self._rw_session_id
+            session = {
+                'session_id': sid,
+                'is_raw_data': True,
+                'heater_initial': self.heater_initial_var.get(),
+                'fan_initial': self.fan_initial_var.get(),
+            }
         else:
             # 新建 session
             from data.tools.import_slog import _next_session_id
@@ -1225,18 +1232,30 @@ class RecognitionWindow(tk.Toplevel):
                 'heater_initial': self.heater_initial_var.get(),
                 'fan_initial': self.fan_initial_var.get(),
             }
-            self._session_repo.save(sid, session)
 
-        self._result_repo.save(sid, self.results)
-        self._event_repo.save(sid, self.events)
+        # 原子写入（单个事务）
+        from data.sqlite.session_writer import SessionWriter
+        writer = SessionWriter(session_repo=self._session_repo,
+                               result_repo=self._result_repo,
+                               event_repo=self._event_repo)
+        try:
+            writer.save_full(sid, session, self.results, self.events)
+        except Exception as e:
+            self.log(f"保存到数据库失败: {e}")
+            messagebox.showerror("保存失败", f"数据库写入错误:\n{e}", parent=self)
+            return None
         self._rw_session_id = sid
 
         # 保存帧截图
-        if self._srlog_cache_dir and os.path.isdir(self._srlog_cache_dir):
-            target_dir = Paths.ensure_frame_captures(sid)
-            count = FileOperations.copy_frames(self._srlog_cache_dir, target_dir)
-            self._srlog_cache_dir = target_dir
-            self.log(f"帧截图已保存: {target_dir} ({count} 帧)")
+        try:
+            if self._srlog_cache_dir and os.path.isdir(self._srlog_cache_dir):
+                target_dir = Paths.ensure_frame_captures(sid)
+                count = FileOperations.copy_frames(self._srlog_cache_dir, target_dir)
+                self._srlog_cache_dir = target_dir
+                self.log(f"帧截图已保存: {target_dir} ({count} 帧)")
+        except Exception as e:
+            self.log(f"帧截图保存失败: {e}")
+            messagebox.showwarning("保存完成", f"数据已保存，但帧截图写入失败:\n{e}", parent=self)
 
         self.log(f"已保存到数据库: {sid}")
         return sid

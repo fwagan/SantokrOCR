@@ -47,16 +47,23 @@ class SqliteResultRepository:
 
     def save(self, session_id: str, results: List[ResultRecord]) -> None:
         def _save(conn):
-            conn.execute("DELETE FROM result WHERE session_id = ?", (session_id,))
-            cols = 'session_id, ' + _COL_LIST
-            placeholders = '?, ' + _COL_PLACEHOLDERS
-            values_batch = [[session_id] + _result_to_row(r) for r in results]
-            conn.executemany(
-                f"INSERT INTO result ({cols}) VALUES ({placeholders})",
-                values_batch,
-            )
+            self._delete_and_insert(conn, session_id, results)
             conn.commit()
         execute_with_lock(self.db_path, _save)
+
+    def save_with_conn(self, conn, session_id: str, results: List[ResultRecord]) -> None:
+        """使用外部连接写入但不提交（用于事务协调）"""
+        self._delete_and_insert(conn, session_id, results)
+
+    def _delete_and_insert(self, conn, session_id: str, results: List[ResultRecord]) -> None:
+        conn.execute("DELETE FROM result WHERE session_id = ?", (session_id,))
+        cols = 'session_id, ' + _COL_LIST
+        placeholders = '?, ' + _COL_PLACEHOLDERS
+        values_batch = [[session_id] + _result_to_row(r) for r in results]
+        conn.executemany(
+            f"INSERT INTO result ({cols}) VALUES ({placeholders})",
+            values_batch,
+        )
 
     def load(self, session_id: str) -> Optional[List[ResultRecord]]:
         def _load(conn):

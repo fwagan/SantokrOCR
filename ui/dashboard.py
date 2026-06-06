@@ -417,7 +417,8 @@ class Dashboard(tk.Tk):
         # iid 中存储了 session_id
         session_id = selection[0]
         from ui.recognition_window import RecognitionWindow
-        RecognitionWindow(self, mode='raw_data', session_id=session_id)
+        rw = RecognitionWindow(self, mode='raw_data', session_id=session_id)
+        rw.bind('<Destroy>', self._on_child_destroy)
 
     def _open_realtime(self):
         """开启实时识别（单例）"""
@@ -431,12 +432,14 @@ class Dashboard(tk.Tk):
                 pass
         from ui.camera_realtime_window import CameraRealtimeWindow
         self._realtime_window = CameraRealtimeWindow(self)
+        self._realtime_window.bind('<Destroy>', self._on_child_destroy)
         self._update_status('已打开实时识别窗口')
 
     def _open_offline_source(self):
         """打开 RecognitionWindow(mode='video')"""
         from ui.recognition_window import RecognitionWindow
-        RecognitionWindow(self, mode='video')
+        rw = RecognitionWindow(self, mode='video')
+        rw.bind('<Destroy>', self._on_child_destroy)
 
     def _open_bean_manager(self):
         """管理咖啡豆"""
@@ -450,6 +453,11 @@ class Dashboard(tk.Tk):
 
     def _update_status(self, message: str):
         self._status_label.configure(text=message)
+
+    def _on_child_destroy(self, event):
+        """子窗口关闭时自动刷新 raw data（只响应 Toplevel 自身）"""
+        if event.widget == event.widget.winfo_toplevel():
+            self._load_raw_data()
 
     def _on_closing(self):
         # 实时识别窗口打开时提示

@@ -20,16 +20,23 @@ class SqliteEventRepository:
 
     def save(self, session_id: str, events: List[EventRecord]) -> None:
         def _save(conn):
-            conn.execute("DELETE FROM event WHERE session_id = ?", (session_id,))
-            for ev in events:
-                conn.execute(
-                    "INSERT INTO event (session_id, type, frame, time, value) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (session_id, ev.get('type', ''), ev.get('frame', 0),
-                     ev.get('time', 0.0), ev.get('value')),
-                )
+            self._delete_and_insert(conn, session_id, events)
             conn.commit()
         execute_with_lock(self.db_path, _save)
+
+    def save_with_conn(self, conn, session_id: str, events: List[EventRecord]) -> None:
+        """使用外部连接写入但不提交（用于事务协调）"""
+        self._delete_and_insert(conn, session_id, events)
+
+    def _delete_and_insert(self, conn, session_id: str, events: List[EventRecord]) -> None:
+        conn.execute("DELETE FROM event WHERE session_id = ?", (session_id,))
+        for ev in events:
+            conn.execute(
+                "INSERT INTO event (session_id, type, frame, time, value) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, ev.get('type', ''), ev.get('frame', 0),
+                 ev.get('time', 0.0), ev.get('value')),
+            )
 
     def load(self, session_id: str) -> Optional[List[EventRecord]]:
         def _load(conn):
