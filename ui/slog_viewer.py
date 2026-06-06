@@ -504,8 +504,39 @@ class SlogViewer(tk.Toplevel):
 
 
 
-def open_slog_viewer(parent, file_path=None):
-    """从父窗口打开slog viewer"""
+def open_slog_viewer(parent, session_id=None, file_path=None):
+    """从父窗口打开slog viewer
+
+    Args:
+        parent: 父窗口
+        file_path: .slog 文件路径（可选）
+        session_id: 数据库会话 ID（可选，优先于 file_path）
+    """
+    if session_id:
+        # Phase 5: 改为直接 load_from_session_id
+        # 当前用临时文件方式过渡
+        from data.sqlite.session_repo import SqliteSessionRepository
+        from data.sqlite.result_repo import SqliteResultRepository
+        from data.sqlite.event_repo import SqliteEventRepository
+        import tempfile
+
+        sr = SqliteSessionRepository()
+        rr = SqliteResultRepository()
+        er = SqliteEventRepository()
+        session = sr.load(session_id)
+        results = rr.load(session_id) or []
+        events = er.load(session_id) or []
+        if session:
+            fd, path = tempfile.mkstemp(suffix='.slog', prefix='session_')
+            os.close(fd)
+            data = {
+                'results': results,
+                'events': events,
+                'heater_initial': session.get('heater_initial', 60.0),
+                'fan_initial': session.get('fan_initial', 50.0),
+            }
+            SlogSerializer.write(path, data)
+            return SlogViewer(parent, path)
     return SlogViewer(parent, file_path)
 
 

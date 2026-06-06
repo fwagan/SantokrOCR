@@ -202,7 +202,7 @@ class Dashboard(tk.Tk):
 
         # Treeview（两列：名称、时间）
         self._raw_tree = ttk.Treeview(
-            frame, columns=('time',), show='headings',
+            frame, columns=('time',), show='tree headings',
         )
         self._raw_tree.heading('#0', text='名称')
         self._raw_tree.heading('time', text='创建时间')
@@ -248,11 +248,12 @@ class Dashboard(tk.Tk):
 
         for s in raw:
             name = s.get('notes', '') or s.get('session_id', '')
+            sid = s.get('session_id', '')
             created = s.get('created_at', '') or ''
             # 截短时间戳，只取到分钟
             if len(created) > 16:
                 created = created[:16]
-            self._raw_tree.insert('', 'end', text=name,
+            self._raw_tree.insert('', 'end', iid=sid, text=name,
                                   values=(created,))
 
     def _load_bean_name(self, bean_id: Optional[int]) -> str:
@@ -409,8 +410,14 @@ class Dashboard(tk.Tk):
         pass
 
     def _on_raw_data_double_click(self, event):
-        """Phase 2 实现：打开 RecognitionWindow(mode='raw_data')"""
-        pass
+        """打开 RecognitionWindow(mode='raw_data')"""
+        selection = self._raw_tree.selection()
+        if not selection:
+            return
+        # iid 中存储了 session_id
+        session_id = selection[0]
+        from ui.recognition_window import RecognitionWindow
+        RecognitionWindow(self, mode='raw_data', session_id=session_id)
 
     def _open_realtime(self):
         """开启实时识别（单例）"""
@@ -427,8 +434,9 @@ class Dashboard(tk.Tk):
         self._update_status('已打开实时识别窗口')
 
     def _open_offline_source(self):
-        """Phase 2 实现：打开 RecognitionWindow(mode='video')"""
-        messagebox.showinfo('提示', '此功能将在后续版本实现')
+        """打开 RecognitionWindow(mode='video')"""
+        from ui.recognition_window import RecognitionWindow
+        RecognitionWindow(self, mode='video')
 
     def _open_bean_manager(self):
         """管理咖啡豆"""
@@ -444,5 +452,14 @@ class Dashboard(tk.Tk):
         self._status_label.configure(text=message)
 
     def _on_closing(self):
+        # 实时识别窗口打开时提示
+        if self._realtime_window is not None:
+            try:
+                if self._realtime_window.winfo_exists():
+                    self._realtime_window._on_closing()
+                    if self._realtime_window.winfo_exists():
+                        return
+            except tk.TclError:
+                pass
         self.quit()
         self.destroy()
