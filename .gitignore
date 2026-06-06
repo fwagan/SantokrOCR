@@ -5,3 +5,4 @@ __pycache__/
 .claude/
 build/
 dist/
+ruff.toml
