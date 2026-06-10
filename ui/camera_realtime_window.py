@@ -9,6 +9,7 @@
 """
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox, filedialog
 import cv2
 import time
@@ -47,6 +48,10 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 帧缓存
         self._cache = RealTimeProcessCache()
+
+        # 实时状态栏的后备数值（清除数据后重置）
+        self._last_bean_temp = None
+        self._last_air_temp = None
 
         # 持久缓存（摄像头ROI持久化，防止摄像头断开/窗口关闭后丢失）
         self._cache_manager = get_cache_manager()
@@ -167,10 +172,13 @@ class CameraRealtimeWindow(tk.Toplevel):
         main = ttk.PanedWindow(self, orient="horizontal")
         main.pack(fill="both", expand=True, padx=8, pady=4)
 
-        # 左侧：预览画布
+        # 左侧：预览画布 + 实时状态
         preview_frame = ttk.LabelFrame(main, text="摄像头预览", padding=4)
         self.preview_canvas = tk.Canvas(preview_frame, bg="#222222", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True)
+
+        self._realtime_status_frame = self._create_realtime_status(preview_frame)
+        self._realtime_status_frame.pack(side="bottom", fill="x", padx=4, pady=4)
         main.add(preview_frame, weight=45)
 
         # 右侧：Notebook（曲线 + 数据表格）
@@ -215,6 +223,101 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         self.time_var = tk.StringVar(value="运行时长: 00:00")
         ttk.Label(status_bar, textvariable=self.time_var, padding=(8, 4)).pack(side="right")
+
+    # ═══════════════════════════════════════════════════════════
+    # 实时状态栏
+    # ═══════════════════════════════════════════════════════════
+
+    def _create_realtime_status(self, parent):
+        """创建底部实时状态条：豆温(蓝) 风温(橙) ROR(红) 加大字号"""
+        status_frame = ttk.Frame(parent)
+
+        # 配置三列等宽
+        status_frame.columnconfigure(0, weight=1)
+        status_frame.columnconfigure(1, weight=1)
+        status_frame.columnconfigure(2, weight=1)
+
+        title_font = tkfont.Font(size=12, weight="bold")
+        value_font = tkfont.Font(size=48, weight="bold")
+
+        # 豆温（蓝色 #4488ff）
+        f0 = ttk.Frame(status_frame)
+        f0.grid(row=0, column=0, sticky="nsew", padx=4, pady=2)
+        ttk.Label(f0, text="豆温(℃)", font=title_font,
+                  foreground="#4488ff", anchor="center").pack(pady=(6, 0))
+        self._bean_temp_var = tk.StringVar(value="--.-")
+        bean_lbl = ttk.Label(f0, textvariable=self._bean_temp_var,
+                             font=value_font, foreground="#4488ff", anchor="center")
+        bean_lbl.pack(expand=True, fill="both")
+
+        # 风温（橙色 #ff8844）
+        f1 = ttk.Frame(status_frame)
+        f1.grid(row=0, column=1, sticky="nsew", padx=4, pady=2)
+        ttk.Label(f1, text="风温(℃)", font=title_font,
+                  foreground="#ff8844", anchor="center").pack(pady=(6, 0))
+        self._air_temp_var = tk.StringVar(value="--.-")
+        air_lbl = ttk.Label(f1, textvariable=self._air_temp_var,
+                            font=value_font, foreground="#ff8844", anchor="center")
+        air_lbl.pack(expand=True, fill="both")
+
+        # ROR（红色 #ff4444）
+        f2 = ttk.Frame(status_frame)
+        f2.grid(row=0, column=2, sticky="nsew", padx=4, pady=2)
+        ttk.Label(f2, text="ROR(℃/min)", font=title_font,
+                  foreground="#ff4444", anchor="center").pack(pady=(6, 0))
+        self._ror_var = tk.StringVar(value="--.-")
+        ror_lbl = ttk.Label(f2, textvariable=self._ror_var,
+                            font=value_font, foreground="#ff4444", anchor="center")
+        ror_lbl.pack(expand=True, fill="both")
+
+        return status_frame
+
+    def _update_realtime_status(self, result):
+        """更新底部实时状态：豆温、风温、ROR（识别失败时保留上次有效值）"""
+        # 豆温（识别失败时保留上次有效值）
+        temp1 = result.get('temp1_full', '')
+        if temp1 and temp1 != "????":
+            try:
+                v = float(temp1)
+                self._bean_temp_var.set(f"{v:.1f}")
+                self._last_bean_temp = str(v)
+            except ValueError:
+                self._bean_temp_var.set(str(temp1))
+                self._last_bean_temp = str(temp1)
+        else:
+            if hasattr(self, '_last_bean_temp'):
+                self._bean_temp_var.set(self._last_bean_temp)
+
+        # 风温（识别失败时保留上次有效值）
+        temp2 = result.get('temp2', '')
+        if temp2 and temp2 != "????":
+            try:
+                v = float(temp2)
+                self._air_temp_var.set(f"{v:.1f}")
+                self._last_air_temp = str(v)
+            except ValueError:
+                self._air_temp_var.set(str(temp2))
+                self._last_air_temp = str(temp2)
+        else:
+            if hasattr(self, '_last_air_temp'):
+                self._air_temp_var.set(self._last_air_temp)
+
+        # ROR（从 StatisticsPanel 已有的计算结果取最新值）
+        ror = None
+        if self.stats_panel.ror_values is not None and len(self.stats_panel.ror_values) > 0:
+            ror = self.stats_panel.ror_values[-1]
+        if ror is not None:
+            self._ror_var.set(f"{ror:+.1f}")
+        else:
+            self._ror_var.set("--.-")
+
+    def _reset_status_display(self):
+        """重置实时状态栏显示为初始值"""
+        self._last_bean_temp = None
+        self._last_air_temp = None
+        self._bean_temp_var.set("--.-")
+        self._air_temp_var.set("--.-")
+        self._ror_var.set("--.-")
 
     # ═══════════════════════════════════════════════════════════
     # 理想曲线
@@ -790,6 +893,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.data_table.clear()
         self.stats_panel.set_results([])
         self.stats_panel.set_update_interval(interval)
+        self._reset_status_display()
 
         # 启动帧缓存会话
         if self._cache.has_session():
@@ -849,6 +953,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.results.clear()
         self.data_table.clear()
         self.stats_panel.clear_data()
+        self._reset_status_display()
 
     def _reset_buttons(self):
         """重置按钮状态"""
@@ -881,6 +986,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.results.append(result)
         self.data_table.add_row(result)
         self.stats_panel.append_data(result)
+        self._update_realtime_status(result)
 
     def _on_status(self, message):
         """处理状态更新（由后台线程触发，调度到主线程）"""
