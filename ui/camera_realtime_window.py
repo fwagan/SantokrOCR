@@ -467,35 +467,63 @@ class CameraRealtimeWindow(tk.Toplevel):
         if self.ideal_data is None:
             return
         data = self.ideal_data
+
+        # 找到回温时间作为基准点（0:00）
+        turning_time = None
+        for ev in data['events']:
+            if ev.get('type') == '回温':
+                turning_time = ev.get('time', 0)
+                break
+
+        # 格式化相对时间（基于回温点）
+        def format_relative_time(ev_time):
+            if turning_time is None:
+                # 没有回温点，回退到绝对时间
+                return f"{int(ev_time//60):02d}:{int(ev_time%60):02d}"
+            diff = ev_time - turning_time
+            abs_min = int(abs(diff) // 60)
+            abs_sec = int(abs(diff) % 60)
+            if diff < 0:
+                return f"-{abs_min:02d}:{abs_sec:02d}"
+            else:
+                return f"{abs_min:02d}:{abs_sec:02d}"
+
+        # 查找事件时间的温度
+        def find_temperature(ev_time):
+            rt = data['resampled_time']
+            st1 = data['smooth_temp1']
+            if rt is not None and st1 is not None and len(rt) > 0:
+                idx = np.abs(rt - ev_time).argmin()
+                if idx < len(st1):
+                    return f"{st1[idx]:.1f}℃"
+            return ''
+
         lines = [
             f"文件: {data['name']}",
             f"数据点: {len(data['resampled_time'])}",
             f"时长: {data['resampled_time'][-1] - data['resampled_time'][0]:.1f}秒",
+            f"初始火力: {data.get('heater_initial', '?')}%  初始风门: {data.get('fan_initial', '?')}%",
         ]
-        # 事件信息
-        for ev in data['events']:
+
+        # 按时间排序事件
+        sorted_events = sorted(data['events'], key=lambda ev: ev.get('time', 0))
+
+        # 事件信息（时间基于回温点计算）
+        for ev in sorted_events:
             ev_type = ev.get('type', '')
             ev_time = ev.get('time', 0)
-            if ev_type in ('入豆', '回温', '一爆开始', '烘焙结束'):
-                rt = data['resampled_time']
-                st1 = data['smooth_temp1']
-                temp_str = ''
-                if rt is not None and st1 is not None and len(rt) > 0:
-                    idx = np.abs(rt - ev_time).argmin()
-                    if idx < len(st1):
-                        temp_str = f" ({st1[idx]:.1f}℃)"
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str}")
-                if ev_type == '回温':
-                    lines.append(f"    初始火力: {data.get('heater_initial', '?')}%  初始风门: {data.get('fan_initial', '?')}%")
-            elif ev_type in ('调整火力', '调整风门'):
-                rt = data['resampled_time']
-                st1 = data['smooth_temp1']
-                temp_str = ''
-                if rt is not None and st1 is not None and len(rt) > 0:
-                    idx = np.abs(rt - ev_time).argmin()
-                    if idx < len(st1):
-                        temp_str = f" ({st1[idx]:.1f}℃)"
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str} → {ev.get('value', '?')}%")
+            temp_str = find_temperature(ev_time)
+            rel_time_str = format_relative_time(ev_time)
+
+            if ev_type in ('调整火力', '调整风门'):
+                lines.append(
+                    f"  {ev_type}: {temp_str} @ {rel_time_str} → {ev.get('value', '?')}%"
+                )
+            else:
+                lines.append(
+                    f"  {ev_type}: {temp_str} @ {rel_time_str}"
+                )
+
         # 温度范围
         if data['smooth_temp1'] is not None and len(data['smooth_temp1']) > 0:
             lines.append(f"豆温范围: {float(min(data['smooth_temp1'])):.1f} ~ {float(max(data['smooth_temp1'])):.1f}℃")
