@@ -31,7 +31,7 @@ def _setup_path():
 
 
 _setup_path()
-from data.json.bean_repo import JsonBeanRepository
+from data.sqlite.database import Database
 from data.serializers.slog import SlogSerializer
 from ui.statistics_panel import StatisticsPanel
 
@@ -391,8 +391,7 @@ class SlogViewer(tk.Toplevel):
         """加载生豆信息，刷新 dropdown"""
         self._beans_data = []
         try:
-            repo = JsonBeanRepository()
-            all_beans = repo.list_all()
+            all_beans = Database().bean.list_all()
             self._beans_data = [b for b in all_beans if not b.get('outOfStock', False)]
         except Exception:
             self._beans_data = []

@@ -12,7 +12,7 @@ import copy
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from data.json.bean_repo import JsonBeanRepository
+from data.sqlite.database import Database
 
 BEAN_FIELDS = [
     ('name', '名称:'),
@@ -52,7 +52,7 @@ class BeanManager(tk.Toplevel):
         self._outofstock_cb = None
 
         # 数据层
-        self._bean_repo = JsonBeanRepository()
+        self._bean_repo = Database().bean
         self._load()
 
         # 创建 UI
