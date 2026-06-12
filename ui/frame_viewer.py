@@ -134,8 +134,12 @@ class FrameViewer(tk.Toplevel):
 
         # 导航按钮
         nav_frame = ttk.Frame(control_frame)
-        nav_frame.pack(side="left")
+        nav_frame.pack(fill="x")
 
+        ttk.Button(nav_frame, text="◀◀◀◀ 上100条",
+                  command=self.prev_100_record_frames).pack(side="left", padx=2)
+        ttk.Button(nav_frame, text="◀◀◀ 上10条",
+                  command=self.prev_10_record_frames).pack(side="left", padx=2)
         ttk.Button(nav_frame, text="◀◀ 上条记录",
                   command=self.prev_record_frame).pack(side="left", padx=2)
         ttk.Button(nav_frame, text="◀ 上一帧",
@@ -144,10 +148,14 @@ class FrameViewer(tk.Toplevel):
                   command=self.next_video_frame).pack(side="left", padx=2)
         ttk.Button(nav_frame, text="下条记录 ▶▶",
                   command=self.next_record_frame).pack(side="left", padx=2)
+        ttk.Button(nav_frame, text="下10条 ▶▶▶",
+                  command=self.next_10_record_frames).pack(side="left", padx=2)
+        ttk.Button(nav_frame, text="下100条 ▶▶▶▶",
+                  command=self.next_100_record_frames).pack(side="left", padx=2)
 
         # 帧信息显示
         info_frame = ttk.Frame(control_frame)
-        info_frame.pack(side="right")
+        info_frame.pack(fill="x", pady=(2, 0))
 
         self.frame_info_label = ttk.Label(info_frame, text="")
         self.frame_info_label.pack(side="left", padx=5)
@@ -889,6 +897,14 @@ class FrameViewer(tk.Toplevel):
         """跳转到上一条记录的帧"""
         self._navigate_to(self.current_frame_num - self._frame_interval)
 
+    def prev_10_record_frames(self):
+        """跳转到上10条记录的帧"""
+        self._navigate_to(self.current_frame_num - 10 * self._frame_interval)
+
+    def prev_100_record_frames(self):
+        """跳转到上100条记录的帧"""
+        self._navigate_to(self.current_frame_num - 100 * self._frame_interval)
+
     def prev_video_frame(self):
         """跳转到上一视频帧"""
         self._navigate_to(self.current_frame_num - 1)
@@ -900,6 +916,14 @@ class FrameViewer(tk.Toplevel):
     def next_record_frame(self):
         """跳转到下一条记录的帧"""
         self._navigate_to(self.current_frame_num + self._frame_interval)
+
+    def next_10_record_frames(self):
+        """跳转到下10条记录的帧"""
+        self._navigate_to(self.current_frame_num + 10 * self._frame_interval)
+
+    def next_100_record_frames(self):
+        """跳转到下100条记录的帧"""
+        self._navigate_to(self.current_frame_num + 100 * self._frame_interval)
 
     def save_screenshot(self):
         """保存当前显示的帧为图片"""
