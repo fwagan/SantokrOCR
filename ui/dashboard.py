@@ -381,7 +381,8 @@ class Dashboard(tk.Tk):
             else:
                 no_text = ''
 
-            self._grid_tree.insert('', 'end', values=(
+            item_id = s.get('session_id', '') or str(count)
+            self._grid_tree.insert('', 'end', iid=item_id, values=(
                 s.get('roast_date', '') or '',
                 s.get('roast_time', '') or '',
                 self._load_bean_name(bean_id),
@@ -406,8 +407,13 @@ class Dashboard(tk.Tk):
     # ================================================================
 
     def _on_grid_double_click(self, event):
-        """Phase 4 实现：打开 SlogViewer"""
-        pass
+        """打开 SlogViewer（通过 session_id 从 DB 加载）"""
+        selection = self._grid_tree.selection()
+        if not selection:
+            return
+        session_id = selection[0]
+        from ui.slog_viewer import open_slog_viewer
+        open_slog_viewer(self, session_id=session_id)
 
     def _on_raw_data_double_click(self, event):
         """打开 RecognitionWindow(mode='raw_data')"""

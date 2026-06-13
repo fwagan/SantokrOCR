@@ -67,6 +67,15 @@ class SqliteBeanRepository:
             return _row_to_dict(row) if row else None
         return execute_with_lock(self.db_path, _get)
 
+    def get_by_id(self, bean_id: int) -> Optional[BeanRecord]:
+        """按 ID 查找咖啡豆"""
+        def _get(conn):
+            row = conn.execute(
+                f"SELECT {_SELECT_COL_LIST} FROM bean WHERE id = ?", (bean_id,)
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+        return execute_with_lock(self.db_path, _get)
+
     def add(self, bean: BeanRecord) -> None:
         def _add(conn):
             row = _bean_to_row(bean)

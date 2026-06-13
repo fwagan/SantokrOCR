@@ -1193,6 +1193,9 @@ class RecognitionWindow(tk.Toplevel):
         self.heater_initial_var.set(session.get('heater_initial', 60.0))
         self.fan_initial_var.set(session.get('fan_initial', 50.0))
 
+        name = session.get('notes', '') or session.get('session_id', '')
+        self.title(f"SantokrOCR - 处理原始数据 - {name}")
+
         # 检查永久帧截图目录
         frame_dir = Paths.frame_captures(self._rw_session_id)
         if os.path.isdir(frame_dir):
@@ -1390,26 +1393,17 @@ class RecognitionWindow(tk.Toplevel):
             messagebox.showwarning("数值错误", "初始风门值必须在0-200之间", parent=self)
             self.fan_initial_var.set(max(0, min(200, fan_val)))
             return
-        updated = False
-        for ev in self.events:
-            if ev['type'] == '调整火力' and ev['time'] == 0:
-                ev['value'] = heater_val
-                updated = True
-            if ev['type'] == '调整风门' and ev['time'] == 0:
-                ev['value'] = fan_val
-                updated = True
-        if updated:
-            self.refresh_events_display()
-            # 写入 DB（raw_data 模式直接落库）
-            if self._rw_session_id:
-                try:
-                    self._session_repo.update_fields(
-                        self._rw_session_id,
-                        heater_initial=heater_val,
-                        fan_initial=fan_val,
-                    )
-                except Exception as e:
-                    self.log(f"更新火力风门初始值到数据库失败: {e}")
+
+        # 写入 DB（raw_data 模式直接落库）
+        if self._rw_session_id:
+            try:
+                self._session_repo.update_fields(
+                    self._rw_session_id,
+                    heater_initial=heater_val,
+                    fan_initial=fan_val,
+                )
+            except Exception as e:
+                self.log(f"更新火力风门初始值到数据库失败: {e}")
 
     def create_events_tab(self):
         """创建事件表格（嵌入数据表格标签页右侧）"""
