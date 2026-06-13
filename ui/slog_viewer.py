@@ -191,7 +191,7 @@ class SlogViewer(tk.Toplevel):
         self._create_roast_info(roast_container)
 
         # 左下：控制参数
-        self.stats_panel = StatisticsPanel(right_panel)
+        self.stats_panel = StatisticsPanel(right_panel, is_realtime=False)
         self.stats_panel.pack(fill="both", expand=True)
         control_container = ttk.Frame(self.left_panel)
         control_container.pack(fill="x")

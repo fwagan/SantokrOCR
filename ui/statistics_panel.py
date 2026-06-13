@@ -78,12 +78,13 @@ setup_chinese_font()
 class StatisticsPanel(ttk.Frame):
     """统计面板（嵌入版本）"""
 
-    def __init__(self, parent, results=None, figsize=(14, 8), show_prediction=False):
+    def __init__(self, parent, is_realtime: bool, results=None, figsize=(14, 8)):
         """
         初始化统计面板
 
         Args:
             parent: 父窗口
+            is_realtime: 实时模式标志（显示ROR预测+过滤温差异常记录）
             results: 结果数据列表（可选）
             figsize: (宽, 高) 英寸，默认适合全屏窗口；嵌入使用时传较小值
         """
@@ -91,7 +92,7 @@ class StatisticsPanel(ttk.Frame):
         self.parent = parent
         self.results = results if results is not None else []
         self._figsize = figsize
-        self._show_prediction = show_prediction
+        self._is_realtime = is_realtime
 
         # 配置参数
         self.sampling_interval = 1.0  # 重采样间隔（秒）
@@ -252,7 +253,7 @@ class StatisticsPanel(ttk.Frame):
         self.window_var, _ = add_spinrow("平滑窗口(秒):", tk.IntVar, self.smooth_window, 3, 60, 1)
         self.polyorder_var, _ = add_spinrow("多项式阶数:", tk.IntVar, self.smooth_polyorder, 1, 5, 1)
         self.ror_interval_var, _ = add_spinrow("ROR步长(秒):", tk.DoubleVar, self.ror_interval, 1, 30, 1)
-        if self._show_prediction:
+        if self._is_realtime:
             self.pred_window_var, _ = add_spinrow("ROR趋势窗口(秒):", tk.IntVar, self.pred_window, 10, 120, 5, fmt='int')
 
         # 按钮行
@@ -450,6 +451,9 @@ class StatisticsPanel(ttk.Frame):
         for result in self.results:
             # 跳过非法数据
             if '?' in str(result.get('temp1_full', '')) or '?' in str(result.get('temp2', '')):
+                continue
+            # 实时模式下过滤温差异常（数码管过渡态尖峰）
+            if self._is_realtime and result.get('abnormal_category') == 'temperature_diff':
                 continue
 
             try:
@@ -780,7 +784,7 @@ class StatisticsPanel(ttk.Frame):
         self.smooth_window = self.window_var.get()
         self.smooth_polyorder = self.polyorder_var.get()
         self.ror_interval = self.ror_interval_var.get()
-        if self._show_prediction:
+        if self._is_realtime:
             self.pred_window = self.pred_window_var.get()
 
         # 重采样
@@ -1438,7 +1442,7 @@ if __name__ == "__main__":
         }
         test_results.append(result)
 
-    panel = StatisticsPanel(root, test_results)
+    panel = StatisticsPanel(root, is_realtime=False, results=test_results)
     panel.pack(fill="both", expand=True)
 
     root.mainloop()
