@@ -104,9 +104,14 @@ class CameraProcessingThread(threading.Thread):
                     temp2_lastdigit, temp2_lastdigit_conf, _ = recognizer.multi_digit_recognizer.recognize_single_digit(_seg_result[0]['image'])
                 else:
                     temp2_lastdigit, temp2_lastdigit_conf = -1, 0.0
-                if temp2_3digits_text and len(temp2_3digits_text) >= 3 and temp2_lastdigit >= 0:
-                    temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
-                    temp2_conf = (temp2_3digits_conf + temp2_lastdigit_conf) / 2
+                if temp2_3digits_text and len(temp2_3digits_text) >= 3:
+                    if temp2_lastdigit >= 0:
+                        temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
+                        temp2_conf = (temp2_3digits_conf + temp2_lastdigit_conf) / 2
+                    else:
+                        # 保留正常位，仅末位标记 ?
+                        temp2_text = f"{temp2_3digits_text[:3]}.?"
+                        temp2_conf = temp2_3digits_conf
                 else:
                     temp2_text = "????"
                     temp2_conf = 0.0
@@ -119,22 +124,20 @@ class CameraProcessingThread(threading.Thread):
             # 故障位识别
             faulty_digit_result, method = self.extractor.recognize_faulty_digit(temp1_faulty_img)
 
-            # 组合完整温度值
-            temp1_full = "????"
+            # 组合完整温度值（保留部分识别结果，? 标记失败位）
             faulty_digit = -1
+            temp1_full = f"{(temp1_normal_text or '???')[:3].ljust(3, '?')}.?"
+
             if temp1_normal_text and len(temp1_normal_text) >= 3:
                 if faulty_digit_result == -2:
                     faulty_digit = -2
-                    temp1_full = "????"
+                    temp1_full = f"{temp1_normal_text[:3]}.?"
                 elif faulty_digit_result != -1:
                     faulty_digit = faulty_digit_result
-                    temp1_full = temp1_normal_text + "." + str(faulty_digit)
+                    temp1_full = f"{temp1_normal_text[:3]}.{faulty_digit}"
                 else:
                     faulty_digit = -1
-                    temp1_full = "????"
-            else:
-                faulty_digit = -1
-                temp1_full = "????"
+                    temp1_full = f"{temp1_normal_text[:3]}.?"
 
             # 构建结果
             result = {

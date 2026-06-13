@@ -276,7 +276,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         """更新底部实时状态：豆温、风温、ROR（识别失败时保留上次有效值）"""
         # 豆温（识别失败时保留上次有效值）
         temp1 = result.get('temp1_full', '')
-        if temp1 and temp1 != "????":
+        if temp1 and '?' not in temp1:
             try:
                 v = float(temp1)
                 self._bean_temp_var.set(f"{v:.1f}")
@@ -290,7 +290,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 风温（识别失败时保留上次有效值）
         temp2 = result.get('temp2', '')
-        if temp2 and temp2 != "????":
+        if temp2 and '?' not in temp2:
             try:
                 v = float(temp2)
                 self._air_temp_var.set(f"{v:.1f}")
