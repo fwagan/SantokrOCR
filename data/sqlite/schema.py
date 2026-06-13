@@ -1,6 +1,6 @@
 """SQLite 数据库 schema 定义与迁移
 
-当前版本: 1
+当前版本: 2
 """
 
 import sqlite3
@@ -12,7 +12,7 @@ from .connection import get_connection
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ── DDL ──────────────────────────────────────────────────────────────
 
@@ -50,7 +50,6 @@ CREATE TABLE IF NOT EXISTS results (
     temp1_normal      REAL,
     temp1_faulty_digit INTEGER,
     temp2             REAL,
-    quality           INTEGER NOT NULL DEFAULT 0,
     UNIQUE(video_id, frame)
 );
 CREATE INDEX IF NOT EXISTS idx_results_video_frame
@@ -158,9 +157,9 @@ SCHEMA_DDL = [
 # ── API ──────────────────────────────────────────────────────────────
 
 def ensure_schema(db_path: str) -> None:
-    """创建数据库表结构（如果不存在）
+    """创建数据库表结构并执行增量迁移
 
-    幂等操作，多次调用安全。只新增缺失的表，不修改已有表。
+    幂等操作，多次调用安全。
     """
     conn = get_connection(db_path)
     for ddl in SCHEMA_DDL:
@@ -170,13 +169,32 @@ def ensure_schema(db_path: str) -> None:
             if stmt:
                 conn.execute(stmt)
 
-    # 写入 schema 版本
+    current_ver = get_schema_version(db_path)
+
+    # ── 增量迁移 ──────────────────────────────────────────────────
+    if current_ver is not None and current_ver < 2:
+        _migrate_v1_to_v2(conn)
+
+    # 写入当前 schema 版本
     conn.execute(
         "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
         (SCHEMA_VERSION,),
     )
     conn.commit()
     logger.info(f"数据库 schema 已就绪 (v{SCHEMA_VERSION}): {db_path}")
+
+
+def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
+    """v1 → v2: 从 results 表移除废弃的 quality 列"""
+    try:
+        conn.execute("ALTER TABLE results DROP COLUMN quality")
+        logger.info("迁移 v1→v2: 已移除 results.quality 列")
+    except sqlite3.OperationalError as e:
+        if "no such column" in str(e).lower():
+            # 列已被移除（幂等安全）
+            logger.info("迁移 v1→v2: quality 列已不存在，跳过")
+        else:
+            raise
 
 
 def get_schema_version(db_path: str) -> Optional[int]:

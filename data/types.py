@@ -39,7 +39,6 @@ class ResultRecord(TypedDict, total=False):
     temp1_normal: str                  # 正常位三位数字 e.g. "184"
     temp1_faulty_digit: int            # 故障位数字，-1=无法识别，-2=0/8 歧义
     temp2: str                         # 排气温度 e.g. "202.6" / "????"
-    quality: str                       # 置信度标签 e.g. "high"
     abnormal_category: Optional[str]   # 异常类别 e.g. "temperature_diff"
 
 

@@ -334,7 +334,6 @@ if __name__ == "__main__":
         'temp1_normal': '123',
         'temp1_faulty_digit': '4',
         'temp2': '5678',
-        'quality': 'high'
     }
     table.add_row(test_data)
 
