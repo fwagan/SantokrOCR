@@ -440,6 +440,14 @@ class RecognitionWindow(tk.Toplevel):
 
         # 更新结果列表
         self.results = new_results
+        # 从 DB 删除（raw_data 模式直接落库）
+        if self._rw_session_id and deleted_count > 0:
+            frames = [d.get('frame') for d in deleted_data if d.get('frame') is not None]
+            if frames:
+                try:
+                    self._result_repo.delete_frames(self._rw_session_id, frames)
+                except Exception as e:
+                    self.log(f"从数据库删除失败: {e}")
         self.log(f"从结果列表中删除了 {deleted_count} 条记录，删除后的results数量: {len(self.results)}")
         # 更新缓存
         self.update_cache()
@@ -1302,9 +1310,18 @@ class RecognitionWindow(tk.Toplevel):
 
     def on_event_marked(self, event_data, is_overwrite=False):
         """帧查看器中标记事件后的回调"""
-        # event_data 已通过共享列表引用添加到 self.events，不需要再次 append
         action = "覆盖" if is_overwrite else "标记"
         self.log(f"事件已{action}: {event_data['type']} @ 帧{event_data['frame']} 时间{event_data['time']:.1f}s")
+        # 写入 DB（raw_data 模式直接落库）
+        if self._rw_session_id:
+            try:
+                if is_overwrite:
+                    self._event_repo.delete_event(
+                        self._rw_session_id, event_data['type'], event_data['frame'])
+                else:
+                    self._event_repo.add_event(self._rw_session_id, event_data)
+            except Exception as e:
+                self.log(f"事件写入数据库失败: {e}")
         self.update_cache()
         self.refresh_events_display()
 
@@ -1315,13 +1332,31 @@ class RecognitionWindow(tk.Toplevel):
             if result.get('frame') == frame_num:
                 if temp1_value is not None:
                     result['temp1_full'] = temp1_value
+                    parts = temp1_value.split('.')
+                    result['temp1_normal'] = parts[0]
+                    result['temp1_faulty_digit'] = int(parts[1])
                 if temp2_value is not None:
                     result['temp2'] = temp2_value
                 updated_result = result
                 break
 
         if updated_result:
-            # 尝试原地更新，失败则全量刷新（例如筛选后清除重建导致 item 失效）
+            # 写入 DB（raw_data 模式直接落库）
+            if self._rw_session_id:
+                updates = {}
+                if temp1_value is not None:
+                    updates['temp1_full'] = temp1_value
+                    updates['temp1_normal'] = temp1_value.split('.')[0]
+                    updates['temp1_faulty_digit'] = int(temp1_value.split('.')[1])
+                if temp2_value is not None:
+                    updates['temp2'] = temp2_value
+                try:
+                    self._result_repo.update_single(
+                        self._rw_session_id, frame_num, **updates)
+                except Exception as e:
+                    self.log(f"写入数据库失败: {e}")
+
+            # 尝试原地更新，失败则全量刷新
             if not self.data_table.update_edited_row(updated_result):
                 self.apply_color_filter()
                 self.log(f"帧 {frame_num} 已手动修正: 豆温={temp1_value}, 风温={temp2_value}")
@@ -1340,40 +1375,20 @@ class RecognitionWindow(tk.Toplevel):
         self.log(f"帧 {frame_num} 已手动修正: 豆温={temp1_value}, 风温={temp2_value}")
         self.update_cache()
 
-    def ensure_initial_events(self):
-        """确保存在初始火力/风门事件（时间0秒）"""
-        heater_val = self.heater_initial_var.get()
-        fan_val = self.fan_initial_var.get()
-
-        has_heater = any(
-            ev['type'] == '调整火力' and ev['time'] == 0
-            for ev in self.events
-        )
-        has_fan = any(
-            ev['type'] == '调整风门' and ev['time'] == 0
-            for ev in self.events
-        )
-
-        if not has_heater:
-            self.events.append({
-                'type': '调整火力', 'frame': 0, 'time': 0.0,
-                'value': heater_val
-            })
-        if not has_fan:
-            self.events.append({
-                'type': '调整风门', 'frame': 0, 'time': 0.0,
-                'value': fan_val
-            })
-
-        self.refresh_events_display()
-        self.update_cache()
-
     def on_initial_value_changed(self, event=None):
         """初始火力/风门输入框失去焦点时，验证并同步已有的事件"""
         try:
             heater_val = self.heater_initial_var.get()
             fan_val = self.fan_initial_var.get()
         except tk.TclError:
+            return
+        if not (0 <= heater_val <= 200):
+            messagebox.showwarning("数值错误", "初始火力值必须在0-200之间", parent=self)
+            self.heater_initial_var.set(max(0, min(200, heater_val)))
+            return
+        if not (0 <= fan_val <= 200):
+            messagebox.showwarning("数值错误", "初始风门值必须在0-200之间", parent=self)
+            self.fan_initial_var.set(max(0, min(200, fan_val)))
             return
         updated = False
         for ev in self.events:
@@ -1385,6 +1400,16 @@ class RecognitionWindow(tk.Toplevel):
                 updated = True
         if updated:
             self.refresh_events_display()
+            # 写入 DB（raw_data 模式直接落库）
+            if self._rw_session_id:
+                try:
+                    self._session_repo.update_fields(
+                        self._rw_session_id,
+                        heater_initial=heater_val,
+                        fan_initial=fan_val,
+                    )
+                except Exception as e:
+                    self.log(f"更新火力风门初始值到数据库失败: {e}")
 
     def create_events_tab(self):
         """创建事件表格（嵌入数据表格标签页右侧）"""
@@ -1484,17 +1509,23 @@ class RecognitionWindow(tk.Toplevel):
                             break
 
         # 按索引降序删除，避免偏移
+        deleted_events = []
         for idx in sorted(indices_to_delete, reverse=True):
+            deleted_events.append(self.events[idx])
             del self.events[idx]
+
+        # 从 DB 删除（raw_data 模式直接落库）
+        if self._rw_session_id:
+            for ev in deleted_events:
+                try:
+                    self._event_repo.delete_event(
+                        self._rw_session_id, ev.get('type', ''), ev.get('frame', 0))
+                except Exception as e:
+                    self.log(f"从数据库删除事件失败: {e}")
 
         self.refresh_events_display()
         self.update_cache()
         self.log(f"已删除 {len(indices_to_delete)} 个事件")
-
-    def run(self):
-        """运行主循环"""
-        self.mainloop()
-
 
 if __name__ == "__main__":
     root = tk.Tk()

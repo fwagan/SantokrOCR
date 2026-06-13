@@ -77,6 +77,33 @@ class SqliteResultRepository:
             return [_row_to_result(r) for r in rows]
         return execute_with_lock(self.db_path, _load)
 
+    def update_single(self, session_id: str, frame: int, **fields) -> None:
+        """更新单帧的指定字段"""
+        def _update(conn):
+            set_clause = ', '.join(f"{k} = ?" for k in fields)
+            values = list(fields.values()) + [session_id, frame]
+            conn.execute(
+                f"UPDATE result SET {set_clause} "
+                "WHERE session_id = ? AND frame = ?",
+                values,
+            )
+            conn.commit()
+        execute_with_lock(self.db_path, _update)
+
+    def delete_frames(self, session_id: str, frames: List[int]) -> None:
+        """批量删除指定帧"""
+        if not frames:
+            return
+
+        def _delete(conn):
+            placeholders = ', '.join('?' for _ in frames)
+            conn.execute(
+                f"DELETE FROM result WHERE session_id = ? AND frame IN ({placeholders})",
+                [session_id] + list(frames),
+            )
+            conn.commit()
+        execute_with_lock(self.db_path, _delete)
+
     def delete(self, session_id: str) -> None:
         def _delete(conn):
             conn.execute("DELETE FROM result WHERE session_id = ?", (session_id,))

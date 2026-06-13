@@ -20,6 +20,16 @@ from core.white_led_recognizer import WhiteLEDRecognizer
 from utils.screen_utils import center_window
 
 
+import re
+
+_TEMP_PATTERN = re.compile(r'^\d{3}\.\d$')
+
+
+def is_valid_temp_format(text: str) -> bool:
+    """校验温度输入格式是否为 XXX.Y（如 184.2）"""
+    return bool(text and _TEMP_PATTERN.match(text))
+
+
 class FrameViewer(tk.Toplevel):
     """帧查看器窗口"""
 
@@ -763,13 +773,13 @@ class FrameViewer(tk.Toplevel):
         if event_type in ("调整火力", "调整风门"):
             try:
                 value = float(self.event_value_var.get())
-                if value < 0 or value > 100:
+                if value < 0 or value > 200:
                     from tkinter import messagebox
-                    messagebox.showwarning("数值错误", "火力/风门值必须在0-100之间")
+                    messagebox.showwarning("数值错误", "火力/风门值必须在0-200之间")
                     return
             except ValueError:
                 from tkinter import messagebox
-                messagebox.showwarning("数值错误", "请输入有效的数值（0-100）")
+                messagebox.showwarning("数值错误", "请输入有效的数值（0-200）")
                 return
 
         # 调整火力/调整风门可以多次记录（不检查重复）
@@ -780,14 +790,11 @@ class FrameViewer(tk.Toplevel):
                     from tkinter import messagebox
                     if not messagebox.askyesno("重复事件", f"已存在'{event_type}'事件，是否覆盖？"):
                         return
-                    # 覆盖旧事件
-                    ev['frame'] = self.current_frame_num
-                    ev['time'] = self.current_timestamp
-                    ev['value'] = value
+                    # 通知回调删除旧事件
                     if self.on_mark_event_callback:
                         self.on_mark_event_callback(ev, is_overwrite=True)
-                    self.destroy()
-                    return
+                    self.events.remove(ev)
+                    break
 
         # 创建新事件
         event_data = {
@@ -824,16 +831,32 @@ class FrameViewer(tk.Toplevel):
         temp2_value = self.edit_temp2_var.get().strip()
 
         if not temp1_value and not temp2_value:
-            tk.messagebox.showwarning("输入错误", "至少输入一个值")
+            tk.messagebox.showwarning("输入错误", "至少输入一个值", parent=self)
             return
+
+        if temp1_value:
+            if not is_valid_temp_format(temp1_value):
+                tk.messagebox.showerror("输入错误",
+                                        f"无法解析温度值: {temp1_value}\n"
+                                        "格式需为 XXX.Y（如 184.2）",
+                                        parent=self)
+                return
+
+        if temp2_value:
+            if not is_valid_temp_format(temp2_value):
+                tk.messagebox.showerror("输入错误",
+                                        f"无法解析温度值: {temp2_value}\n"
+                                        "格式需为 XXX.Y（如 202.6）",
+                                        parent=self)
+                return
 
         if self.on_edit_callback:
             self.on_edit_callback(
                 self.current_frame_num,
                 temp1_value if temp1_value else None,
-                temp2_value if temp2_value else None
+                temp2_value if temp2_value else None,
             )
-            tk.messagebox.showinfo("修改成功", "值已更新")
+            tk.messagebox.showinfo("修改成功", "值已更新", parent=self)
             self.destroy()
 
     def _ensure_video_info(self):

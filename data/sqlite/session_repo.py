@@ -82,6 +82,18 @@ class SqliteSessionRepository:
             'notes': session.get('notes', ''),
         }
 
+    def update_fields(self, session_id: str, **fields) -> None:
+        """更新会话的指定字段"""
+        def _update(conn):
+            set_clause = ', '.join(f"{k} = ?" for k in fields)
+            values = list(fields.values()) + [session_id]
+            conn.execute(
+                f"UPDATE roast_session SET {set_clause} WHERE session_id = ?",
+                values,
+            )
+            conn.commit()
+        execute_with_lock(self.db_path, _update)
+
     def save(self, session_id: str, session: RoastSession) -> None:
         def _save(conn):
             self._upsert(conn, session_id, session)

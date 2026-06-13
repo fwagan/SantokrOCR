@@ -55,6 +55,28 @@ class SqliteEventRepository:
             return results
         return execute_with_lock(self.db_path, _load)
 
+    def add_event(self, session_id: str, event: EventRecord) -> None:
+        """添加单个事件"""
+        def _add(conn):
+            conn.execute(
+                "INSERT INTO event (session_id, type, frame, time, value) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, event.get('type', ''), event.get('frame', 0),
+                 event.get('time', 0.0), event.get('value')),
+            )
+            conn.commit()
+        execute_with_lock(self.db_path, _add)
+
+    def delete_event(self, session_id: str, event_type: str, frame: int) -> None:
+        """删除单个事件"""
+        def _delete(conn):
+            conn.execute(
+                "DELETE FROM event WHERE session_id = ? AND type = ? AND frame = ?",
+                (session_id, event_type, frame),
+            )
+            conn.commit()
+        execute_with_lock(self.db_path, _delete)
+
     def delete(self, session_id: str) -> None:
         def _delete(conn):
             conn.execute("DELETE FROM event WHERE session_id = ?", (session_id,))
