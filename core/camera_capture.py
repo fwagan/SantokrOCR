@@ -6,16 +6,20 @@
 
 import threading
 import time
+from typing import Optional
 
 from utils.signal import Signal
 
 _NONE_FRAME_RETRY_INTERVAL = 0.05  # 取到空帧时的重试间隔（秒）
+_TEMP_DIFF_THRESHOLD_DEFAULT = 3.0  # 温差异常检测默认阈值（℃/帧）
+_MAX_EFFECTIVE_GAP = 4             # 温差异常检测最大有效gap，防止长时间遮挡后阈值过大（4帧×3℃=12℃）
 
 
 class CameraProcessingThread(threading.Thread):
     """摄像头实时处理线程"""
 
-    def __init__(self, extractor, get_frame, rois, interval=0.25, cache=None):
+    def __init__(self, extractor, get_frame, rois, interval=0.25, cache=None,
+                 temp_diff_threshold: float = _TEMP_DIFF_THRESHOLD_DEFAULT):
         """
         Args:
             extractor: VideoDigitExtractor 实例
@@ -23,6 +27,8 @@ class CameraProcessingThread(threading.Thread):
             rois: ROI字典
             interval: 采样间隔（秒）
             cache: RealTimeProcessCache 实例（可选）
+            temp_diff_threshold: 温差异常检测帧变化率阈值（℃/帧），
+                                 默认 _TEMP_DIFF_THRESHOLD_DEFAULT
         """
         super().__init__(daemon=True)
         self.extractor = extractor
@@ -30,6 +36,7 @@ class CameraProcessingThread(threading.Thread):
         self.rois = rois
         self.interval = interval
         self.cache = cache
+        self.temp_diff_threshold = temp_diff_threshold
 
         # 信号
         self.result_signal = Signal()   # (result_dict)
@@ -43,9 +50,18 @@ class CameraProcessingThread(threading.Thread):
 
         self.results = []
 
+        # 温差异常检测：上一次有效温度值 + 连续无效帧计数
+        self._last_valid_temp1: Optional[float] = None
+        self._consecutive_invalid_frames: int = 0
+
         # 失败帧缓存（用于调试，最多10帧）
         self._failed_frames = []  # [(frame_num, frame_bgr, result_dict), ...]
         self._failed_frames_lock = threading.Lock()
+
+    def reset_temperature_tracking(self) -> None:
+        """重置温差异常检测状态（清空数据后调用，避免与清空前温度比较）"""
+        self._last_valid_temp1 = None
+        self._consecutive_invalid_frames = 0
 
     def run(self):
         recognizer = self.extractor._get_digit_recognizer()
@@ -104,9 +120,14 @@ class CameraProcessingThread(threading.Thread):
                     temp2_lastdigit, temp2_lastdigit_conf, _ = recognizer.multi_digit_recognizer.recognize_single_digit(_seg_result[0]['image'])
                 else:
                     temp2_lastdigit, temp2_lastdigit_conf = -1, 0.0
-                if temp2_3digits_text and len(temp2_3digits_text) >= 3 and temp2_lastdigit >= 0:
-                    temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
-                    temp2_conf = (temp2_3digits_conf + temp2_lastdigit_conf) / 2
+                if temp2_3digits_text and len(temp2_3digits_text) >= 3:
+                    if temp2_lastdigit >= 0:
+                        temp2_text = f"{temp2_3digits_text[:3]}.{temp2_lastdigit}"
+                        temp2_conf = (temp2_3digits_conf + temp2_lastdigit_conf) / 2
+                    else:
+                        # 保留正常位，仅末位标记 ?
+                        temp2_text = f"{temp2_3digits_text[:3]}.?"
+                        temp2_conf = temp2_3digits_conf
                 else:
                     temp2_text = "????"
                     temp2_conf = 0.0
@@ -119,22 +140,20 @@ class CameraProcessingThread(threading.Thread):
             # 故障位识别
             faulty_digit_result, method = self.extractor.recognize_faulty_digit(temp1_faulty_img)
 
-            # 组合完整温度值
-            temp1_full = "????"
+            # 组合完整温度值（保留部分识别结果，? 标记失败位）
             faulty_digit = -1
+            temp1_full = f"{(temp1_normal_text or '???')[:3].ljust(3, '?')}.?"
+
             if temp1_normal_text and len(temp1_normal_text) >= 3:
                 if faulty_digit_result == -2:
                     faulty_digit = -2
-                    temp1_full = "????"
+                    temp1_full = f"{temp1_normal_text[:3]}.?"
                 elif faulty_digit_result != -1:
                     faulty_digit = faulty_digit_result
-                    temp1_full = temp1_normal_text + "." + str(faulty_digit)
+                    temp1_full = f"{temp1_normal_text[:3]}.{faulty_digit}"
                 else:
                     faulty_digit = -1
-                    temp1_full = "????"
-            else:
-                faulty_digit = -1
-                temp1_full = "????"
+                    temp1_full = f"{temp1_normal_text[:3]}.?"
 
             # 构建结果
             result = {
@@ -147,6 +166,23 @@ class CameraProcessingThread(threading.Thread):
                 'temp1_faulty_digit': faulty_digit,
                 'temp2': temp2_text if temp2_text else "????"
             }
+            # 温差异常检测（过滤数码管过渡态产生的瞬发尖峰）
+            # 使用帧率归一化：连续无效帧越多，允许的温差越大，避免冷却时误杀
+            try:
+                curr_temp = float(temp1_full)
+                if self._last_valid_temp1 is not None:
+                    gap = min(self._consecutive_invalid_frames + 1, _MAX_EFFECTIVE_GAP)
+                    if abs(curr_temp - self._last_valid_temp1) > gap * self.temp_diff_threshold:
+                        result['abnormal_category'] = 'temperature_diff'
+                    else:
+                        self._last_valid_temp1 = curr_temp
+                        self._consecutive_invalid_frames = 0
+                else:
+                    self._last_valid_temp1 = curr_temp
+            except (ValueError, TypeError):
+                # 含 ? 的温度值，累加连续无效帧计数，不参与温差检测
+                self._consecutive_invalid_frames += 1
+
             self.results.append(result)
             self.result_signal.emit(result)
 

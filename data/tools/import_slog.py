@@ -1,18 +1,14 @@
 """
-.slog → SQLite 导入工具
+.slog → SQLite 持续导入工具
 
-用法:
-    python -m data.tools.import_slog <slog_file> [--db <db_path>]
-
-默认数据库: %APPDATA%/SantokrOCR/santokr.db
+持续运行，输入 .slog 文件路径即可导入到数据库。
+数据库路径自动检测: %APPDATA%/SantokrOCR/santokr.db
+输入空行或 q 退出。
 """
 
-import argparse
 import os
 import sys
-from typing import Optional
 
-# 确保能从项目根目录导入
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from data.serializers.slog import SlogSerializer
@@ -20,11 +16,14 @@ from data.sqlite.schema import ensure_schema
 from data.sqlite.session_repo import SqliteSessionRepository
 from data.sqlite.result_repo import SqliteResultRepository
 from data.sqlite.event_repo import SqliteEventRepository
-from data.sqlite.bean_repo import SqliteBeanRepository
+
+
+def _get_db_path() -> str:
+    app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
+    return os.path.join(app_data, 'SantokrOCR', 'santokr.db')
 
 
 def _next_session_id(db_path: str) -> str:
-    """从数据库获取下一个自增 session_id"""
     from data.sqlite.connection import get_connection
     conn = get_connection(db_path)
     row = conn.execute(
@@ -34,7 +33,6 @@ def _next_session_id(db_path: str) -> str:
 
 
 def _build_roast_session(data: dict, session_id: str) -> dict:
-    """将 .slog 数据转为烘焙会话记录"""
     ri = data.get('roast_info') or {}
     return {
         'session_id': session_id,
@@ -53,7 +51,7 @@ def _build_roast_session(data: dict, session_id: str) -> dict:
     }
 
 
-def _try_float(v) -> Optional[float]:
+def _try_float(v):
     if v is None or v == '':
         return None
     try:
@@ -63,7 +61,7 @@ def _try_float(v) -> Optional[float]:
 
 
 def import_slog(slog_path: str, db_path: str) -> str:
-    """导入 .slog 文件到 SQLite 数据库"""
+    """导入 .slog 文件到 SQLite 数据库，返回 session_id"""
     if not os.path.exists(slog_path):
         raise FileNotFoundError(f".slog 文件不存在: {slog_path}")
 
@@ -89,25 +87,35 @@ def import_slog(slog_path: str, db_path: str) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='导入 .slog 文件到 SQLite 数据库')
-    parser.add_argument('slog_file', help='.slog 文件路径')
-    parser.add_argument('--db', help='SQLite 数据库路径（默认 APPDATA/SantokrOCR/santokr.db）')
-    args = parser.parse_args()
+    db_path = _get_db_path()
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
 
-    if args.db:
-        db_path = args.db
-    else:
-        app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
-        db_path = os.path.join(app_data, 'SantokrOCR', 'santokr.db')
+    print(f"数据库: {db_path}")
+    print("输入 .slog 文件路径导入，空行或 q 退出。\n")
 
-    session_id = import_slog(args.slog_file, db_path)
-    results_count = len(SlogSerializer.read(args.slog_file).get('results', []))
-    events_count = len(SlogSerializer.read(args.slog_file).get('events', []))
+    while True:
+        raw = input("slog > ").strip()
+        if not raw or raw.lower() == 'q':
+            print("退出。")
+            break
 
-    print(f"已导入: session_id={session_id}")
-    print(f"  results: {results_count} 条")
-    print(f"  events:  {events_count} 条")
-    print(f"  数据库:  {db_path}")
+        # 引号包裹时去掉引号（拖拽文件到终端可能带引号）
+        slog_path = raw.strip('"\'')
+        if not os.path.exists(slog_path):
+            print(f"  文件不存在: {slog_path}")
+            continue
+        if not slog_path.lower().endswith('.slog'):
+            print(f"  不是 .slog 文件: {slog_path}")
+            continue
+
+        try:
+            session_id = import_slog(slog_path, db_path)
+            data = SlogSerializer.read(slog_path)
+            results_count = len(data.get('results', []))
+            events_count = len(data.get('events', []))
+            print(f"  已导入: session_id={session_id}, results={results_count}, events={events_count}")
+        except Exception as e:
+            print(f"  导入失败: {e}")
 
 
 if __name__ == '__main__':

@@ -9,6 +9,7 @@
 """
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox, filedialog
 import cv2
 import time
@@ -52,6 +53,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 帧缓存
         self._cache = RealTimeProcessCache()
+
 
         # 持久缓存（摄像头ROI持久化，防止摄像头断开/窗口关闭后丢失）
         self._cache_manager = get_cache_manager()
@@ -180,10 +182,13 @@ class CameraRealtimeWindow(tk.Toplevel):
         main = ttk.PanedWindow(self, orient="horizontal")
         main.pack(fill="both", expand=True, padx=8, pady=4)
 
-        # 左侧：预览画布
+        # 左侧：预览画布 + 实时状态
         preview_frame = ttk.LabelFrame(main, text="摄像头预览", padding=4)
         self.preview_canvas = tk.Canvas(preview_frame, bg="#222222", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True)
+
+        self._realtime_status_frame = self._create_realtime_status(preview_frame)
+        self._realtime_status_frame.pack(side="bottom", fill="x", padx=4, pady=4)
         main.add(preview_frame, weight=45)
 
         # 右侧：Notebook（曲线 + 数据表格）
@@ -203,7 +208,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         curve_tab.pack_propagate(False)  # 阻止FigureCanvasTkAgg塌缩父容器
         self.notebook.add(curve_tab, text="实时曲线")
 
-        self.stats_panel = StatisticsPanel(curve_tab, results=[], figsize=(7, 5), show_prediction=True)
+        self.stats_panel = StatisticsPanel(curve_tab, is_realtime=True, results=[], figsize=(7, 5))
         self.stats_panel.pack(side="top", fill="both", expand=True)
 
         # 曲线控制 dock bottom（实时模式：仅显示原曲线checkbox）
@@ -228,6 +233,89 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         self.time_var = tk.StringVar(value="运行时长: 00:00")
         ttk.Label(status_bar, textvariable=self.time_var, padding=(8, 4)).pack(side="right")
+
+    # ═══════════════════════════════════════════════════════════
+    # 实时状态栏
+    # ═══════════════════════════════════════════════════════════
+
+    def _create_realtime_status(self, parent):
+        """创建底部实时状态条：豆温(蓝) 风温(橙) ROR(红) 加大字号"""
+        status_frame = ttk.Frame(parent)
+
+        # 配置三列等宽
+        status_frame.columnconfigure(0, weight=1)
+        status_frame.columnconfigure(1, weight=1)
+        status_frame.columnconfigure(2, weight=1)
+
+        title_font = tkfont.Font(size=12, weight="bold")
+        value_font = tkfont.Font(size=48, weight="bold")
+
+        # 豆温（蓝色 #4488ff）
+        f0 = ttk.Frame(status_frame)
+        f0.grid(row=0, column=0, sticky="nsew", padx=4, pady=2)
+        ttk.Label(f0, text="豆温(℃)", font=title_font,
+                  foreground="#4488ff", anchor="center").pack(pady=(6, 0))
+        self._bean_temp_var = tk.StringVar(value="--.-")
+        bean_lbl = ttk.Label(f0, textvariable=self._bean_temp_var,
+                             font=value_font, foreground="#4488ff", anchor="center")
+        bean_lbl.pack(expand=True, fill="both")
+
+        # 风温（橙色 #ff8844）
+        f1 = ttk.Frame(status_frame)
+        f1.grid(row=0, column=1, sticky="nsew", padx=4, pady=2)
+        ttk.Label(f1, text="风温(℃)", font=title_font,
+                  foreground="#ff8844", anchor="center").pack(pady=(6, 0))
+        self._air_temp_var = tk.StringVar(value="--.-")
+        air_lbl = ttk.Label(f1, textvariable=self._air_temp_var,
+                            font=value_font, foreground="#ff8844", anchor="center")
+        air_lbl.pack(expand=True, fill="both")
+
+        # ROR（红色 #ff4444）
+        f2 = ttk.Frame(status_frame)
+        f2.grid(row=0, column=2, sticky="nsew", padx=4, pady=2)
+        ttk.Label(f2, text="ROR(℃/min)", font=title_font,
+                  foreground="#ff4444", anchor="center").pack(pady=(6, 0))
+        self._ror_var = tk.StringVar(value="--.-")
+        ror_lbl = ttk.Label(f2, textvariable=self._ror_var,
+                            font=value_font, foreground="#ff4444", anchor="center")
+        ror_lbl.pack(expand=True, fill="both")
+
+        return status_frame
+
+    def _update_realtime_status(self, result):
+        """更新底部实时状态：豆温、风温、ROR（异常/识别失败时保留上次有效值）"""
+        # 豆温
+        temp1 = result.get('temp1_full', '')
+        if temp1 and '?' not in temp1 and result.get('abnormal_category') != 'temperature_diff':
+            try:
+                v = float(temp1)
+                self._bean_temp_var.set(f"{v:.1f}")
+            except ValueError:
+                pass
+
+        # 风温
+        temp2 = result.get('temp2', '')
+        if temp2 and '?' not in temp2:
+            try:
+                v = float(temp2)
+                self._air_temp_var.set(f"{v:.1f}")
+            except ValueError:
+                pass
+
+        # ROR（从 StatisticsPanel 已有的计算结果取最新值）
+        ror = None
+        if self.stats_panel.ror_values is not None and len(self.stats_panel.ror_values) > 0:
+            ror = self.stats_panel.ror_values[-1]
+        if ror is not None:
+            self._ror_var.set(f"{ror:+.1f}")
+        else:
+            self._ror_var.set("--.-")
+
+    def _reset_status_display(self):
+        """重置实时状态栏显示为初始值"""
+        self._bean_temp_var.set("--.-")
+        self._air_temp_var.set("--.-")
+        self._ror_var.set("--.-")
 
     # ═══════════════════════════════════════════════════════════
     # 理想曲线
@@ -377,35 +465,63 @@ class CameraRealtimeWindow(tk.Toplevel):
         if self.ideal_data is None:
             return
         data = self.ideal_data
+
+        # 找到回温时间作为基准点（0:00）
+        turning_time = None
+        for ev in data['events']:
+            if ev.get('type') == '回温':
+                turning_time = ev.get('time', 0)
+                break
+
+        # 格式化相对时间（基于回温点）
+        def format_relative_time(ev_time):
+            if turning_time is None:
+                # 没有回温点，回退到绝对时间
+                return f"{int(ev_time//60):02d}:{int(ev_time%60):02d}"
+            diff = ev_time - turning_time
+            abs_min = int(abs(diff) // 60)
+            abs_sec = int(abs(diff) % 60)
+            if diff < 0:
+                return f"-{abs_min:02d}:{abs_sec:02d}"
+            else:
+                return f"{abs_min:02d}:{abs_sec:02d}"
+
+        # 查找事件时间的温度
+        def find_temperature(ev_time):
+            rt = data['resampled_time']
+            st1 = data['smooth_temp1']
+            if rt is not None and st1 is not None and len(rt) > 0:
+                idx = np.abs(rt - ev_time).argmin()
+                if idx < len(st1):
+                    return f"{st1[idx]:.1f}℃"
+            return ''
+
         lines = [
             f"文件: {data['name']}",
             f"数据点: {len(data['resampled_time'])}",
             f"时长: {data['resampled_time'][-1] - data['resampled_time'][0]:.1f}秒",
+            f"初始火力: {data.get('heater_initial', '?')}%  初始风门: {data.get('fan_initial', '?')}%",
         ]
-        # 事件信息
-        for ev in data['events']:
+
+        # 按时间排序事件
+        sorted_events = sorted(data['events'], key=lambda ev: ev.get('time', 0))
+
+        # 事件信息（时间基于回温点计算）
+        for ev in sorted_events:
             ev_type = ev.get('type', '')
             ev_time = ev.get('time', 0)
-            if ev_type in ('入豆', '回温', '一爆开始', '烘焙结束'):
-                rt = data['resampled_time']
-                st1 = data['smooth_temp1']
-                temp_str = ''
-                if rt is not None and st1 is not None and len(rt) > 0:
-                    idx = np.abs(rt - ev_time).argmin()
-                    if idx < len(st1):
-                        temp_str = f" ({st1[idx]:.1f}℃)"
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str}")
-                if ev_type == '回温':
-                    lines.append(f"    初始火力: {data.get('heater_initial', '?')}%  初始风门: {data.get('fan_initial', '?')}%")
-            elif ev_type in ('调整火力', '调整风门'):
-                rt = data['resampled_time']
-                st1 = data['smooth_temp1']
-                temp_str = ''
-                if rt is not None and st1 is not None and len(rt) > 0:
-                    idx = np.abs(rt - ev_time).argmin()
-                    if idx < len(st1):
-                        temp_str = f" ({st1[idx]:.1f}℃)"
-                lines.append(f"  {ev_type}: {int(ev_time//60):02d}:{int(ev_time%60):02d}{temp_str} → {ev.get('value', '?')}%")
+            temp_str = find_temperature(ev_time)
+            rel_time_str = format_relative_time(ev_time)
+
+            if ev_type in ('调整火力', '调整风门'):
+                lines.append(
+                    f"  {ev_type}: {temp_str} @ {rel_time_str} → {ev.get('value', '?')}%"
+                )
+            else:
+                lines.append(
+                    f"  {ev_type}: {temp_str} @ {rel_time_str}"
+                )
+
         # 温度范围
         if data['smooth_temp1'] is not None and len(data['smooth_temp1']) > 0:
             lines.append(f"豆温范围: {float(min(data['smooth_temp1'])):.1f} ~ {float(max(data['smooth_temp1'])):.1f}℃")
@@ -803,6 +919,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.data_table.clear()
         self.stats_panel.set_results([])
         self.stats_panel.set_update_interval(interval)
+        self._reset_status_display()
 
         # 启动帧缓存会话
         if self._cache.has_session():
@@ -865,6 +982,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.clear_data()
         self.save_db_btn.config(state="disabled")
         self.export_session_btn.config(state="disabled")
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.processing_thread.reset_temperature_tracking()
+        self._reset_status_display()
 
     def _reset_buttons(self):
         """重置按钮状态"""
@@ -898,6 +1018,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.results.append(result)
         self.data_table.add_row(result)
         self.stats_panel.append_data(result)
+        self._update_realtime_status(result)
 
     def _on_status(self, message):
         """处理状态更新（由后台线程触发，调度到主线程）"""
