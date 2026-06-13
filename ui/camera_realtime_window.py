@@ -49,9 +49,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         # 帧缓存
         self._cache = RealTimeProcessCache()
 
-        # 实时状态栏的后备数值（清除数据后重置）
-        self._last_bean_temp = None
-        self._last_air_temp = None
 
         # 持久缓存（摄像头ROI持久化，防止摄像头断开/窗口关闭后丢失）
         self._cache_manager = get_cache_manager()
@@ -198,7 +195,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         curve_tab.pack_propagate(False)  # 阻止FigureCanvasTkAgg塌缩父容器
         self.notebook.add(curve_tab, text="实时曲线")
 
-        self.stats_panel = StatisticsPanel(curve_tab, results=[], figsize=(7, 5), show_prediction=True)
+        self.stats_panel = StatisticsPanel(curve_tab, is_realtime=True, results=[], figsize=(7, 5))
         self.stats_panel.pack(side="top", fill="both", expand=True)
 
         # 曲线控制 dock bottom（实时模式：仅显示原曲线checkbox）
@@ -273,34 +270,24 @@ class CameraRealtimeWindow(tk.Toplevel):
         return status_frame
 
     def _update_realtime_status(self, result):
-        """更新底部实时状态：豆温、风温、ROR（识别失败时保留上次有效值）"""
-        # 豆温（识别失败时保留上次有效值）
+        """更新底部实时状态：豆温、风温、ROR（异常/识别失败时保留上次有效值）"""
+        # 豆温
         temp1 = result.get('temp1_full', '')
-        if temp1 and '?' not in temp1:
+        if temp1 and '?' not in temp1 and result.get('abnormal_category') != 'temperature_diff':
             try:
                 v = float(temp1)
                 self._bean_temp_var.set(f"{v:.1f}")
-                self._last_bean_temp = str(v)
             except ValueError:
-                self._bean_temp_var.set(str(temp1))
-                self._last_bean_temp = str(temp1)
-        else:
-            if hasattr(self, '_last_bean_temp'):
-                self._bean_temp_var.set(self._last_bean_temp)
+                pass
 
-        # 风温（识别失败时保留上次有效值）
+        # 风温
         temp2 = result.get('temp2', '')
         if temp2 and '?' not in temp2:
             try:
                 v = float(temp2)
                 self._air_temp_var.set(f"{v:.1f}")
-                self._last_air_temp = str(v)
             except ValueError:
-                self._air_temp_var.set(str(temp2))
-                self._last_air_temp = str(temp2)
-        else:
-            if hasattr(self, '_last_air_temp'):
-                self._air_temp_var.set(self._last_air_temp)
+                pass
 
         # ROR（从 StatisticsPanel 已有的计算结果取最新值）
         ror = None
@@ -313,8 +300,6 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _reset_status_display(self):
         """重置实时状态栏显示为初始值"""
-        self._last_bean_temp = None
-        self._last_air_temp = None
         self._bean_temp_var.set("--.-")
         self._air_temp_var.set("--.-")
         self._ror_var.set("--.-")
@@ -981,6 +966,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.results.clear()
         self.data_table.clear()
         self.stats_panel.clear_data()
+        if self.processing_thread and self.processing_thread.is_alive():
+            self.processing_thread.reset_temperature_tracking()
         self._reset_status_display()
 
     def _reset_buttons(self):
