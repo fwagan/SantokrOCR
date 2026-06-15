@@ -1,7 +1,7 @@
 """
 识别窗口（视频/.srlog 处理）
 
-由原始的 MainWindow 重构而来，作为 Dashboard 的子窗口。
+作为 Dashboard 的子窗口（由原始的 MainWindow 重构）。
 
 两种模式：
 - mode='video'   — 全功能，选择数据源 → 处理 → 保存到数据库
