@@ -321,7 +321,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         opt_frame = ttk.LabelFrame(parent, text="显示选项", padding=8)
         opt_frame.pack(fill="x", padx=8, pady=4)
         self.ideal_bean_var = tk.BooleanVar(value=True)
-        self.ideal_ror_var = tk.BooleanVar(value=False)
+        self.ideal_ror_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(opt_frame, text="显示豆温曲线", variable=self.ideal_bean_var,
                         command=self._on_ideal_curve_changed).pack(anchor="w")
         ttk.Checkbutton(opt_frame, text="显示ROR曲线", variable=self.ideal_ror_var,
