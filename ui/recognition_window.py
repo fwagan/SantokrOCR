@@ -1,19 +1,20 @@
 """
-主窗口类
+识别窗口（视频/.srlog 处理）
 
-包含：
-1. 菜单栏
-2. 控制面板（视频选择、ROI配置、参数设置）
-3. 结果展示区域（数据表格、日志、统计预留）
-4. 状态栏（进度条、状态信息）
+作为 Dashboard 的子窗口（由原始的 MainWindow 重构）。
+
+两种模式：
+- mode='video'   — 全功能，选择数据源 → 处理 → 保存到数据库
+- mode='raw_data' — 从 DB 加载指定 session，禁用文件选择/ROI/处理
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 import os
 import time
 import cv2
 import sys
+from typing import Optional
 
 from core.video_extractor import VideoDigitExtractor
 from ui.data_table import DataTable
@@ -21,15 +22,22 @@ from ui.async_worker import ProcessingThread
 from ui.frame_viewer import FrameViewer
 from utils.cache_manager import get_cache_manager
 from utils.screen_utils import center_window
+from utils.file_system import Paths, FileOperations, FileDialogs
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
 from data.serializers.srlog import SrlogSerializer
 
 
-class MainWindow(tk.Tk):
-    """主窗口类"""
+class RecognitionWindow(tk.Toplevel):
+    """识别窗口（Toplevel，由 Dashboard 打开）"""
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, master=None, mode='video', session_id=None):
+        super().__init__(master)
+        self._rw_mode = mode         # 'video' | 'raw_data'
+        self._rw_session_id = session_id  # raw_data 模式时使用
 
         # 初始化变量
         self.video_path = None
@@ -40,13 +48,18 @@ class MainWindow(tk.Tk):
         self.extractor = VideoDigitExtractor()
         self._slog_viewer = None  # 单例slog viewer窗口
         self.cache_manager = get_cache_manager()
-        self._realtime_window = None  # 实时识别窗口单例
         self._mode = 'video'          # 'video' | 'srlog'
         self._srlog_cache_dir = None  # .srlog 会话帧的解压缓存目录
         self._srlog_extract_to = None  # 解压根目录（用于清理）
 
+        # 数据库（raw_data 模式用）
+        self._session_repo = SqliteSessionRepository()
+        self._result_repo = SqliteResultRepository()
+        self._event_repo = SqliteEventRepository()
+
         # 配置窗口
-        self.title("SantokrOCR - 视频数字提取工具")
+        title = "处理离线数据源" if mode == 'video' else "处理原始数据"
+        self.title(f"SantokrOCR - {title}")
         self.minsize(1100, 600)
         center_window(self, 3200, 1900)
 
@@ -66,12 +79,18 @@ class MainWindow(tk.Tk):
         self.create_center_panel()
         self.create_bottom_panel()
 
+        # 模式相关控制
+        if self._rw_mode == 'raw_data':
+            self._apply_raw_data_mode()
+
         # 绑定快捷键
         self.bind('<Control-o>', lambda e: self.open_video())
         self.bind('<Control-q>', lambda e: self.on_closing())
 
         # 初始化状态
         self.update_status("就绪")
+        if self._rw_mode == 'raw_data' and self._rw_session_id:
+            self._load_from_db()
 
         # 绑定窗口关闭事件
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -90,7 +109,8 @@ class MainWindow(tk.Tk):
         ttk.Label(video_row, text="数据源文件:").pack(side="left", padx=(0, 5))
         self.video_label = ttk.Label(video_row, text="未选择", width=60, relief="sunken", padding=5)
         self.video_label.pack(side="left", padx=5, fill="x", expand=True)
-        ttk.Button(video_row, text="选择数据源", command=self.open_video).pack(side="left", padx=5)
+        self.video_btn = ttk.Button(video_row, text="选择数据源", command=self.open_video)
+        self.video_btn.pack(side="left", padx=5)
 
         # ROI配置行
         roi_row = ttk.Frame(top_frame)
@@ -144,7 +164,6 @@ class MainWindow(tk.Tk):
         self.stop_button.pack(side="left", padx=5)
 
         ttk.Separator(control_row, orient="vertical").pack(side="left", padx=10, fill="y")
-        ttk.Button(control_row, text="实时识别", command=self.open_realtime).pack(side="left", padx=5)
 
         # 统计按钮行（导出.alog等）
         stats_row = ttk.Frame(top_frame)
@@ -164,6 +183,9 @@ class MainWindow(tk.Tk):
 
         ttk.Button(stats_row, text="绘制曲线",
                   command=self.open_slog_viewer).pack(side="left", padx=15)
+        self.save_db_btn = ttk.Button(stats_row, text="保存到数据库",
+                  command=self._save_to_database)
+        self.save_db_btn.pack(side="left", padx=5)
 
         # 数据清理控制行
         cleanup_row = ttk.Frame(top_frame)
@@ -418,6 +440,14 @@ class MainWindow(tk.Tk):
 
         # 更新结果列表
         self.results = new_results
+        # 从 DB 删除（raw_data 模式直接落库）
+        if self._rw_session_id and deleted_count > 0:
+            frames = [d.get('frame') for d in deleted_data if d.get('frame') is not None]
+            if frames:
+                try:
+                    self._result_repo.delete_frames(self._rw_session_id, frames)
+                except Exception as e:
+                    self.log(f"从数据库删除失败: {e}")
         self.log(f"从结果列表中删除了 {deleted_count} 条记录，删除后的results数量: {len(self.results)}")
         # 更新缓存
         self.update_cache()
@@ -498,15 +528,7 @@ class MainWindow(tk.Tk):
 
     def open_video(self):
         """打开数据源文件（视频或 .srlog 会话）"""
-        path = filedialog.askopenfilename(
-            title="选择数据源文件",
-            filetypes=[
-                ("支持的文件", "*.mp4 *.mov *.avi *.mkv *.srlog"),
-                ("视频文件", "*.mp4 *.mov *.avi *.mkv"),
-                ("会话文件", "*.srlog"),
-                ("所有文件", "*.*")
-            ]
-        )
+        path = FileDialogs.open_video(self)
         if not path:
             return
 
@@ -659,9 +681,7 @@ class MainWindow(tk.Tk):
 
     def _cleanup_srlog_cache(self):
         """清理 srlog 解压目录"""
-        if self._srlog_extract_to and os.path.isdir(self._srlog_extract_to):
-            import shutil
-            shutil.rmtree(self._srlog_extract_to, ignore_errors=True)
+        FileOperations.remove_dir(self._srlog_extract_to)
         self._srlog_cache_dir = None
         self._srlog_extract_to = None
 
@@ -1049,34 +1069,32 @@ class MainWindow(tk.Tk):
         """窗口关闭事件处理"""
         self._cleanup_srlog_cache()
 
-        # 先关闭实时窗口（会弹出确认对话框）
-        if self._realtime_window is not None:
-            try:
-                if self._realtime_window.winfo_exists():
-                    self._realtime_window._on_closing()
-                    # 用户点了取消 → 实时窗口还在 → 主窗口也不关
-                    if self._realtime_window.winfo_exists():
-                        return
-            except tk.TclError:
-                pass
-            self._realtime_window = None
-
         if self.processing_thread and self.processing_thread.is_alive():
-            if messagebox.askyesno("确认退出", "处理仍在进行中，确定要退出吗？", parent=self):
-                self.extractor.stop_processing()
-                self.quit()
-                self.destroy()
-                sys.exit(0)
-        else:
-            self.quit()
-            self.destroy()
-            sys.exit(0)
+            if not messagebox.askyesno("确认退出",
+                                       "处理仍在进行中，确定要退出吗？", parent=self):
+                return
+            self.extractor.stop_processing()
+        self.destroy()
 
     def open_slog_viewer(self):
-        """打开slog viewer显示曲线（单例，重复点击激活已有窗口）"""
+        """打开slog viewer显示曲线"""
         if not self.results:
             self.log("没有数据，无法绘制曲线")
             return
+
+        # video 模式必须先保存到数据库
+        if self._rw_mode == 'video':
+            result = messagebox.askyesno(
+                "保存到数据库",
+                "打开曲线查看器前需要先保存数据到数据库，是否继续？"
+            , parent=self)
+            if not result:
+                return
+            session_id = self._save_to_database()
+            if session_id is None:
+                return
+        else:
+            session_id = self._rw_session_id
 
         # 检查是否已有打开的viewer
         if self._slog_viewer is not None:
@@ -1092,30 +1110,10 @@ class MainWindow(tk.Tk):
                     self._slog_viewer.destroy()
                     self._slog_viewer = None
             except tk.TclError:
-                pass  # 窗口已销毁，重新创建
+                pass
 
-        import tempfile
         from ui.slog_viewer import open_slog_viewer as open_slv
-
-        # 生成临时.slog文件
-        video_name = os.path.splitext(os.path.basename(self.video_path or 'export'))[0]
-        fd, path = tempfile.mkstemp(
-            suffix='.slog',
-            prefix=video_name + '_'
-        )
-        os.close(fd)
-
-        # 构建导出数据
-        session = {
-            'results': self.results,
-            'events': self.events,
-            'heater_initial': self.heater_initial_var.get(),
-            'fan_initial': self.fan_initial_var.get(),
-        }
-        SlogSerializer.write(path, session)
-
-        self.log(f"生成临时数据文件: {path}")
-        self._slog_viewer = open_slv(self, path)
+        self._slog_viewer = open_slv(self, session_id=session_id)
 
     # ===== 工具方法 =====
 
@@ -1172,27 +1170,125 @@ class MainWindow(tk.Tk):
 
         # 重置统计面板（StatisticsPanel 没有 clear 方法，跳过）
 
-    def open_realtime(self):
-        """打开实时识别窗口（单例）"""
-        if self._realtime_window is not None:
-            try:
-                if self._realtime_window.winfo_exists():
-                    self._realtime_window.lift()
-                    self._realtime_window.focus_set()
-                    return
-            except tk.TclError:
-                pass
-        from ui.camera_realtime_window import CameraRealtimeWindow
-        self._realtime_window = CameraRealtimeWindow(self)
-        self.log("打开实时识别窗口")
+    # ================================================================
+    # 模式控制
+    # ================================================================
+
+    def _apply_raw_data_mode(self):
+        """raw_data 模式下禁用数据源选择/ROI/处理相关控件"""
+        for widget in [self.video_btn, self.roi_btn, self.roi_preview_btn,
+                       self.start_button, self.pause_button, self.stop_button,
+                       self.save_db_btn]:
+            widget.config(state='disabled')
+        self.interval_entry.config(state='disabled')
+        self.rotation_entry.config(state='disabled')
+        self.test_checkbox.config(state='disabled')
+
+    def _load_from_db(self):
+        """从数据库加载 raw data 会话"""
+        session = self._session_repo.load(self._rw_session_id)
+        if not session:
+            self.log(f"未找到会话: {self._rw_session_id}")
+            return
+        results = self._result_repo.load(self._rw_session_id) or []
+        events = self._event_repo.load(self._rw_session_id) or []
+        self.results = list(results)
+        self.events = list(events)
+        for r in self.results:
+            self.data_table.add_row(r)
+        self.refresh_events_display()
+        self.heater_initial_var.set(session.get('heater_initial', 60.0))
+        self.fan_initial_var.set(session.get('fan_initial', 50.0))
+
+        name = session.get('notes', '') or session.get('session_id', '')
+        self.title(f"SantokrOCR - 处理原始数据 - {name}")
+
+        # 检查永久帧截图目录
+        frame_dir = Paths.frame_captures(self._rw_session_id)
+        if os.path.isdir(frame_dir):
+            self._srlog_cache_dir = frame_dir
+            self.log(f"帧截图目录: {frame_dir}")
+
+        self.log(f"已加载会话: {self._rw_session_id} ({len(self.results)} 帧)")
+
+    def _save_to_database(self) -> Optional[str]:
+        """保存当前 results/events 到数据库（is_raw_data=True）
+
+        Returns:
+            session_id 保存成功，None 保存失败或被取消
+        """
+        if not self.results:
+            messagebox.showwarning("警告", "没有数据可保存", parent=self)
+            return None
+
+        if self._rw_session_id:
+            # 更新已有记录（先加载现有数据，再覆盖当前值）
+            sid = self._rw_session_id
+            existing = self._session_repo.load(sid) or {}
+            session = dict(existing)
+            session.update({
+                'session_id': sid,
+                'is_raw_data': True,
+                'heater_initial': self.heater_initial_var.get(),
+                'fan_initial': self.fan_initial_var.get(),
+            })
+        else:
+            # 新建 session
+            from data.sqlite.session_repo import next_session_id
+            sid = next_session_id(self._session_repo.db_path)
+            name = simpledialog.askstring(
+                "保存到数据库",
+                "请输入本次烘焙的名称:",
+                parent=self,
+                initialvalue=os.path.splitext(
+                    os.path.basename(self.video_path or 'session'))[0],
+            )
+            if not name:
+                return None
+            session = {
+                'session_id': sid,
+                'is_raw_data': True,
+                'notes': name,
+                'heater_initial': self.heater_initial_var.get(),
+                'fan_initial': self.fan_initial_var.get(),
+            }
+
+        # 原子写入（单个事务）
+        from data.sqlite.session_writer import SessionWriter
+        writer = SessionWriter(session_repo=self._session_repo,
+                               result_repo=self._result_repo,
+                               event_repo=self._event_repo)
+        try:
+            writer.save_full(sid, session, self.results, self.events)
+        except Exception as e:
+            self.log(f"保存到数据库失败: {e}")
+            messagebox.showerror("保存失败", f"数据库写入错误:\n{e}", parent=self)
+            return None
+        self._rw_session_id = sid
+
+        # 保存帧截图
+        try:
+            if self._srlog_cache_dir and os.path.isdir(self._srlog_cache_dir):
+                target_dir = Paths.ensure_frame_captures(sid)
+                count = FileOperations.copy_frames(self._srlog_cache_dir, target_dir)
+                self._srlog_cache_dir = target_dir
+                self.log(f"帧截图已保存: {target_dir} ({count} 帧)")
+        except Exception as e:
+            self.log(f"帧截图保存失败: {e}")
+            messagebox.showwarning("保存完成", f"数据已保存，但帧截图写入失败:\n{e}", parent=self)
+
+        self.log(f"已保存到数据库: {sid}")
+        return sid
 
     def open_frame_viewer(self, frame_num, timestamp, data):
         """打开帧查看器窗口"""
-        if not self.video_path or not self.rois:
+        if self._srlog_cache_dir:
+            # 有缓存的帧截图（srlog 模式或 raw_data 已保存帧）
+            pass
+        elif not self.video_path or not self.rois:
             messagebox.showwarning("警告", "请先选择视频和配置ROI", parent=self)
             return
-
-        if self._mode == 'srlog' and not self._srlog_cache_dir:
+        elif self._mode == 'srlog' and not self._srlog_cache_dir:
             messagebox.showinfo("提示", "该会话文件不包含帧截图，无法打开帧查看器", parent=self)
             return
 
@@ -1212,7 +1308,7 @@ class MainWindow(tk.Tk):
                 rotate_angle=float(self.rotation_angle_var.get()),
                 on_edit_callback=self.on_edit_record,
             )
-            if self._mode == 'srlog' and self._srlog_cache_dir:
+            if self._srlog_cache_dir:
                 kwargs['video_path'] = None
                 kwargs['cache_dir'] = self._srlog_cache_dir
             else:
@@ -1226,9 +1322,18 @@ class MainWindow(tk.Tk):
 
     def on_event_marked(self, event_data, is_overwrite=False):
         """帧查看器中标记事件后的回调"""
-        # event_data 已通过共享列表引用添加到 self.events，不需要再次 append
         action = "覆盖" if is_overwrite else "标记"
         self.log(f"事件已{action}: {event_data['type']} @ 帧{event_data['frame']} 时间{event_data['time']:.1f}s")
+        # 写入 DB（raw_data 模式直接落库）
+        if self._rw_session_id:
+            try:
+                if is_overwrite:
+                    self._event_repo.delete_event(
+                        self._rw_session_id, event_data['type'], event_data['frame'])
+                else:
+                    self._event_repo.add_event(self._rw_session_id, event_data)
+            except Exception as e:
+                self.log(f"事件写入数据库失败: {e}")
         self.update_cache()
         self.refresh_events_display()
 
@@ -1239,13 +1344,31 @@ class MainWindow(tk.Tk):
             if result.get('frame') == frame_num:
                 if temp1_value is not None:
                     result['temp1_full'] = temp1_value
+                    parts = temp1_value.split('.')
+                    result['temp1_normal'] = parts[0]
+                    result['temp1_faulty_digit'] = int(parts[1])
                 if temp2_value is not None:
                     result['temp2'] = temp2_value
                 updated_result = result
                 break
 
         if updated_result:
-            # 尝试原地更新，失败则全量刷新（例如筛选后清除重建导致 item 失效）
+            # 写入 DB（raw_data 模式直接落库）
+            if self._rw_session_id:
+                updates = {}
+                if temp1_value is not None:
+                    updates['temp1_full'] = temp1_value
+                    updates['temp1_normal'] = temp1_value.split('.')[0]
+                    updates['temp1_faulty_digit'] = int(temp1_value.split('.')[1])
+                if temp2_value is not None:
+                    updates['temp2'] = temp2_value
+                try:
+                    self._result_repo.update_single(
+                        self._rw_session_id, frame_num, **updates)
+                except Exception as e:
+                    self.log(f"写入数据库失败: {e}")
+
+            # 尝试原地更新，失败则全量刷新
             if not self.data_table.update_edited_row(updated_result):
                 self.apply_color_filter()
                 self.log(f"帧 {frame_num} 已手动修正: 豆温={temp1_value}, 风温={temp2_value}")
@@ -1264,34 +1387,6 @@ class MainWindow(tk.Tk):
         self.log(f"帧 {frame_num} 已手动修正: 豆温={temp1_value}, 风温={temp2_value}")
         self.update_cache()
 
-    def ensure_initial_events(self):
-        """确保存在初始火力/风门事件（时间0秒）"""
-        heater_val = self.heater_initial_var.get()
-        fan_val = self.fan_initial_var.get()
-
-        has_heater = any(
-            ev['type'] == '调整火力' and ev['time'] == 0
-            for ev in self.events
-        )
-        has_fan = any(
-            ev['type'] == '调整风门' and ev['time'] == 0
-            for ev in self.events
-        )
-
-        if not has_heater:
-            self.events.append({
-                'type': '调整火力', 'frame': 0, 'time': 0.0,
-                'value': heater_val
-            })
-        if not has_fan:
-            self.events.append({
-                'type': '调整风门', 'frame': 0, 'time': 0.0,
-                'value': fan_val
-            })
-
-        self.refresh_events_display()
-        self.update_cache()
-
     def on_initial_value_changed(self, event=None):
         """初始火力/风门输入框失去焦点时，验证并同步已有的事件"""
         try:
@@ -1299,16 +1394,25 @@ class MainWindow(tk.Tk):
             fan_val = self.fan_initial_var.get()
         except tk.TclError:
             return
-        updated = False
-        for ev in self.events:
-            if ev['type'] == '调整火力' and ev['time'] == 0:
-                ev['value'] = heater_val
-                updated = True
-            if ev['type'] == '调整风门' and ev['time'] == 0:
-                ev['value'] = fan_val
-                updated = True
-        if updated:
-            self.refresh_events_display()
+        if not (0 <= heater_val <= 200):
+            messagebox.showwarning("数值错误", "初始火力值必须在0-200之间", parent=self)
+            self.heater_initial_var.set(max(0, min(200, heater_val)))
+            return
+        if not (0 <= fan_val <= 200):
+            messagebox.showwarning("数值错误", "初始风门值必须在0-200之间", parent=self)
+            self.fan_initial_var.set(max(0, min(200, fan_val)))
+            return
+
+        # 写入 DB（raw_data 模式直接落库）
+        if self._rw_session_id:
+            try:
+                self._session_repo.update_fields(
+                    self._rw_session_id,
+                    heater_initial=heater_val,
+                    fan_initial=fan_val,
+                )
+            except Exception as e:
+                self.log(f"更新火力风门初始值到数据库失败: {e}")
 
     def create_events_tab(self):
         """创建事件表格（嵌入数据表格标签页右侧）"""
@@ -1408,18 +1512,26 @@ class MainWindow(tk.Tk):
                             break
 
         # 按索引降序删除，避免偏移
+        deleted_events = []
         for idx in sorted(indices_to_delete, reverse=True):
+            deleted_events.append(self.events[idx])
             del self.events[idx]
+
+        # 从 DB 删除（raw_data 模式直接落库）
+        if self._rw_session_id:
+            for ev in deleted_events:
+                try:
+                    self._event_repo.delete_event(
+                        self._rw_session_id, ev.get('type', ''), ev.get('frame', 0))
+                except Exception as e:
+                    self.log(f"从数据库删除事件失败: {e}")
 
         self.refresh_events_display()
         self.update_cache()
         self.log(f"已删除 {len(indices_to_delete)} 个事件")
 
-    def run(self):
-        """运行主循环"""
-        self.mainloop()
-
-
 if __name__ == "__main__":
-    app = MainWindow()
-    app.mainloop()
+    root = tk.Tk()
+    root.withdraw()
+    app = RecognitionWindow(root, mode='video')
+    root.mainloop()

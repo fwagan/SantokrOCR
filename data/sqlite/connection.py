@@ -11,6 +11,14 @@ from typing import Optional
 
 import logging
 
+DEFAULT_DB_FILENAME = 'santokr.db'
+
+
+def get_default_db_path() -> str:
+    """获取 SantokrOCR 默认 SQLite 数据库路径"""
+    app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
+    return os.path.join(app_data, 'SantokrOCR', DEFAULT_DB_FILENAME)
+
 logger = logging.getLogger(__name__)
 
 # 全局连接缓存：db_path -> (connection, lock)

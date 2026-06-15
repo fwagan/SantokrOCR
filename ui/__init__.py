@@ -4,7 +4,8 @@ SantokrOCR UI模块
 """
 
 __all__ = [
-    'main_window',
+    'dashboard',
+    'recognition_window',
     'data_table',
     'frame_viewer',
     'async_worker',

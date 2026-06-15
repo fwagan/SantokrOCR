@@ -32,6 +32,10 @@ def _setup_path():
 
 _setup_path()
 from data.sqlite.bean_repo import SqliteBeanRepository
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
 from ui.statistics_panel import StatisticsPanel
 
@@ -53,7 +57,7 @@ class SlogViewer(tk.Toplevel):
         ('weight_loss', '失重率:', True),  # 自动计算，只读
     ]
 
-    def __init__(self, master=None, file_path=None):
+    def __init__(self, master=None, file_path=None, session_id=None):
         super().__init__(master)
 
         self.title("Slog Viewer")
@@ -64,6 +68,13 @@ class SlogViewer(tk.Toplevel):
         self.current_path = None
         # 来源标识（用于默认导出文件名）
         self.source_identity = ""
+        # DB session_id（来自 Dashboard 或 RecognitionWindow）
+        self._rw_session_id = session_id
+
+        # 数据库（保存用）
+        self._session_repo = SqliteSessionRepository()
+        self._result_repo = SqliteResultRepository()
+        self._event_repo = SqliteEventRepository()
 
         # 单例子窗口引用
         self._comparer = None
@@ -85,8 +96,10 @@ class SlogViewer(tk.Toplevel):
         # 加载生豆信息
         self._load_bean_info()
 
-        # 如果有文件路径，直接加载
-        if file_path:
+        # 加载数据
+        if session_id:
+            self.load_from_session_id(session_id)
+        elif file_path:
             self.load_file(file_path)
 
     def _center_window(self):
@@ -189,6 +202,12 @@ class SlogViewer(tk.Toplevel):
         roast_container = ttk.Frame(self.left_panel)
         roast_container.pack(fill="both", expand=True)
         self._create_roast_info(roast_container)
+
+        # 保存按钮
+        btn_frame = ttk.Frame(self.left_panel)
+        btn_frame.pack(fill="x", padx=5, pady=3)
+        ttk.Button(btn_frame, text="保存到数据库",
+                   command=self.save_to_database).pack(fill="x")
 
         # 左下：控制参数
         self.stats_panel = StatisticsPanel(right_panel, is_realtime=False)
@@ -391,8 +410,7 @@ class SlogViewer(tk.Toplevel):
         """加载生豆信息，刷新 dropdown"""
         self._beans_data = []
         try:
-            app_data = os.environ.get('APPDATA', os.path.expanduser('~/.local/share'))
-            repo = SqliteBeanRepository(os.path.join(app_data, 'SantokrOCR', 'santokr.db'))
+            repo = SqliteBeanRepository()
             all_beans = repo.list_all()
             self._beans_data = [b for b in all_beans if not b.get('outOfStock', False)]
         except Exception:
@@ -473,6 +491,148 @@ class SlogViewer(tk.Toplevel):
 
         self.stats_panel.status_var.set(f"数据已导出到: {file_path}")
 
+    def load_from_session_id(self, session_id: str):
+        """从数据库加载会话数据"""
+        session = self._session_repo.load(session_id)
+        if not session:
+            messagebox.showerror("错误", f"未找到会话: {session_id}", parent=self)
+            return
+        results = self._result_repo.load(session_id) or []
+        events = self._event_repo.load(session_id) or []
+
+        if not results:
+            messagebox.showwarning("警告", "会话中没有温度数据", parent=self)
+            return
+
+        # 更新统计面板
+        self.stats_panel.set_results(results)
+        self.stats_panel.set_events(
+            events, session.get('heater_initial', 60.0), session.get('fan_initial', 50.0))
+
+        # 更新界面
+        self._rw_session_id = session_id
+        display_name = self._session_repo.get_display_name(session_id)
+        self.source_identity = display_name
+        self.title(f"Slog Viewer - {display_name}")
+        self.stats_panel.status_var.set(
+            f"已加载: {session_id} ({len(results)}条记录, {len(events)}个事件)")
+
+        # 加载烘焙信息（roast_vars 中存在的字段，日期/时间由分解字段单独处理）
+        for key in ('roast_no', 'roast_total', 'green_weight', 'roasted_weight'):
+            self.roast_vars[key].set(session.get(key, '') or '')
+        # 日期分解
+        date_str = session.get('roast_date', '')
+        if date_str:
+            parts = date_str.split('-')
+            if len(parts) == 3:
+                self.roast_vars['roast_date_year'].set(parts[0])
+                self.roast_vars['roast_date_month'].set(parts[1])
+                self.roast_vars['roast_date_day'].set(parts[2])
+        # 时间分解
+        time_str = session.get('roast_time', '')
+        if time_str:
+            parts = time_str.split(':')
+            if len(parts) == 2:
+                self.roast_vars['roast_time_hour'].set(parts[0])
+                self.roast_vars['roast_time_minute'].set(parts[1])
+        # 加载豆名（通过 bean_id 查询）
+        bean_id = session.get('bean_id')
+        if bean_id:
+            bean = SqliteBeanRepository().get_by_id(bean_id)
+            if bean:
+                self.bean_name_var.set(bean.get('name', ''))
+                self._apply_bean_info(bean)
+        # density/moisture override
+        density = session.get('density_override')
+        if density is not None:
+            self.roast_vars['density'].set(str(density))
+        moisture = session.get('moisture_override')
+        if moisture is not None:
+            self.roast_vars['moisture'].set(str(moisture))
+        # notes
+        self.roast_notes.delete('1.0', tk.END)
+        self.roast_notes.insert('1.0', session.get('notes', ''))
+
+    def save_to_database(self):
+        """保存当前曲线/烘焙信息到数据库"""
+        if not self.stats_panel.results:
+            messagebox.showwarning("警告", "没有可导出的数据", parent=self)
+            return
+
+        # 字段校验（只有熟豆重量允许为空）
+        errors = []
+        year = self.roast_vars['roast_date_year'].get()
+        month = self.roast_vars['roast_date_month'].get()
+        day = self.roast_vars['roast_date_day'].get()
+        if not (year and month and day):
+            errors.append("烘焙日期（年/月/日）")
+        hour = self.roast_vars['roast_time_hour'].get()
+        minute = self.roast_vars['roast_time_minute'].get()
+        if not (hour or minute):
+            errors.append("烘焙时间（时/分）")
+        if not self.roast_vars['roast_no'].get():
+            errors.append("烘焙编号")
+        if not self.roast_vars['roast_total'].get():
+            errors.append("总炉数")
+        if not self.roast_vars['green_weight'].get():
+            errors.append("生豆重量")
+        if not self.bean_name_var.get():
+            errors.append("生豆名称")
+        if errors:
+            messagebox.showerror("保存失败",
+                                 f"请填写以下必填字段:\n" + "\n".join(errors),
+                                 parent=self)
+            return
+
+        from data.sqlite.session_repo import next_session_id
+
+        roast_info = self._collect_roast_info()
+        sid = self._rw_session_id or next_session_id(self._session_repo.db_path)
+
+        session = {
+            'session_id': sid,
+            'is_raw_data': False,
+            'bean_id': self._resolve_bean_id(roast_info.get('bean_name', '')),
+            'heater_initial': self.stats_panel.heater_initial,
+            'fan_initial': self.stats_panel.fan_initial,
+            'density_override': self._try_float(roast_info.get('density')),
+            'moisture_override': self._try_float(roast_info.get('moisture')),
+            'roast_date': f"{year}-{month}-{day}",
+            'roast_time': f"{hour}:{minute}",
+            'roast_no': roast_info.get('roast_no', ''),
+            'roast_total': roast_info.get('roast_total', ''),
+            'green_weight': self._try_float(roast_info.get('green_weight')),
+            'roasted_weight': self._try_float(roast_info.get('roasted_weight')),
+            'notes': self.roast_notes.get('1.0', tk.END).strip(),
+        }
+
+        # 原子写入
+        writer = SessionWriter(session_repo=self._session_repo,
+                               result_repo=self._result_repo,
+                               event_repo=self._event_repo)
+        writer.save_full(sid, session, self.stats_panel.results,
+                         self.stats_panel._original_events)
+        self._rw_session_id = sid
+
+        self.stats_panel.status_var.set(f"已保存到数据库: {sid}")
+
+    @staticmethod
+    def _try_float(v):
+        if v is None or v == '':
+            return None
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+
+    def _resolve_bean_id(self, bean_name: str):
+        """通过生豆名称查找 bean_id（从 SQLite）"""
+        if not bean_name:
+            return None
+        from data.sqlite.bean_repo import SqliteBeanRepository
+        bean = SqliteBeanRepository().get_by_name(bean_name)
+        return bean.get('id') if bean else None
+
     def open_comparer(self, event=None):
         """打开曲线对比器（单例，重复点击激活已有窗口）"""
         if self._comparer is not None:
@@ -505,9 +665,15 @@ class SlogViewer(tk.Toplevel):
 
 
 
-def open_slog_viewer(parent, file_path=None):
-    """从父窗口打开slog viewer"""
-    return SlogViewer(parent, file_path)
+def open_slog_viewer(parent, session_id=None, file_path=None):
+    """从父窗口打开slog viewer
+
+    Args:
+        parent: 父窗口
+        file_path: .slog 文件路径（可选）
+        session_id: 数据库会话 ID（可选，优先于 file_path）
+    """
+    return SlogViewer(parent, file_path=file_path, session_id=session_id)
 
 
 def main():

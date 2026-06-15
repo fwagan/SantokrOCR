@@ -19,7 +19,8 @@ a = Analysis(
     binaries=conda_dlls,
     hiddenimports=[
         # UI tkinter modules
-        'ui.main_window',
+        'ui.dashboard',
+        'ui.recognition_window',
         'ui.data_table',
         'ui.async_worker',
         'ui.frame_viewer',

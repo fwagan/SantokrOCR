@@ -23,7 +23,7 @@ except Exception:
 # 添加项目根目录到Python路径，确保模块导入正常
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ui.main_window import MainWindow
+from ui.dashboard import Dashboard
 
 
 def main():
@@ -40,7 +40,7 @@ def main():
             app.protocol("WM_DELETE_WINDOW", lambda: (root.quit(), root.destroy()))
             root.mainloop()
         else:
-            app = MainWindow()
+            app = Dashboard()
             app.mainloop()
     except Exception as e:
         import traceback

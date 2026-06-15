@@ -23,15 +23,6 @@ def _get_db_path() -> str:
     return os.path.join(app_data, 'SantokrOCR', 'santokr.db')
 
 
-def _next_session_id(db_path: str) -> str:
-    from data.sqlite.connection import get_connection
-    conn = get_connection(db_path)
-    row = conn.execute(
-        "SELECT COALESCE(MAX(CAST(session_id AS INTEGER)), 0) + 1 FROM roast_session"
-    ).fetchone()
-    return str(row[0])
-
-
 def _build_roast_session(data: dict, session_id: str) -> dict:
     ri = data.get('roast_info') or {}
     return {
@@ -66,7 +57,7 @@ def import_slog(slog_path: str, db_path: str) -> str:
         raise FileNotFoundError(f".slog 文件不存在: {slog_path}")
 
     ensure_schema(db_path)
-    session_id = _next_session_id(db_path)
+    session_id = next_session_id(db_path)
 
     data = SlogSerializer.read(slog_path)
     session = _build_roast_session(data, session_id)

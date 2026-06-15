@@ -4,7 +4,7 @@ from typing import List, Optional
 
 import logging
 
-from data.sqlite.connection import execute_with_lock
+from data.sqlite.connection import execute_with_lock, get_default_db_path
 from data.sqlite.schema import ensure_schema
 from data.types import BeanRecord
 
@@ -45,9 +45,9 @@ def _row_to_dict(row) -> BeanRecord:
 class SqliteBeanRepository:
     """基于 SQLite 的咖啡豆仓库"""
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        ensure_schema(db_path)
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path or get_default_db_path()
+        ensure_schema(self.db_path)
 
     def list_all(self, include_deleted: bool = False) -> List[BeanRecord]:
         def _list(conn):
@@ -65,6 +65,15 @@ class SqliteBeanRepository:
         def _get(conn):
             row = conn.execute(
                 f"SELECT {_COL_LIST} FROM bean WHERE name = ?", (name,)
+            ).fetchone()
+            return _row_to_dict(row) if row else None
+        return execute_with_lock(self.db_path, _get)
+
+    def get_by_id(self, bean_id: int) -> Optional[BeanRecord]:
+        """按 ID 查找咖啡豆"""
+        def _get(conn):
+            row = conn.execute(
+                f"SELECT {_COL_LIST} FROM bean WHERE id = ?", (bean_id,)
             ).fetchone()
             return _row_to_dict(row) if row else None
         return execute_with_lock(self.db_path, _get)
