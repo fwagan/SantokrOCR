@@ -57,6 +57,7 @@ def import_slog(slog_path: str, db_path: str) -> str:
         raise FileNotFoundError(f".slog 文件不存在: {slog_path}")
 
     ensure_schema(db_path)
+    from data.sqlite.session_repo import next_session_id
     session_id = next_session_id(db_path)
 
     data = SlogSerializer.read(slog_path)
