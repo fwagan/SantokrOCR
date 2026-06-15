@@ -14,7 +14,6 @@ import logging
 
 from data.types import EventRecord, ResultRecord, RoiConfig, VideoInfo
 
-from data.json.bean_repo import JsonBeanRepository
 from data.json.event_repo import JsonEventRepository
 from data.json.result_repo import JsonResultRepository
 from data.json.roi_repo import JsonRoiRepository
@@ -37,7 +36,6 @@ class CacheFacade:
         self.event = JsonEventRepository(self.base_dir)
         self.roi = JsonRoiRepository(self.base_dir)
         self.video_info = JsonVideoInfoRepository(self.base_dir)
-        self.bean = JsonBeanRepository()
 
     # ============================================================
     # 视频哈希

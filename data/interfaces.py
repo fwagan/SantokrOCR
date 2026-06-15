@@ -58,7 +58,7 @@ class BeanRepository(Protocol):
     def add(self, bean: BeanRecord) -> None:
         """添加新咖啡豆"""
 
-    def update(self, name: str, bean: BeanRecord) -> bool:
+    def update(self, bean_id: int, bean: BeanRecord) -> bool:
         """更新咖啡豆，返回是否找到并更新"""
 
     def delete(self, name: str) -> bool:

@@ -88,6 +88,17 @@ class BeanManager(tk.Toplevel):
         self._new_indices.clear()
         self._deleted_indices.clear()
 
+    @staticmethod
+    def _validate_numeric(new_value: str) -> bool:
+        """校验输入是否为合法浮点数"""
+        if not new_value:
+            return True
+        try:
+            float(new_value)
+            return True
+        except ValueError:
+            return False
+
     def _save(self):
         # 新增
         for i in self._new_indices:
@@ -99,10 +110,12 @@ class BeanManager(tk.Toplevel):
             name = self._beans[i].get('name')
             if name:
                 self._bean_repo.delete(name)
-        # 修改
+        # 修改（用 id 作为 key，避免修改名称后找不到记录）
         for i, bean in enumerate(self._beans):
             if i not in self._deleted_indices and self._is_modified(i):
-                self._bean_repo.update(bean['name'], bean)
+                bean_id = bean.get('id')
+                if bean_id is not None:
+                    self._bean_repo.update(bean_id, bean)
 
         # 重新加载（同步 DB 最新状态）
         self._load()
@@ -200,7 +213,11 @@ class BeanManager(tk.Toplevel):
             row.pack(fill="x", padx=8, pady=3)
             ttk.Label(row, text=label_text, width=12, anchor="w").pack(side="left")
             var = tk.StringVar()
-            entry = tk.Entry(row, textvariable=var)
+            if field_name in ('density', 'moisture'):
+                validate_numeric = (self.register(self._validate_numeric), '%P')
+                entry = tk.Entry(row, textvariable=var, validate='key', validatecommand=validate_numeric)
+            else:
+                entry = tk.Entry(row, textvariable=var)
             entry.pack(side="left", fill="x", expand=True)
             var.trace_add('write', lambda *_, fn=field_name: self._on_field_changed(fn))
             self._field_vars[field_name] = var
@@ -270,8 +287,11 @@ class BeanManager(tk.Toplevel):
         if idx is None:
             return
         bean = self._beans[idx]
-        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture', 'season'):
+        for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'season'):
             bean[field_name] = self._field_vars[field_name].get()
+        for field_name in ('density', 'moisture'):
+            raw = self._field_vars[field_name].get().strip()
+            bean[field_name] = float(raw) if raw else None
         bean['outOfStock'] = self._outofstock_var.get()
 
     def _load_detail(self, idx):
@@ -279,7 +299,8 @@ class BeanManager(tk.Toplevel):
         self._loading_detail = True
         bean = self._beans[idx]
         for field_name in ('name', 'variety', 'process', 'origin', 'altitude', 'density', 'moisture', 'season'):
-            self._field_vars[field_name].set(bean.get(field_name, ''))
+            val = bean.get(field_name, '')
+            self._field_vars[field_name].set('' if val is None else val)
         self._outofstock_var.set(bean.get('outOfStock', False))
         self._loading_detail = False
 
@@ -324,6 +345,9 @@ class BeanManager(tk.Toplevel):
         bean = self._beans[idx]
         if field_name == 'outOfStock':
             bean['outOfStock'] = self._outofstock_var.get()
+        elif field_name in ('density', 'moisture'):
+            raw = self._field_vars[field_name].get().strip()
+            bean[field_name] = float(raw) if raw else None
         else:
             bean[field_name] = self._field_vars[field_name].get()
 
@@ -377,8 +401,8 @@ class BeanManager(tk.Toplevel):
             'process': '',
             'origin': '',
             'altitude': '',
-            'density': '',
-            'moisture': '',
+            'density': None,
+            'moisture': None,
             'season': '',
             'outOfStock': False,
         })
