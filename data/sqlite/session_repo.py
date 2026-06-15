@@ -135,3 +135,46 @@ class SqliteSessionRepository:
             ).fetchall()
             return [_row_to_session(r) for r in rows]
         return execute_with_lock(self.db_path, _list)
+
+    def list_filtered(self, date_from: str = '', date_to: str = '',
+                       bean_id: Optional[int] = None,
+                       is_raw_data: bool = False) -> List[dict]:
+        """按日期和豆名筛选会话，JOIN bean 表返回富化结果
+
+        Returns:
+            包含 bean 信息的 dict 列表（含 bean_name, bean_variety, bean_origin）
+        """
+        _filter_cols = ', '.join(f'rs.{c}' for c in _SESSION_COLS)
+
+        def _list(conn):
+            query = (
+                f"SELECT {_filter_cols}, "
+                "b.name AS bean_name, b.variety AS bean_variety, "
+                "b.origin AS bean_origin "
+                "FROM roast_session rs "
+                "LEFT JOIN bean b ON rs.bean_id = b.id "
+                "WHERE rs.is_raw_data = ?"
+            )
+            params: list = [1 if is_raw_data else 0]
+
+            if date_from:
+                query += " AND rs.roast_date >= ?"
+                params.append(date_from)
+            if date_to:
+                query += " AND rs.roast_date <= ?"
+                params.append(date_to)
+            if bean_id is not None:
+                query += " AND rs.bean_id = ?"
+                params.append(bean_id)
+
+            query += " ORDER BY rs.roast_date DESC, rs.roast_time DESC, rs.created_at DESC"
+            rows = conn.execute(query, params).fetchall()
+            result = []
+            for r in rows:
+                session = _row_to_session(r)
+                session['bean_name'] = r['bean_name'] or ''
+                session['bean_variety'] = r['bean_variety'] or ''
+                session['bean_origin'] = r['bean_origin'] or ''
+                result.append(session)
+            return result
+        return execute_with_lock(self.db_path, _list)

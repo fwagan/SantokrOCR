@@ -256,24 +256,6 @@ class Dashboard(tk.Tk):
             self._raw_tree.insert('', 'end', iid=sid, text=name,
                                   values=(created,))
 
-    def _load_bean_name(self, bean_id: Optional[int]) -> str:
-        if bean_id is None:
-            return ''
-        info = self._bean_map.get(bean_id)
-        return info.get('name', '') if info else ''
-
-    def _load_bean_variety(self, bean_id: Optional[int]) -> str:
-        if bean_id is None:
-            return ''
-        info = self._bean_map.get(bean_id)
-        return info.get('variety', '') if info else ''
-
-    def _load_bean_origin(self, bean_id: Optional[int]) -> str:
-        if bean_id is None:
-            return ''
-        info = self._bean_map.get(bean_id)
-        return info.get('origin', '') if info else ''
-
     # ================================================================
     # 筛选
     # ================================================================
@@ -334,7 +316,7 @@ class Dashboard(tk.Tk):
         return True
 
     def _do_filter(self):
-        """内存过滤，填充主 grid"""
+        """查询并填充主 grid"""
         # 先格式化两个日期字段，任一无效则终止
         if not self._normalize_date_field('from'):
             return
@@ -345,33 +327,24 @@ class Dashboard(tk.Tk):
         date_to = self._date_to_var.get().strip()
         bean_name = self._bean_var.get().strip()
 
+        # 豆名 → bean_id
+        bean_id = None
+        if bean_name and bean_name != '全部':
+            for bid, info in self._bean_map.items():
+                if info.get('name') == bean_name:
+                    bean_id = bid
+                    break
+
         # 清空 grid
         for item in self._grid_tree.get_children():
             self._grid_tree.delete(item)
 
-        sessions = self._session_repo.list_all()
+        sessions = self._session_repo.list_filtered(
+            date_from=date_from, date_to=date_to,
+            bean_id=bean_id, is_raw_data=False)
         count = 0
 
         for s in sessions:
-            if s['is_raw_data']:
-                continue
-
-            # 日期过滤
-            s_date = s.get('roast_date', '') or ''
-            if date_from and s_date < date_from:
-                continue
-            if date_to and s_date > date_to:
-                continue
-
-            # 豆名过滤
-            if bean_name and bean_name != '全部':
-                bean_id = s.get('bean_id')
-                info = self._bean_map.get(bean_id) if bean_id else None
-                if not info or info.get('name') != bean_name:
-                    continue
-
-            # 显示
-            bean_id = s.get('bean_id')
             roast_no = s.get('roast_no', '') or ''
             roast_total = s.get('roast_total', '') or ''
             if roast_total:
@@ -385,9 +358,9 @@ class Dashboard(tk.Tk):
             self._grid_tree.insert('', 'end', iid=item_id, values=(
                 s.get('roast_date', '') or '',
                 s.get('roast_time', '') or '',
-                self._load_bean_name(bean_id),
-                self._load_bean_variety(bean_id),
-                self._load_bean_origin(bean_id),
+                s.get('bean_name', ''),
+                s.get('bean_variety', ''),
+                s.get('bean_origin', ''),
                 no_text,
             ))
             count += 1
