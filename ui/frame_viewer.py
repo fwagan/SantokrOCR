@@ -773,11 +773,11 @@ class FrameViewer(tk.Toplevel):
                 value = float(self.event_value_var.get())
                 if value < 0 or value > 100:
                     from tkinter import messagebox
-                    messagebox.showwarning("数值错误", "火力/风门值必须在0-100之间")
+                    messagebox.showwarning("数值错误", "火力/风门值必须在0-100之间", parent=self)
                     return
             except ValueError:
                 from tkinter import messagebox
-                messagebox.showwarning("数值错误", "请输入有效的数值（0-100）")
+                messagebox.showwarning("数值错误", "请输入有效的数值（0-100）", parent=self)
                 return
 
         # 调整火力/调整风门可以多次记录（不检查重复）
@@ -786,7 +786,7 @@ class FrameViewer(tk.Toplevel):
             for ev in self.events:
                 if ev.get('type') == event_type:
                     from tkinter import messagebox
-                    if not messagebox.askyesno("重复事件", f"已存在'{event_type}'事件，是否覆盖？"):
+                    if not messagebox.askyesno("重复事件", f"已存在'{event_type}'事件，是否覆盖？", parent=self):
                         return
                     # 覆盖旧事件
                     ev['frame'] = self.current_frame_num
@@ -832,7 +832,7 @@ class FrameViewer(tk.Toplevel):
         temp2_value = self.edit_temp2_var.get().strip()
 
         if not temp1_value and not temp2_value:
-            tk.messagebox.showwarning("输入错误", "至少输入一个值")
+            tk.messagebox.showwarning("输入错误", "至少输入一个值", parent=self)
             return
 
         if self.on_edit_callback:
@@ -841,7 +841,7 @@ class FrameViewer(tk.Toplevel):
                 temp1_value if temp1_value else None,
                 temp2_value if temp2_value else None
             )
-            tk.messagebox.showinfo("修改成功", "值已更新")
+            tk.messagebox.showinfo("修改成功", "值已更新", parent=self)
             self.destroy()
 
     def _ensure_video_info(self):
@@ -947,7 +947,7 @@ class FrameViewer(tk.Toplevel):
             if frame is not None:
                 # 保存图像
                 cv2.imwrite(file_path, frame)
-                tk.messagebox.showinfo("保存成功", f"截图已保存到:\n{file_path}")
+                tk.messagebox.showinfo("保存成功", f"截图已保存到:\n{file_path}", parent=self)
 
     def destroy(self):
         """关闭窗口"""
