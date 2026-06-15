@@ -45,6 +45,9 @@ def _setup_path():
 _setup_path()
 
 from data.serializers.slog import SlogSerializer
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.event_repo import SqliteEventRepository
 
 # ====== 常量 ======
 MAX_SLOG_COUNT = 5
@@ -243,11 +246,16 @@ def seconds_to_mmss(seconds):
 class SlogComparer(tk.Toplevel):
     """Slog曲线对比器"""
 
-    def __init__(self, master=None, file_paths=None):
+    def __init__(self, master=None, file_paths=None, session_ids=None):
         super().__init__(master)
         self.title("Slog Comparer - 曲线对比")
         self.minsize(1400, 900)
         self._center_window()
+
+        # 数据库（session_ids 模式用）
+        self._session_repo = None
+        self._result_repo = None
+        self._event_repo = None
 
         # 状态
         self.slogs = []  # list[dict] 每个元素为一个slog的数据
@@ -269,8 +277,13 @@ class SlogComparer(tk.Toplevel):
         # 创建UI
         self._create_ui()
 
-        # 如果有初始文件，加载
-        if file_paths:
+        # 如果有初始数据，加载
+        if session_ids:
+            self._session_repo = SqliteSessionRepository()
+            self._result_repo = SqliteResultRepository()
+            self._event_repo = SqliteEventRepository()
+            self.load_from_session_ids(session_ids)
+        elif file_paths:
             self._load_multiple_slogs(file_paths)
 
         # 快捷键
@@ -523,6 +536,65 @@ class SlogComparer(tk.Toplevel):
         # 处理数据
         self._process_slog(slog_data)
 
+        self.slogs.append(slog_data)
+        self._rebuild_slog_list()
+        self._on_refresh()
+
+    def load_from_session_ids(self, session_ids):
+        """从数据库加载多个会话进行对比"""
+        for sid in session_ids:
+            if len(self.slogs) >= MAX_SLOG_COUNT:
+                messagebox.showerror("错误", f"最多只能对比{MAX_SLOG_COUNT}条曲线")
+                break
+            self._load_session(sid)
+
+    def _load_session(self, session_id):
+        """从数据库加载单个会话"""
+        session = self._session_repo.load(session_id)
+        if not session:
+            messagebox.showerror("错误", f"未找到会话: {session_id}", parent=self)
+            return
+        results = self._result_repo.load(session_id) or []
+        events = self._event_repo.load(session_id) or []
+
+        if not results:
+            messagebox.showwarning("警告", f"会话 {session_id} 没有温度数据", parent=self)
+            return
+
+        # 校验必需事件
+        ok, missing = self._validate_required_events(events)
+        if not ok:
+            messagebox.showerror("错误",
+                f"会话 {session_id} 缺少必需事件: {', '.join(missing)}", parent=self)
+            return
+
+        name = self._session_repo.get_display_name(session_id)
+
+        color_idx = len(self.slogs) % len(COLOR_MAP)
+        slog_data = {
+            'path': session_id,
+            'name': name,
+            'visible': tk.BooleanVar(value=True),
+            'color': tk.StringVar(value=COLOR_NAMES[color_idx]),
+            'results': results,
+            'events': events,
+            'heater_initial': session.get('heater_initial', 60.0),
+            'fan_initial': session.get('fan_initial', 50.0),
+            'alignment': {},
+            'resampled_time': None,
+            'smooth_temp1': None,
+            'smooth_temp2': None,
+            'ror_time': None,
+            'ror_values': None,
+            'heater': None,
+            'fan': None,
+        }
+
+        for ev_type in REQUIRED_EVENTS:
+            t = self._get_event_time(events, ev_type)
+            slog_data['alignment'][ev_type] = t
+
+        self._process_slog(slog_data)
         self.slogs.append(slog_data)
         self._rebuild_slog_list()
         self._on_refresh()

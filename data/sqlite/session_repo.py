@@ -178,3 +178,22 @@ class SqliteSessionRepository:
                 result.append(session)
             return result
         return execute_with_lock(self.db_path, _list)
+
+    def get_display_name(self, session_id: str) -> str:
+        """获取会话的友好显示名称 [yyyy-mm-dd hh:mm bean_name]"""
+        def _get(conn):
+            row = conn.execute(
+                "SELECT rs.roast_date, rs.roast_time, rs.notes, "
+                "b.name AS bean_name "
+                "FROM roast_session rs "
+                "LEFT JOIN bean b ON rs.bean_id = b.id "
+                "WHERE rs.session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if not row:
+                return session_id
+            parts = [p for p in (row['roast_date'] or '',
+                                 row['roast_time'] or '',
+                                 row['bean_name'] or '') if p]
+            return f"[{' '.join(parts)}]" if parts else (row['notes'] or session_id)
+        return execute_with_lock(self.db_path, _get)

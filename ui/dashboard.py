@@ -182,8 +182,9 @@ class Dashboard(tk.Tk):
         scroll.pack(side='right', fill='y')
         self._grid_tree.pack(side='left', fill='both', expand=True)
 
-        # 交互绑定（Phase 1 占位，Phase 4/5 实现）
+        # 交互绑定
         self._grid_tree.bind('<Double-1>', self._on_grid_double_click)
+        self._grid_tree.bind('<Button-3>', self._on_grid_right_click)
 
     def _create_function_area(self, parent):
         frame = ttk.LabelFrame(parent, text='功能区', padding=8)
@@ -387,6 +388,24 @@ class Dashboard(tk.Tk):
         session_id = selection[0]
         from ui.slog_viewer import open_slog_viewer
         open_slog_viewer(self, session_id=session_id)
+
+    def _on_grid_right_click(self, event):
+        """右键菜单：对比选中会话"""
+        selection = self._grid_tree.selection()
+        if len(selection) < 2:
+            return
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label=f"对比 {len(selection)} 条曲线",
+                         command=self._open_comparer)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _open_comparer(self):
+        """打开 SlogComparer（多选会话对比）"""
+        selection = self._grid_tree.selection()
+        if len(selection) < 2:
+            return
+        from ui.slog_comparer import SlogComparer
+        SlogComparer(self, session_ids=list(selection))
 
     def _on_raw_data_double_click(self, event):
         """打开 RecognitionWindow(mode='raw_data')"""

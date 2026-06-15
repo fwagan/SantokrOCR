@@ -511,7 +511,7 @@ class SlogViewer(tk.Toplevel):
 
         # 更新界面
         self._rw_session_id = session_id
-        display_name = session.get('notes', '') or session_id
+        display_name = self._session_repo.get_display_name(session_id)
         self.source_identity = display_name
         self.title(f"Slog Viewer - {display_name}")
         self.stats_panel.status_var.set(
