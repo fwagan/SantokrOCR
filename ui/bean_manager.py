@@ -83,7 +83,7 @@ class BeanManager(tk.Toplevel):
         try:
             self._beans = self._bean_repo.list_all()
         except Exception as e:
-            messagebox.showerror("错误", f"加载生豆信息失败:\n{e}")
+            messagebox.showerror("错误", f"加载生豆信息失败:\n{e}", parent=self)
         self._original = copy.deepcopy(self._beans)
         self._new_indices.clear()
         self._deleted_indices.clear()
@@ -455,7 +455,8 @@ class BeanManager(tk.Toplevel):
         if self._has_unsaved_changes():
             result = messagebox.askyesnocancel(
                 "未保存的更改",
-                "有未保存的更改，是否保存？"
+                "有未保存的更改，是否保存？",
+                parent=self
             )
             if result is True:
                 self._save()

@@ -251,7 +251,7 @@ class MainWindow(tk.Tk):
             if threshold <= 0:
                 raise ValueError("合理温度差值必须大于0")
         except ValueError as e:
-            messagebox.showerror("错误", f"参数错误: {e}")
+            messagebox.showerror("错误", f"参数错误: {e}", parent=self)
             return
 
         self.log(f"开始检测异常数据，温度差值阈值: {threshold}")
@@ -637,7 +637,7 @@ class MainWindow(tk.Tk):
             self._cleanup_srlog_cache()
             self.clear_video_data()
             self.video_label.config(text="未选择")
-            messagebox.showerror("错误", f"加载会话文件失败:\n{e}")
+            messagebox.showerror("错误", f"加载会话文件失败:\n{e}", parent=self)
             import traceback
             traceback.print_exc()
             return
@@ -669,12 +669,12 @@ class MainWindow(tk.Tk):
         """选择ROI区域"""
         self.log("开始框选ROI...")
         if not self.video_path:
-            messagebox.showwarning("警告", "请先选择视频文件")
+            messagebox.showwarning("警告", "请先选择视频文件", parent=self)
             return
 
         # 如果已有ROI，提示确认重选
         if self.rois is not None:
-            if not messagebox.askyesno("确认", "重新框选ROI会清空现有的数据，是否继续？"):
+            if not messagebox.askyesno("确认", "重新框选ROI会清空现有的数据，是否继续？", parent=self):
                 return
             # 清空数据（但保留事件列表）
             self.results = []
@@ -729,16 +729,16 @@ class MainWindow(tk.Tk):
 
     def on_roi_selection_failed(self):
         """ROI选择失败回调"""
-        messagebox.showwarning("警告", "ROI选择失败或已取消")
+        messagebox.showwarning("警告", "ROI选择失败或已取消", parent=self)
 
     def on_roi_selection_error(self, error_msg):
         """ROI选择错误回调"""
-        messagebox.showerror("错误", f"ROI选择过程中出错:\n{error_msg}")
+        messagebox.showerror("错误", f"ROI选择过程中出错:\n{error_msg}", parent=self)
 
     def show_roi_preview(self):
         """显示ROI预览"""
         if not self.video_path or not self.rois:
-            messagebox.showwarning("警告", "请先选择视频和配置ROI")
+            messagebox.showwarning("警告", "请先选择视频和配置ROI", parent=self)
             return
 
         self.log(f"显示ROI预览，ROI数量: {len(self.rois) if self.rois else 0}")
@@ -763,7 +763,7 @@ class MainWindow(tk.Tk):
 
         except Exception as e:
             error_msg = f"打开ROI预览失败: {e}"
-            messagebox.showerror("错误", error_msg)
+            messagebox.showerror("错误", error_msg, parent=self)
             self.log(error_msg)
             import traceback
             self.log(traceback.format_exc())
@@ -888,7 +888,7 @@ class MainWindow(tk.Tk):
     def start_processing(self):
         """开始处理视频"""
         if not self.video_path or not self.rois:
-            messagebox.showwarning("警告", "请先选择视频和配置ROI")
+            messagebox.showwarning("警告", "请先选择视频和配置ROI", parent=self)
             return
 
         try:
@@ -896,7 +896,7 @@ class MainWindow(tk.Tk):
             if interval <= 0:
                 raise ValueError("采样间隔必须大于0")
         except ValueError as e:
-            messagebox.showerror("错误", f"参数错误: {e}")
+            messagebox.showerror("错误", f"参数错误: {e}", parent=self)
             return
 
         # 更新旋转角度到提取器
@@ -1011,7 +1011,7 @@ class MainWindow(tk.Tk):
         else:
             self.update_status("处理失败")
             self.log(f"处理失败: {message}")
-            messagebox.showerror("错误", f"处理失败:\n{message}")
+            messagebox.showerror("错误", f"处理失败:\n{message}", parent=self)
             self.start_button.config(state="normal")
             self.pause_button.config(state="disabled")
             self.stop_button.config(state="disabled")
@@ -1024,7 +1024,7 @@ class MainWindow(tk.Tk):
 
         self.update_status("处理完成")
         self.log(f"处理完成，共处理 {len(self.results)} 条记录")
-        messagebox.showinfo("完成", f"处理完成！\n共处理 {len(self.results)} 条记录")
+        messagebox.showinfo("完成", f"处理完成！\n共处理 {len(self.results)} 条记录", parent=self)
 
         # 保存结果到缓存
         try:
@@ -1062,7 +1062,7 @@ class MainWindow(tk.Tk):
             self._realtime_window = None
 
         if self.processing_thread and self.processing_thread.is_alive():
-            if messagebox.askyesno("确认退出", "处理仍在进行中，确定要退出吗？"):
+            if messagebox.askyesno("确认退出", "处理仍在进行中，确定要退出吗？", parent=self):
                 self.extractor.stop_processing()
                 self.quit()
                 self.destroy()
@@ -1084,7 +1084,8 @@ class MainWindow(tk.Tk):
                 if self._slog_viewer.winfo_exists():
                     if not messagebox.askyesno(
                         "确认",
-                        "重新绘制曲线会丢失当前已修改的烘焙信息，是否继续？"
+                        "重新绘制曲线会丢失当前已修改的烘焙信息，是否继续？",
+                        parent=self
                     ):
                         self._slog_viewer.lift()
                         return
@@ -1188,11 +1189,11 @@ class MainWindow(tk.Tk):
     def open_frame_viewer(self, frame_num, timestamp, data):
         """打开帧查看器窗口"""
         if not self.video_path or not self.rois:
-            messagebox.showwarning("警告", "请先选择视频和配置ROI")
+            messagebox.showwarning("警告", "请先选择视频和配置ROI", parent=self)
             return
 
         if self._mode == 'srlog' and not self._srlog_cache_dir:
-            messagebox.showinfo("提示", "该会话文件不包含帧截图，无法打开帧查看器")
+            messagebox.showinfo("提示", "该会话文件不包含帧截图，无法打开帧查看器", parent=self)
             return
 
         try:
@@ -1220,7 +1221,7 @@ class MainWindow(tk.Tk):
             self.log(f"打开帧查看器: 帧号={frame_num}, 时间戳={timestamp}")
         except Exception as e:
             error_msg = f"打开帧查看器失败: {e}"
-            messagebox.showerror("错误", error_msg)
+            messagebox.showerror("错误", error_msg, parent=self)
             self.log(error_msg)
 
     def on_event_marked(self, event_data, is_overwrite=False):
@@ -1375,7 +1376,7 @@ class MainWindow(tk.Tk):
             return
 
         from tkinter import messagebox
-        if not messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selected)} 个事件吗？"):
+        if not messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selected)} 个事件吗？", parent=self):
             return
 
         # 先收集所有要删除的索引，避免删除时索引偏移
