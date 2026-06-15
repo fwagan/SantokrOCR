@@ -1100,6 +1100,13 @@ class RecognitionWindow(tk.Toplevel):
         if self._slog_viewer is not None:
             try:
                 if self._slog_viewer.winfo_exists():
+                    if not messagebox.askyesno(
+                        "确认",
+                        "重新绘制曲线会丢失当前已修改的烘焙信息，是否继续？",
+                        parent=self
+                    ):
+                        self._slog_viewer.lift()
+                        return
                     self._slog_viewer.destroy()
                     self._slog_viewer = None
             except tk.TclError:

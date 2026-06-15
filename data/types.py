@@ -104,7 +104,7 @@ class VideoInfo(TypedDict, total=False):
 
 class BeanRecord(TypedDict, total=False):
     """咖啡豆档案记录"""
-    id: int                            # 数据库主键（SELECT 时可选）
+    id: int                            # 自增主键（新记录缺失，已存在的记录有值）
     name: str
     variety: str
     process: str                       # 处理法

@@ -313,7 +313,7 @@ class SlogViewer(tk.Toplevel):
         # 校验版本
         version = data.get('_version', 0)
         if version < 1:
-            messagebox.showwarning("警告", "文件格式版本过低，可能无法正确加载")
+            messagebox.showwarning("警告", "文件格式版本过低，可能无法正确加载", parent=self)
 
         # 解析数据
         results = data.get('results', [])
@@ -322,7 +322,7 @@ class SlogViewer(tk.Toplevel):
         fan_initial = data['fan_initial']
 
         if not results:
-            messagebox.showwarning("警告", "文件中没有有效的results数据")
+            messagebox.showwarning("警告", "文件中没有有效的results数据", parent=self)
             return
 
         # 更新统计面板
@@ -373,7 +373,7 @@ class SlogViewer(tk.Toplevel):
                 if roast_info.get('moisture'):
                     self.roast_vars['moisture'].set(roast_info['moisture'])
             else:
-                messagebox.showwarning("警告", f"找不到生豆信息: {bean_name}")
+                messagebox.showwarning("警告", f"找不到生豆信息: {bean_name}", parent=self)
 
         self._update_weight_loss()
 
@@ -467,7 +467,7 @@ class SlogViewer(tk.Toplevel):
     def export_slog(self, event=None):
         """导出.slog文件"""
         if not self.stats_panel.results:
-            messagebox.showwarning("警告", "没有可导出的数据")
+            messagebox.showwarning("警告", "没有可导出的数据", parent=self)
             return
 
         default_name = self.source_identity or "export"
@@ -645,7 +645,7 @@ class SlogViewer(tk.Toplevel):
                 pass
 
         if not self.current_path:
-            messagebox.showwarning("警告", "请先打开一个.slog文件")
+            messagebox.showwarning("警告", "请先打开一个.slog文件", parent=self)
             return
 
         files = filedialog.askopenfilenames(
@@ -657,7 +657,7 @@ class SlogViewer(tk.Toplevel):
 
         all_files = list(dict.fromkeys([self.current_path] + list(files)))
         if len(all_files) > 5:
-            messagebox.showerror("错误", "最多允许5个slog参与对比")
+            messagebox.showerror("错误", "最多允许5个slog参与对比", parent=self)
             return
 
         from ui.slog_comparer import SlogComparer

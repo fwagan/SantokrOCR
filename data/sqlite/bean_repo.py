@@ -10,7 +10,8 @@ from data.types import BeanRecord
 
 logger = logging.getLogger(__name__)
 
-_INSERT_COLS = [
+_COLUMNS = [
+    ('id', 'id'),
     ('name', 'name'),
     ('variety', 'variety'),
     ('process', 'process'),
@@ -22,11 +23,16 @@ _INSERT_COLS = [
     ('out_of_stock', 'outOfStock'),
     ('is_deleted', 'isDeleted'),
 ]
-_SELECT_COLS = [('id', 'id')] + _INSERT_COLS
-_SELECT_COL_LIST = ', '.join(c[0] for c in _SELECT_COLS)
-_DICT_TO_DB = {dk: c for c, dk in _INSERT_COLS}
-_DB_TO_DICT = {c: dk for c, dk in _INSERT_COLS}
+_COL_LIST = ', '.join(c[0] for c in _COLUMNS)
+_DICT_TO_DB = {dk: c for c, dk in _COLUMNS}
+_DB_TO_DICT = {c: dk for c, dk in _COLUMNS}
+# id 列不出现在 INSERT/UPDATE 的 SET 子句中（自增主键）
+_SET_COLUMNS = [c for c in _COLUMNS if c[0] != 'id']
+_SET_DICT_TO_DB = {dk: c for c, dk in _SET_COLUMNS}
 
+def _bean_to_set_row(bean: BeanRecord) -> dict:
+    """生成 INSERT/UPDATE 用的 SET 子句字典（不含 id）"""
+    return {_SET_DICT_TO_DB.get(k, k): v for k, v in bean.items() if k in _SET_DICT_TO_DB}
 
 def _row_to_dict(row) -> BeanRecord:
     d: BeanRecord = {  # type: ignore[misc]
@@ -34,10 +40,6 @@ def _row_to_dict(row) -> BeanRecord:
     }
     d['outOfStock'] = bool(d['outOfStock'])
     return d
-
-
-def _bean_to_row(bean: BeanRecord) -> dict:
-    return {_DICT_TO_DB.get(k, k): v for k, v in bean.items() if k in _DICT_TO_DB}
 
 
 class SqliteBeanRepository:
@@ -54,7 +56,7 @@ class SqliteBeanRepository:
             else:
                 where = 'WHERE is_deleted = 0'
             rows = conn.execute(
-                f"SELECT {_SELECT_COL_LIST} FROM bean {where} ORDER BY name"
+                f"SELECT {_COL_LIST} FROM bean {where} ORDER BY name"
             ).fetchall()
             return [_row_to_dict(r) for r in rows]
         return execute_with_lock(self.db_path, _list)
@@ -62,7 +64,7 @@ class SqliteBeanRepository:
     def get_by_name(self, name: str) -> Optional[BeanRecord]:
         def _get(conn):
             row = conn.execute(
-                f"SELECT {_SELECT_COL_LIST} FROM bean WHERE name = ?", (name,)
+                f"SELECT {_COL_LIST} FROM bean WHERE name = ?", (name,)
             ).fetchone()
             return _row_to_dict(row) if row else None
         return execute_with_lock(self.db_path, _get)
@@ -71,14 +73,14 @@ class SqliteBeanRepository:
         """按 ID 查找咖啡豆"""
         def _get(conn):
             row = conn.execute(
-                f"SELECT {_SELECT_COL_LIST} FROM bean WHERE id = ?", (bean_id,)
+                f"SELECT {_COL_LIST} FROM bean WHERE id = ?", (bean_id,)
             ).fetchone()
             return _row_to_dict(row) if row else None
         return execute_with_lock(self.db_path, _get)
 
     def add(self, bean: BeanRecord) -> None:
         def _add(conn):
-            row = _bean_to_row(bean)
+            row = _bean_to_set_row(bean)
             cols = ', '.join(row.keys())
             placeholders = ', '.join('?' for _ in row)
             conn.execute(
@@ -88,13 +90,13 @@ class SqliteBeanRepository:
             conn.commit()
         execute_with_lock(self.db_path, _add)
 
-    def update(self, name: str, bean: BeanRecord) -> bool:
+    def update(self, bean_id: int, bean: BeanRecord) -> bool:
         def _update(conn):
-            row = _bean_to_row(bean)
+            row = _bean_to_set_row(bean)
             set_clause = ', '.join(f"{k} = ?" for k in row)
-            values = list(row.values()) + [name]
+            values = list(row.values()) + [bean_id]
             cur = conn.execute(
-                f"UPDATE bean SET {set_clause} WHERE name = ?", values
+                f"UPDATE bean SET {set_clause} WHERE id = ?", values
             )
             conn.commit()
             return cur.rowcount > 0

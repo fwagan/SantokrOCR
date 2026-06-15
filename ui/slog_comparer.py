@@ -466,10 +466,10 @@ class SlogComparer(tk.Toplevel):
         loaded_paths = {s['path'] for s in self.slogs}
         for path in file_paths:
             if path in loaded_paths:
-                messagebox.showwarning("警告", f"文件已添加: {os.path.basename(path)}")
+                messagebox.showwarning("警告", f"文件已添加: {os.path.basename(path)}", parent=self)
                 continue
             if len(self.slogs) >= MAX_SLOG_COUNT:
-                messagebox.showerror("错误", f"最多只能对比{MAX_SLOG_COUNT}条曲线")
+                messagebox.showerror("错误", f"最多只能对比{MAX_SLOG_COUNT}条曲线", parent=self)
                 break
             self._load_slog(path)
 
@@ -486,7 +486,7 @@ class SlogComparer(tk.Toplevel):
 
         version = data.get('_version', 0)
         if version < 1:
-            if not messagebox.askyesno("警告", "文件格式版本过低，是否继续加载?"):
+            if not messagebox.askyesno("警告", "文件格式版本过低，是否继续加载?", parent=self):
                 return
 
         results = data.get('results', [])
@@ -495,14 +495,14 @@ class SlogComparer(tk.Toplevel):
         fan_initial = data['fan_initial']
 
         if not results:
-            messagebox.showwarning("警告", f"{os.path.basename(file_path)} 没有有效数据")
+            messagebox.showwarning("警告", f"{os.path.basename(file_path)} 没有有效数据", parent=self)
             return
 
         # 校验必需事件
         ok, missing = self._validate_required_events(events)
         if not ok:
             messagebox.showerror("错误",
-                f"{os.path.basename(file_path)} 缺少必需事件: {', '.join(missing)}")
+                f"{os.path.basename(file_path)} 缺少必需事件: {', '.join(missing)}", parent=self)
             return
 
         # 创建slog数据字典
@@ -652,7 +652,7 @@ class SlogComparer(tk.Toplevel):
     def _on_add_slog(self):
         """添加更多slog"""
         if len(self.slogs) >= MAX_SLOG_COUNT:
-            messagebox.showerror("错误", f"最多只能对比{MAX_SLOG_COUNT}条曲线")
+            messagebox.showerror("错误", f"最多只能对比{MAX_SLOG_COUNT}条曲线", parent=self)
             return
 
         files = filedialog.askopenfilenames(
