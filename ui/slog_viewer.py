@@ -611,7 +611,7 @@ class SlogViewer(tk.Toplevel):
                                result_repo=self._result_repo,
                                event_repo=self._event_repo)
         writer.save_full(sid, session, self.stats_panel.results,
-                         self.stats_panel.events)
+                         self.stats_panel._original_events)
         self._rw_session_id = sid
 
         self.stats_panel.status_var.set(f"已保存到数据库: {sid}")
