@@ -197,3 +197,14 @@ class SqliteSessionRepository:
                                  row['bean_name'] or '') if p]
             return f"[{' '.join(parts)}]" if parts else (row['notes'] or session_id)
         return execute_with_lock(self.db_path, _get)
+
+
+def next_session_id(db_path: str) -> str:
+    """生成下一个自增 session_id（线程安全）"""
+    def _get(conn):
+        row = conn.execute(
+            "SELECT COALESCE(MAX(CAST(session_id AS INTEGER)), 0) + 1 "
+            "FROM roast_session"
+        ).fetchone()
+        return str(row[0])
+    return execute_with_lock(db_path, _get)

@@ -244,8 +244,7 @@ class Dashboard(tk.Tk):
         for item in self._raw_tree.get_children():
             self._raw_tree.delete(item)
 
-        sessions = self._session_repo.list_all()
-        raw = [s for s in sessions if s['is_raw_data']]
+        raw = self._session_repo.list_filtered(is_raw_data=True)
 
         for s in raw:
             name = s.get('notes', '') or s.get('session_id', '')

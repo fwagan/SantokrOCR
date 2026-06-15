@@ -1222,18 +1222,20 @@ class RecognitionWindow(tk.Toplevel):
             return None
 
         if self._rw_session_id:
-            # 更新已有记录
+            # 更新已有记录（先加载现有数据，再覆盖当前值）
             sid = self._rw_session_id
-            session = {
+            existing = self._session_repo.load(sid) or {}
+            session = dict(existing)
+            session.update({
                 'session_id': sid,
                 'is_raw_data': True,
                 'heater_initial': self.heater_initial_var.get(),
                 'fan_initial': self.fan_initial_var.get(),
-            }
+            })
         else:
             # 新建 session
-            from data.tools.import_slog import _next_session_id
-            sid = _next_session_id(self._session_repo.db_path)
+            from data.sqlite.session_repo import next_session_id
+            sid = next_session_id(self._session_repo.db_path)
             name = simpledialog.askstring(
                 "保存到数据库",
                 "请输入本次烘焙的名称:",

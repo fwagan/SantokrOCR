@@ -584,10 +584,10 @@ class SlogViewer(tk.Toplevel):
                                  parent=self)
             return
 
-        from data.tools.import_slog import _next_session_id
+        from data.sqlite.session_repo import next_session_id
 
         roast_info = self._collect_roast_info()
-        sid = self._rw_session_id or _next_session_id(self._session_repo.db_path)
+        sid = self._rw_session_id or next_session_id(self._session_repo.db_path)
 
         session = {
             'session_id': sid,

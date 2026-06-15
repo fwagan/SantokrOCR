@@ -1127,8 +1127,8 @@ class CameraRealtimeWindow(tk.Toplevel):
             return
 
         # 准备数据
-        from data.tools.import_slog import _next_session_id
-        sid = _next_session_id(self._session_repo.db_path)
+        from data.sqlite.session_repo import next_session_id
+        sid = next_session_id(self._session_repo.db_path)
         events = self.stats_panel.events if hasattr(self.stats_panel, 'events') else []
 
         # 保存会话元信息

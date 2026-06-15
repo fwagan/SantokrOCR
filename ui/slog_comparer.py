@@ -544,7 +544,7 @@ class SlogComparer(tk.Toplevel):
         """从数据库加载多个会话进行对比"""
         for sid in session_ids:
             if len(self.slogs) >= MAX_SLOG_COUNT:
-                messagebox.showerror("错误", f"最多只能对比{MAX_SLOG_COUNT}条曲线")
+                messagebox.showerror("错误", f"最多只能对比{MAX_SLOG_COUNT}条曲线", parent=self)
                 break
             self._load_session(sid)
 
