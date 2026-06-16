@@ -15,6 +15,7 @@ import cv2
 import time
 import os
 import threading
+from typing import Optional
 import numpy as np
 from PIL import Image, ImageTk
 
@@ -31,8 +32,10 @@ from utils.file_system import Paths, FileOperations
 from data.sqlite.session_repo import SqliteSessionRepository
 from data.sqlite.result_repo import SqliteResultRepository
 from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.bean_repo import SqliteBeanRepository
 from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
+from ui.ideal_curve_dialog import IdealCurveDialog
 
 
 class CameraRealtimeWindow(tk.Toplevel):
@@ -323,10 +326,11 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _create_ideal_curve_tab(self, parent):
         """创建理想曲线Tab UI"""
-        # 文件选择行
+        # 选择行
         file_frame = ttk.Frame(parent, padding=8)
         file_frame.pack(fill="x")
-        ttk.Button(file_frame, text="选择.slog文件", command=self._select_ideal_slog).pack(side="left", padx=(0, 8))
+        ttk.Button(file_frame, text="选择.slog文件", command=self._select_ideal_slog).pack(side="left", padx=(0, 4))
+        ttk.Button(file_frame, text="从数据库选择", command=self._select_ideal_session).pack(side="left", padx=(0, 8))
         self.ideal_file_label = ttk.Label(file_frame, text="未选择")
         self.ideal_file_label.pack(side="left")
 
@@ -362,6 +366,14 @@ class CameraRealtimeWindow(tk.Toplevel):
             return
         self._load_ideal_slog(path)
 
+    def _select_ideal_session(self):
+        """打开对话框从数据库选择理想曲线"""
+        session_id = IdealCurveDialog(
+            self, self._session_repo, SqliteBeanRepository()
+        ).result
+        if session_id:
+            self._load_ideal_session(session_id)
+
     def _load_ideal_slog(self, path):
         """加载并处理.slog文件作为理想曲线"""
         try:
@@ -376,15 +388,69 @@ class CameraRealtimeWindow(tk.Toplevel):
         results = data.get('results', [])
         events = data.get('events', [])
 
-        if not results:
-            messagebox.showwarning("警告", "文件没有有效数据", parent=self)
+        ideal_data = self._build_ideal_data(
+            results, events,
+            data.get('heater_initial', 60.0),
+            data.get('fan_initial', 50.0),
+            source_name=os.path.basename(path),
+        )
+        if ideal_data is None:
             return
 
-        # 处理数据：提取→重采样→平滑→ROR
+        ideal_data['path'] = path
+        self.ideal_data = ideal_data
+
+        # 更新UI
+        self.ideal_file_label.config(text=os.path.basename(path))
+        self._update_ideal_info()
+        self._apply_ideal_curve()
+
+    def _load_ideal_session(self, session_id: str):
+        """从数据库加载会话作为理想曲线"""
+        session = self._session_repo.load(session_id)
+        if not session:
+            messagebox.showerror("错误", f"未找到会话: {session_id}", parent=self)
+            return
+
+        results = self._result_repo.load(session_id) or []
+        events = self._event_repo.load(session_id) or []
+
+        display_name = self._session_repo.get_display_name(session_id)
+        ideal_data = self._build_ideal_data(
+            results, events,
+            session.get('heater_initial', 60.0),
+            session.get('fan_initial', 50.0),
+            source_name=display_name,
+        )
+        if ideal_data is None:
+            return
+
+        ideal_data['session_id'] = session_id
+        self.ideal_data = ideal_data
+
+        # 更新UI
+        self.ideal_file_label.config(text=display_name)
+        self._update_ideal_info()
+        self._apply_ideal_curve()
+
+    def _build_ideal_data(self, results, events, heater_initial, fan_initial,
+                          source_name='') -> Optional[dict]:
+        """从原始结果和事件构建 ideal_data 字典
+
+        核心处理流程：提取→重采样→平滑→ROR→对齐事件→构建dict。
+        被 _load_ideal_slog 和 _load_ideal_session 共用。
+
+        Returns:
+            ideal_data dict，数据不足时返回 None
+        """
+        if not results:
+            messagebox.showwarning("警告", "没有有效数据", parent=self)
+            return None
+
         timestamps, temp1, temp2 = extract_valid_data(results)
         if len(timestamps) < 2:
             messagebox.showwarning("警告", "有效数据不足", parent=self)
-            return
+            return None
 
         sampling_interval = 1.0
         smooth_window = 15
@@ -415,9 +481,8 @@ class CameraRealtimeWindow(tk.Toplevel):
                 end_time = ev.get('time', None)
                 break
 
-        self.ideal_data = {
-            'path': path,
-            'name': os.path.basename(path),
+        return {
+            'name': source_name,
             'resampled_time': resampled_time,
             'smooth_temp1': smooth_temp1,
             'smooth_temp2': smooth_temp2,
@@ -427,15 +492,14 @@ class CameraRealtimeWindow(tk.Toplevel):
             'alignment': alignment,
             'charge_time': charge_time if charge_time else 0.0,
             'end_time': end_time,
-            'heater_initial': data['heater_initial'],
-            'fan_initial': data['fan_initial'],
+            'heater_initial': heater_initial,
+            'fan_initial': fan_initial,
         }
 
-        # 更新UI
-        self.ideal_file_label.config(text=os.path.basename(path))
-        self._update_ideal_info()
-
-        # 传递给统计面板
+    def _apply_ideal_curve(self):
+        """将 self.ideal_data 传递给统计面板"""
+        if self.ideal_data is None:
+            return
         self.stats_panel.set_ideal_curve(
             self.ideal_data,
             show_bean=self.ideal_bean_var.get(),
