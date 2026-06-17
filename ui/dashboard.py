@@ -8,19 +8,16 @@ Dashboard — SantokrOCR 主入口
 """
 
 import os
-import re
 import sys
-from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk
 from typing import Optional
 
 from data.types import BeanRecord
 from data.sqlite.session_repo import SqliteSessionRepository
 from data.sqlite.bean_repo import SqliteBeanRepository
+from ui.widgets.session_grid_widget import SessionGridWidget
 from utils.screen_utils import center_window
-
-_DATE_PATTERN = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 class Dashboard(tk.Tk):
     """主仪表盘窗口"""
@@ -54,17 +51,13 @@ class Dashboard(tk.Tk):
         # 单例窗口引用
         self._realtime_window: Optional[tk.Toplevel] = None
 
-        # 筛选变量
-        self._date_from_var = tk.StringVar()
-        self._date_to_var = tk.StringVar()
-        self._bean_var = tk.StringVar(value='全部')
+        # 先加载豆信息，供 SessionGridWidget 初始化时使用
+        self._load_bean_map()
 
         # 创建 UI
         self._create_ui()
 
-        # 加载数据
-        self._load_bean_map()
-        self._populate_bean_combo()
+        # 加载原始数据列表
         self._load_raw_data()
 
         # 绑定快捷键
@@ -97,12 +90,18 @@ class Dashboard(tk.Tk):
         self._paned = ttk.PanedWindow(main_frame, orient='horizontal')
         self._paned.pack(fill='both', expand=True)
 
-        # --- 左：筛选 + grid ---
+        # --- 左：SessionGridWidget（筛选 + 列表） ---
         left_frame = ttk.Frame(self._paned)
         self._paned.add(left_frame, weight=70)
 
-        self._create_filter_bar(left_frame)
-        self._create_grid(left_frame)
+        self._session_grid = SessionGridWidget(
+            left_frame, self._session_repo, self._bean_map,
+            select_mode='extended',
+            on_activate=self._on_grid_double_click,
+            on_context_menu=self._on_grid_right_click,
+            on_status=self._update_status,
+        )
+        self._session_grid.pack(fill='both', expand=True)
 
         # --- 右：功能区 + raw data ---
         right_frame = ttk.Frame(self._paned)
@@ -113,78 +112,6 @@ class Dashboard(tk.Tk):
 
         # --- 底：状态栏 ---
         self._create_status_bar()
-
-    def _create_filter_bar(self, parent):
-        frame = ttk.Frame(parent)
-        frame.pack(fill='x', pady=(0, 5))
-
-        # 日期起
-        ttk.Label(frame, text='日期:').pack(side='left', padx=(0, 2))
-        self._date_from_entry = ttk.Entry(
-            frame, textvariable=self._date_from_var, width=12,
-        )
-        self._date_from_entry.pack(side='left', padx=2)
-        self._date_from_entry.bind('<FocusIn>', lambda e: e.widget.selection_range(0, 'end'))
-        self._date_from_entry.bind('<FocusOut>', lambda e: self._normalize_date_field('from'))
-
-        ttk.Label(frame, text='~').pack(side='left', padx=2)
-
-        # 日期止（失焦时自动修正 date_to < date_from）
-        self._date_to_entry = ttk.Entry(
-            frame, textvariable=self._date_to_var, width=12,
-        )
-        self._date_to_entry.pack(side='left', padx=2)
-        self._date_to_entry.bind('<FocusIn>', lambda e: e.widget.selection_range(0, 'end'))
-        self._date_to_entry.bind('<FocusOut>', lambda e: self._normalize_date_field('to'))
-
-        # 豆名
-        ttk.Label(frame, text='  豆名:').pack(side='left', padx=(10, 2))
-        self._bean_combo = ttk.Combobox(
-            frame, textvariable=self._bean_var, width=16, state='readonly',
-        )
-        self._bean_combo.pack(side='left', padx=2)
-
-        # 按钮
-        ttk.Button(frame, text='筛选', command=self._do_filter).pack(
-            side='left', padx=(10, 2))
-        ttk.Button(frame, text='重置', command=self._reset_filter).pack(
-            side='left', padx=2)
-
-    def _create_grid(self, parent):
-        # 容器
-        container = ttk.Frame(parent)
-        container.pack(fill='both', expand=True)
-
-        # Treeview
-        columns = ('roast_date', 'roast_time', 'bean_name', 'variety',
-                   'origin', 'roast_no')
-        self._grid_tree = ttk.Treeview(
-            container, columns=columns, show='headings',
-            selectmode='extended',
-        )
-
-        col_config = [
-            ('roast_date', '烘焙日期', 90),
-            ('roast_time', '烘焙时间', 70),
-            ('bean_name', '豆名', 120),
-            ('variety', '豆种', 100),
-            ('origin', '产地', 100),
-            ('roast_no', '编号/炉次', 90),
-        ]
-        for col, text, width in col_config:
-            self._grid_tree.heading(col, text=text)
-            self._grid_tree.column(col, width=width, minwidth=60)
-
-        # 滚动条
-        scroll = ttk.Scrollbar(container, orient='vertical',
-                               command=self._grid_tree.yview)
-        self._grid_tree.configure(yscrollcommand=scroll.set)
-        scroll.pack(side='right', fill='y')
-        self._grid_tree.pack(side='left', fill='both', expand=True)
-
-        # 交互绑定
-        self._grid_tree.bind('<Double-1>', self._on_grid_double_click)
-        self._grid_tree.bind('<Button-3>', self._on_grid_right_click)
 
     def _create_function_area(self, parent):
         frame = ttk.LabelFrame(parent, text='功能区', padding=8)
@@ -230,14 +157,6 @@ class Dashboard(tk.Tk):
     # 数据加载
     # ================================================================
 
-    def _populate_bean_combo(self):
-        names = ['全部']
-        for bean_id, info in sorted(self._bean_map.items(),
-                                    key=lambda x: x[1].get('name', '')):
-            names.append(info.get('name', ''))
-        self._bean_combo['values'] = names
-        self._bean_combo.current(0)
-
     def _load_raw_data(self):
         """加载 is_raw_data=True 的会话到右侧列表"""
         # 清空
@@ -257,154 +176,28 @@ class Dashboard(tk.Tk):
                                   values=(created,))
 
     # ================================================================
-    # 筛选
-    # ================================================================
-
-    @staticmethod
-    def _normalize_date(text: str) -> str | None:
-        """将多种日期格式转为 YYYY-MM-DD，无法解析返回 None"""
-        text = text.strip()
-        if not text:
-            return ''
-        if _DATE_PATTERN.match(text):
-            normalized = text
-        else:
-            digits = text.replace('-', '').replace('/', '').replace('.', '')
-            if len(digits) == 8:
-                normalized = f'{digits[:4]}-{digits[4:6]}-{digits[6:8]}'
-            elif len(digits) == 6:
-                yy = int(digits[:2])
-                prefix = '19' if yy > 50 else '20'
-                normalized = f'{prefix}{digits[:2]}-{digits[2:4]}-{digits[4:6]}'
-            else:
-                return None
-        try:
-            datetime.strptime(normalized, '%Y-%m-%d')
-            return normalized
-        except ValueError:
-            return None
-
-    def _normalize_date_field(self, field: str) -> bool:
-        """失焦时格式化日期字段，无效则不修改值并聚焦回错误字段
-
-        Returns:
-            True 表示值有效（空或合法日期），False 表示输入非法
-        """
-        var = self._date_from_var if field == 'from' else self._date_to_var
-        entry = self._date_from_entry if field == 'from' else self._date_to_entry
-        raw = var.get()
-        normalized = self._normalize_date(raw)
-        if normalized is None:
-            messagebox.showerror('日期格式错误',
-                                 f'无效的日期: {raw}\n'
-                                 '支持的格式：YYYYMMDD、YYMMDD、YYYY-MM-DD')
-            var.set('')
-            entry.focus_set()
-            return False
-        # 空或有效 → 更新值
-        var.set(normalized)
-        if field == 'to':
-            df = self._date_from_var.get()
-            dt = self._date_to_var.get()
-            if df and dt and dt < df:
-                self._date_to_var.set(df)
-        elif field == 'from' and normalized:
-            df = self._date_from_var.get()
-            dt = self._date_to_var.get()
-            if df and not dt:
-                self._date_to_var.set(df)
-        return True
-
-    def _do_filter(self):
-        """查询并填充主 grid"""
-        # 先格式化两个日期字段，任一无效则终止
-        if not self._normalize_date_field('from'):
-            return
-        if not self._normalize_date_field('to'):
-            return
-
-        date_from = self._date_from_var.get().strip()
-        date_to = self._date_to_var.get().strip()
-        bean_name = self._bean_var.get().strip()
-
-        # 豆名 → bean_id
-        bean_id = None
-        if bean_name and bean_name != '全部':
-            for bid, info in self._bean_map.items():
-                if info.get('name') == bean_name:
-                    bean_id = bid
-                    break
-
-        # 清空 grid
-        for item in self._grid_tree.get_children():
-            self._grid_tree.delete(item)
-
-        sessions = self._session_repo.list_filtered(
-            date_from=date_from, date_to=date_to,
-            bean_id=bean_id, is_raw_data=False)
-        count = 0
-
-        for s in sessions:
-            roast_no = s.get('roast_no', '') or ''
-            roast_total = s.get('roast_total', '') or ''
-            if roast_total:
-                no_text = f'#{roast_no}/{roast_total}'
-            elif roast_no:
-                no_text = f'#{roast_no}'
-            else:
-                no_text = ''
-
-            item_id = s.get('session_id', '') or str(count)
-            self._grid_tree.insert('', 'end', iid=item_id, values=(
-                s.get('roast_date', '') or '',
-                s.get('roast_time', '') or '',
-                s.get('bean_name', ''),
-                s.get('bean_variety', ''),
-                s.get('bean_origin', ''),
-                no_text,
-            ))
-            count += 1
-
-        self._update_status(f'显示 {count} 条记录')
-
-    def _reset_filter(self):
-        self._date_from_var.set('')
-        self._date_to_var.set('')
-        self._bean_var.set('全部')
-        for item in self._grid_tree.get_children():
-            self._grid_tree.delete(item)
-        self._update_status('就绪')
-
-    # ================================================================
     # 交互
     # ================================================================
 
-    def _on_grid_double_click(self, event):
+    def _on_grid_double_click(self, session_id: str):
         """打开 SlogViewer（通过 session_id 从 DB 加载）"""
-        selection = self._grid_tree.selection()
-        if not selection:
-            return
-        session_id = selection[0]
         from ui.slog_viewer import open_slog_viewer
         open_slog_viewer(self, session_id=session_id)
 
-    def _on_grid_right_click(self, event):
+    def _on_grid_right_click(self, selected_ids, x_root, y_root):
         """右键菜单：对比选中会话"""
-        selection = self._grid_tree.selection()
-        if len(selection) < 2:
+        if len(selected_ids) < 2:
             return
+        ids = list(selected_ids)
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label=f"对比 {len(selection)} 条曲线",
-                         command=self._open_comparer)
-        menu.tk_popup(event.x_root, event.y_root)
+        menu.add_command(label=f"对比 {len(ids)} 条曲线",
+                         command=lambda: self._open_comparer(ids))
+        menu.tk_popup(x_root, y_root)
 
-    def _open_comparer(self):
+    def _open_comparer(self, session_ids):
         """打开 SlogComparer（多选会话对比）"""
-        selection = self._grid_tree.selection()
-        if len(selection) < 2:
-            return
         from ui.slog_comparer import SlogComparer
-        SlogComparer(self, session_ids=list(selection))
+        SlogComparer(self, session_ids=list(session_ids))
 
     def _on_raw_data_double_click(self, event):
         """打开 RecognitionWindow(mode='raw_data')"""
@@ -444,7 +237,7 @@ class Dashboard(tk.Tk):
 
         def _on_bean_saved():
             self._load_bean_map()
-            self._populate_bean_combo()
+            self._session_grid.refresh_bean_map(self._bean_map)
 
         BeanManager(self, on_save_callback=_on_bean_saved)
 

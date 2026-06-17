@@ -4,5 +4,6 @@
 
 __all__ = [
     'progress_panel',
+    'session_grid_widget',
     'status_bar'
 ]
