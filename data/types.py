@@ -126,6 +126,7 @@ class RoastSession(TypedDict, total=False):
     """完整烘焙会话"""
     session_id: str
     is_raw_data: bool
+    is_favorite: bool
     bean_id: int                       # FK → bean.id
     heater_initial: float
     fan_initial: float

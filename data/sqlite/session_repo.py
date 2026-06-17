@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 # roast_session 表列名
 _SESSION_COLS = [
-    'session_id', 'is_raw_data', 'bean_id',
+    'session_id', 'is_raw_data', 'is_favorite', 'bean_id',
     'heater_initial', 'fan_initial',
     'density_override', 'moisture_override',
     'roast_date', 'roast_time', 'roast_no', 'roast_total',
@@ -36,6 +36,7 @@ def _row_to_session(row) -> RoastSession:
     return {
         'session_id': row['session_id'],
         'is_raw_data': bool(row['is_raw_data']),
+        'is_favorite': bool(row['is_favorite']),
         'heater_initial': row['heater_initial'],
         'fan_initial': row['fan_initial'],
         'bean_id': row['bean_id'] if row['bean_id'] is not None else None,
@@ -68,6 +69,7 @@ class SqliteSessionRepository:
         return {
             'session_id': session_id,
             'is_raw_data': 1 if session.get('is_raw_data') else 0,
+            'is_favorite': 1 if session.get('is_favorite') else 0,
             'bean_id': session.get('bean_id'),
             'heater_initial': session.get('heater_initial', 60.0),
             'fan_initial': session.get('fan_initial', 50.0),
