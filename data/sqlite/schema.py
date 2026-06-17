@@ -1,6 +1,6 @@
 """SQLite 数据库 schema 定义与迁移
 
-当前版本: 2
+当前版本: 3
 """
 
 import sqlite3
@@ -12,7 +12,7 @@ from .connection import get_connection
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # ── DDL ──────────────────────────────────────────────────────────────
 
@@ -46,6 +46,7 @@ CREATE_ROAST_SESSION = """
 CREATE TABLE IF NOT EXISTS roast_session (
     session_id          TEXT    PRIMARY KEY,
     is_raw_data         INTEGER NOT NULL DEFAULT 0,
+    is_favorite         INTEGER NOT NULL DEFAULT 0,
     bean_id             INTEGER REFERENCES bean(id) ON DELETE SET NULL,
     heater_initial      REAL    NOT NULL DEFAULT 60.0,
     fan_initial         REAL    NOT NULL DEFAULT 50.0,
@@ -115,9 +116,9 @@ SCHEMA_DDL = [
 # ── API ──────────────────────────────────────────────────────────────
 
 def ensure_schema(db_path: str) -> None:
-    """创建数据库表结构（如果不存在）
+    """创建数据库表结构并执行增量迁移
 
-    幂等操作，多次调用安全。只新增缺失的表，不修改已有表。
+    幂等操作，多次调用安全。
     """
     conn = get_connection(db_path)
     for ddl in SCHEMA_DDL:
@@ -126,12 +127,34 @@ def ensure_schema(db_path: str) -> None:
             if stmt:
                 conn.execute(stmt)
 
+    current_ver = get_schema_version(db_path)
+
+    # ── 增量迁移 ──────────────────────────────────────────────────
+    if current_ver is not None and current_ver < 3:
+        _migrate_v2_to_v3(conn)
+
+    # 写入当前 schema 版本
     conn.execute(
         "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
         (SCHEMA_VERSION,),
     )
     conn.commit()
     logger.info(f"数据库 schema 已就绪 (v{SCHEMA_VERSION}): {db_path}")
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v2 → v3: 为 roast_session 表添加 is_favorite 列"""
+    try:
+        conn.execute(
+            "ALTER TABLE roast_session ADD COLUMN is_favorite "
+            "INTEGER NOT NULL DEFAULT 0"
+        )
+        logger.info("迁移 v2→v3: 已添加 roast_session.is_favorite 列")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" in str(e).lower():
+            logger.info("迁移 v2→v3: is_favorite 列已存在，跳过")
+        else:
+            raise
 
 
 def get_schema_version(db_path: str) -> Optional[int]:

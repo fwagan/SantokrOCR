@@ -185,19 +185,65 @@ class Dashboard(tk.Tk):
         open_slog_viewer(self, session_id=session_id)
 
     def _on_grid_right_click(self, selected_ids, x_root, y_root):
-        """右键菜单：对比选中会话"""
-        if len(selected_ids) < 2:
-            return
+        """右键菜单：回退到原始数据、星标、对比曲线"""
         ids = list(selected_ids)
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label=f"对比 {len(ids)} 条曲线",
-                         command=lambda: self._open_comparer(ids))
+        is_multi = len(ids) >= 2
+
+        # 回退到原始数据（多选时 disabled）
+        menu.add_command(label="回退到原始数据",
+                         command=lambda: self._revert_to_raw(ids))
+        if is_multi:
+            menu.entryconfig("回退到原始数据", state="disabled")
+
+        # 星标（多选时 disabled）
+        if is_multi:
+            fav_label = "星标"
+        else:
+            fav_label = "取消星标" if self._session_repo.load(ids[0]).get('is_favorite') else "星标"
+        menu.add_command(label=fav_label,
+                         command=lambda: self._toggle_favorite(ids))
+        if is_multi:
+            menu.entryconfig(fav_label, state="disabled")
+
+        # 对比曲线（仅多选时显示）
+        if is_multi:
+            menu.add_separator()
+            menu.add_command(label=f"对比 {len(ids)} 条曲线",
+                             command=lambda: self._open_comparer(ids))
+
         menu.tk_popup(x_root, y_root)
 
     def _open_comparer(self, session_ids):
         """打开 SlogComparer（多选会话对比）"""
         from ui.slog_comparer import SlogComparer
         SlogComparer(self, session_ids=list(session_ids))
+
+    def _revert_to_raw(self, ids):
+        """回退到原始数据：确认 → 更新 DB → 刷新左右 grid"""
+        if not tk.messagebox.askyesno("确认",
+                                      "确定要将选中记录回退到原始数据吗？"):
+            return
+        for sid in ids:
+            session = self._session_repo.load(sid)
+            if session is None:
+                continue
+            updates: dict = {'is_raw_data': 1}
+            if not session.get('notes', '').strip():
+                updates['notes'] = self._session_repo.get_display_name(sid)
+            self._session_repo.update_fields(sid, **updates)
+        self._session_grid.refresh()
+        self._load_raw_data()
+
+    def _toggle_favorite(self, ids):
+        """切换星标状态"""
+        for sid in ids:
+            session = self._session_repo.load(sid)
+            if session is None:
+                continue
+            new_val = 0 if session.get('is_favorite') else 1
+            self._session_repo.update_fields(sid, is_favorite=new_val)
+        self._session_grid.refresh()
 
     def _on_raw_data_double_click(self, event):
         """打开 RecognitionWindow(mode='raw_data')"""

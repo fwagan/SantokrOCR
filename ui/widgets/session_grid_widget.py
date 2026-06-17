@@ -101,7 +101,7 @@ class SessionGridWidget(ttk.Frame):
         container = ttk.Frame(self)
         container.pack(fill='both', expand=True)
 
-        columns = ('roast_date', 'roast_time', 'bean_name', 'variety',
+        columns = ('is_favorite', 'roast_date', 'roast_time', 'bean_name', 'variety',
                    'origin', 'roast_no')
         self._grid_tree = ttk.Treeview(
             container, columns=columns, show='headings',
@@ -109,6 +109,7 @@ class SessionGridWidget(ttk.Frame):
         )
 
         col_config = [
+            ('is_favorite', '星标', 60),
             ('roast_date', '烘焙日期', 90),
             ('roast_time', '烘焙时间', 70),
             ('bean_name', '豆名', 120),
@@ -119,6 +120,8 @@ class SessionGridWidget(ttk.Frame):
         for col, text, width in col_config:
             self._grid_tree.heading(col, text=text)
             self._grid_tree.column(col, width=width, minwidth=60)
+
+        self._grid_tree.column('is_favorite', anchor='center', stretch=False)
 
         scroll = ttk.Scrollbar(container, orient='vertical',
                                command=self._grid_tree.yview)
@@ -263,6 +266,7 @@ class SessionGridWidget(ttk.Frame):
 
             item_id = s.get('session_id', '') or str(count)
             self._grid_tree.insert('', 'end', iid=item_id, values=(
+                '★' if s.get('is_favorite') else '☆',
                 s.get('roast_date', '') or '',
                 s.get('roast_time', '') or '',
                 s.get('bean_name', ''),
@@ -297,8 +301,15 @@ class SessionGridWidget(ttk.Frame):
             self._on_activate(selection[0])
 
     def _on_right_click(self, event):
-        selected = self._grid_tree.selection()
-        if len(selected) < 2:
+        """右键弹出上下文菜单（支持单选）"""
+        iid = self._grid_tree.identify_row(event.y)
+        if not iid:
             return
+        selected = set(self._grid_tree.selection())
+        if iid in selected:
+            pass  # 保留当前多选
+        else:
+            self._grid_tree.selection_set(iid)  # 仅选中点击行
+            selected = {iid}
         if self._on_context_menu:
-            self._on_context_menu(selected, event.x_root, event.y_root)
+            self._on_context_menu(list(selected), event.x_root, event.y_root)
