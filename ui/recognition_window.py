@@ -1441,6 +1441,10 @@ class RecognitionWindow(tk.Toplevel):
         self.events_tree.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
         tree_scroll.pack(side="left", fill="y", pady=5)
 
+        # 事件 item → event dict 映射（双击定位用）
+        self._events_item_map = {}
+        # 双击打开帧查看器
+        self.events_tree.bind("<Double-1>", self.on_event_double_click)
         # 右键菜单
         self.events_context_menu = tk.Menu(self.events_frame, tearoff=0)
         self.events_context_menu.add_command(label="删除选中事件", command=self.delete_selected_event)
@@ -1454,12 +1458,36 @@ class RecognitionWindow(tk.Toplevel):
                 self.events_tree.selection_set(item)
             self.events_context_menu.post(event.x_root, event.y_root)
 
+    def on_event_double_click(self, event):
+        """双击事件：打开该事件对应帧的帧查看器"""
+        selection = self.events_tree.selection()
+        if not selection:
+            return
+        item = selection[0]
+        ev = self._events_item_map.get(item)
+        if ev is None:
+            return
+
+        frame = ev.get('frame')
+        if frame is None:
+            return
+
+        # 在 results 中查找该帧对应的识别结果
+        data = {}
+        for r in self.results:
+            if r.get('frame') == frame:
+                data = r
+                break
+
+        self.open_frame_viewer(frame, ev.get('time', 0), data)
+
     def refresh_events_display(self):
         """刷新事件列表显示"""
         if not hasattr(self, 'events_tree'):
             return
         for item in self.events_tree.get_children():
             self.events_tree.delete(item)
+        self._events_item_map.clear()
 
         for ev in sorted(self.events, key=lambda x: x.get('time', 0)):
             t = ev.get('time', 0)
@@ -1470,8 +1498,9 @@ class RecognitionWindow(tk.Toplevel):
             display_time_str = f"{mins:02d}:{secs:02d}:{int((t % 1) * 1000):03d}"
 
             value_str = f"{int(ev['value'])}%" if ev.get('value') is not None else "-"
-            self.events_tree.insert('', 'end',
+            item = self.events_tree.insert('', 'end',
                 values=(time_str, ev['type'], value_str, display_time_str))
+            self._events_item_map[item] = ev
 
     def delete_selected_event(self):
         """删除选中事件（支持多选）"""
