@@ -138,8 +138,15 @@ class RealTimeProcessCache:
         return count
 
     def export_as_srlog(self, output_path, results, rois, interval=0.25,
-                        rotate_angle=5, source="", events=None):
-        """Export current session as .srlog (ZIP) file."""
+                        rotate_angle=5, source="", events=None,
+                        progress_callback=None):
+        """Export current session as .srlog (ZIP) file.
+
+        Args:
+            output_path: 输出文件路径
+            progress_callback: 进度回调 callback(current, total)，
+                透传给 SrlogSerializer.write
+        """
         if not self._session_dir or not os.path.isdir(self._session_dir):
             raise RuntimeError("No session to export")
 
@@ -152,6 +159,7 @@ class RealTimeProcessCache:
             source=source,
             events=events,
             frames_dir=self._session_dir,
+            progress_callback=progress_callback,
         )
 
     @staticmethod

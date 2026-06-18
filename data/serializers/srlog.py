@@ -111,6 +111,7 @@ class SrlogSerializer:
         source: str = "",
         events: Optional[List[dict]] = None,
         frames_dir: Optional[str] = None,
+        progress_callback: Optional[callable] = None,
     ) -> None:
         """将会话数据写入 .srlog (ZIP) 文件
 
@@ -123,6 +124,8 @@ class SrlogSerializer:
             source: 来源描述
             events: 事件列表（可选）
             frames_dir: 帧图像目录路径（可选，目录内的 *.jpg 会被打包）
+            progress_callback: 进度回调函数 callback(current, total)，
+                在帧打包循环中调用，可用于后台线程进度更新
         """
         events = events or []
 
@@ -144,11 +147,21 @@ class SrlogSerializer:
             zf.writestr('results.json', json.dumps(results, indent=2, ensure_ascii=False))
 
             if frames_dir and os.path.isdir(frames_dir):
-                for fname in sorted(os.listdir(frames_dir)):
+                frame_files = sorted(os.listdir(frames_dir))
+                total_frames = len([f for f in frame_files if f.endswith('.jpg')])
+                last_pct = -1
+                frame_idx = 0
+                for fname in frame_files:
                     if not fname.endswith('.jpg'):
                         continue
                     fpath = os.path.join(frames_dir, fname)
                     zf.write(fpath, f"frames/{fname}")
+                    frame_idx += 1
+                    if progress_callback:
+                        pct = int(frame_idx / max(total_frames, 1) * 100)
+                        if pct != last_pct:
+                            last_pct = pct
+                            progress_callback(frame_idx, total_frames)
 
         logger.info(f".srlog 已写入: {output_path} ({len(results)} 条记录, "
                     f"{len(events)} 个事件)")
