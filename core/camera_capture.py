@@ -54,10 +54,6 @@ class CameraProcessingThread(threading.Thread):
         self._last_valid_temp1: Optional[float] = None
         self._consecutive_invalid_frames: int = 0
 
-        # 失败帧缓存（用于调试，最多10帧）
-        self._failed_frames = []  # [(frame_num, frame_bgr, result_dict), ...]
-        self._failed_frames_lock = threading.Lock()
-
     def reset_temperature_tracking(self) -> None:
         """重置温差异常检测状态（清空数据后调用，避免与清空前温度比较）"""
         self._last_valid_temp1 = None
@@ -190,12 +186,6 @@ class CameraProcessingThread(threading.Thread):
             if self.cache is not None:
                 self.cache.save_frame(frame.copy(), frame_count)
 
-            # 缓存失败帧用于调试（至多10帧，满了不再追加）
-            if ('?' in str(temp1_full) or '?' in str(temp2_text)) and len(self._failed_frames) < 10:
-                with self._failed_frames_lock:
-                    if len(self._failed_frames) < 10:
-                        self._failed_frames.append((frame_count, frame.copy(), dict(result)))
-
             frame_count += 1
 
             # 等待到下一个采样间隔
@@ -228,7 +218,3 @@ class CameraProcessingThread(threading.Thread):
     def is_stopped(self):
         return self._stop_event.is_set()
 
-    def get_failed_frames(self):
-        """返回失败帧缓存列表 [(frame_num, frame_bgr, result_dict), ...]"""
-        with self._failed_frames_lock:
-            return list(self._failed_frames)
