@@ -15,6 +15,7 @@ import cv2
 import time
 import os
 import threading
+import traceback
 from typing import Optional
 import numpy as np
 from PIL import Image, ImageTk
@@ -53,6 +54,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 线程
         self.processing_thread = None
+        self._is_exporting = False  # 导出标志，用于阻止导出中关闭窗口
 
         # 帧缓存
         self._cache = RealTimeProcessCache()
@@ -174,7 +176,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.clear_btn = ttk.Button(top_bar, text="清空已识别数据", command=self._clear_all_data)
         self.clear_btn.pack(side="left", padx=4)
 
-        ttk.Button(top_bar, text="导出数据", command=self._export_data).pack(side="left", padx=(4, 0))
         self.export_session_btn = ttk.Button(top_bar, text="导出会话", command=self._export_session, state="disabled")
         self.export_session_btn.pack(side="left", padx=4)
 
@@ -1153,23 +1154,86 @@ class CameraRealtimeWindow(tk.Toplevel):
         if not path:
             return
 
-        try:
-            events = self.stats_panel.events if hasattr(self.stats_panel, 'events') else []
-            self._cache.export_as_srlog(
-                output_path=path,
-                results=self.results,
-                rois=self.rois,
-                interval=float(self.interval_var.get()),
-                rotate_angle=float(self.rotation_var.get()),
-                source=self._get_source_label(),
-                events=events,
-            )
-            self._log(f"会话已导出: {path}")
-            messagebox.showinfo("导出成功", f"会话已保存到:\n{path}", parent=self)
-        except Exception as e:
-            messagebox.showerror("导出失败", str(e), parent=self)
-            import traceback
-            traceback.print_exc()
+        # 在后台线程中执行导出，避免 UI 假死
+        # 先获取所有 UI 状态的快照（后台线程不可访问 tkinter 变量）
+        results = list(self.results)
+        rois = dict(self.rois) if self.rois else {}
+        events = list(self.stats_panel.events) if hasattr(self.stats_panel, 'events') else []
+        interval = float(self.interval_var.get())
+        rotate_angle = float(self.rotation_var.get())
+        source_label = self._get_source_label()
+
+        # 模态进度弹窗
+        progress_win = tk.Toplevel(self)
+        progress_win.title("导出会话")
+        progress_win.transient(self)
+        progress_win.grab_set()
+        progress_win.resizable(False, False)
+
+        ttk.Label(progress_win, text="正在导出会话，请稍候...").pack(padx=20, pady=(10, 5))
+        progress_bar = ttk.Progressbar(progress_win, length=300, mode='determinate')
+        progress_bar.pack(padx=20, pady=5)
+        export_status_label = ttk.Label(progress_win, text="准备中...")
+        export_status_label.pack(padx=20, pady=(0, 10))
+
+        # 禁用关闭按钮，防止导出过程中用户误关闭
+        progress_win.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        center_window(progress_win, 400, 120)
+
+        export_result = [None]  # 用于在后台线程和主线程之间传递结果
+
+        def _progress_callback(current, total):
+            """从后台线程调用，调度到主线程更新 UI"""
+            self.after(0, lambda: _update_progress(current, total))
+
+        def _update_progress(current, total):
+            if not self.winfo_exists():
+                return
+            if not progress_bar.winfo_exists():
+                return
+            if total > 0:
+                progress_bar['maximum'] = total
+                progress_bar['value'] = current
+            export_status_label.config(text=f"正在打包帧... {current}/{total}")
+
+        def _do_export():
+            try:
+                self._cache.export_as_srlog(
+                    output_path=path,
+                    results=results,
+                    rois=rois,
+                    interval=interval,
+                    rotate_angle=rotate_angle,
+                    source=source_label,
+                    events=events,
+                    progress_callback=_progress_callback,
+                )
+                export_result[0] = ("success", path)
+            except Exception as e:
+                export_result[0] = ("error", e)
+                traceback.print_exc()
+
+        def _poll_completion():
+            if not self.winfo_exists():
+                return
+            if export_result[0] is None:
+                self.after(100, _poll_completion)
+                return
+
+            progress_win.destroy()
+            self._is_exporting = False
+
+            status, data = export_result[0]
+            if status == "success":
+                self._log(f"会话已导出: {path}")
+                messagebox.showinfo("导出成功", f"会话已保存到:\n{path}", parent=self)
+            else:
+                messagebox.showerror("导出失败", str(data), parent=self)
+
+        self._is_exporting = True
+        threading.Thread(target=_do_export, daemon=True).start()
+        _poll_completion()
 
     def _save_to_database(self):
         """保存当前会话到数据库（is_raw_data=True）"""
@@ -1231,30 +1295,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._log(f"已保存到数据库: {sid}")
         messagebox.showinfo("保存成功", f"会话已保存到数据库\n{sid}: {name}", parent=self)
 
-    def _export_data(self):
-        """导出数据为.slog（含events）"""
-        if not self.results:
-            messagebox.showwarning("警告", "没有可导出的数据", parent=self)
-            return
-
-        path = filedialog.asksaveasfilename(
-            title="导出数据",
-            defaultextension=".slog",
-            filetypes=[("Slog files", "*.slog"), ("All files", "*.*")],
-            parent=self
-        )
-        if not path:
-            return
-
-        session = {
-            'results': self.results,
-            'events': self.stats_panel.events if hasattr(self.stats_panel, 'events') else [],
-            'heater_initial': self.stats_panel.heater_initial if hasattr(self.stats_panel, 'heater_initial') else 0,
-            'fan_initial': self.stats_panel.fan_initial if hasattr(self.stats_panel, 'fan_initial') else 0,
-        }
-        SlogSerializer.write(path, session)
-        self._log(f"数据已导出: {path}")
-
     def _log(self, message):
         """记录日志（转发到父窗口的log方法）"""
         if hasattr(self.parent, 'log'):
@@ -1278,6 +1318,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _on_closing(self):
         """WM_DELETE_WINDOW 协议：处理线程确认 + 关闭"""
+        if self._is_exporting:
+            messagebox.showinfo("提示", "会话正在导出，请等待完成后再关闭窗口。", parent=self)
+            return
         if self.processing_thread and not self.processing_thread.is_stopped():
             if messagebox.askyesno("确认退出", "实时识别正在运行，确定退出吗？", parent=self):
                 self.processing_thread.stop()
