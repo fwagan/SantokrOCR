@@ -38,6 +38,12 @@ from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
 from ui.ideal_curve_dialog import IdealCurveDialog
 
+# ── 常量 ──
+_PREVIEW_POLL_INTERVAL = 30       # 预览帧轮询间隔（ms）
+_PREVIEW_DISCONNECT_THRESHOLD = 9  # 连续读取失败次数上限，超过则判定摄像头断开
+_PREVIEW_READ_TIMEOUT = 0.5       # 帧读取超时阈值（秒）
+_PREVIEW_RETRY_INTERVAL = 0.1     # 读失败后的重试等待间隔（秒）
+
 
 class CameraRealtimeWindow(tk.Toplevel):
     """实时识别窗口"""
@@ -732,7 +738,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             daemon=True
         )
         self._preview_thread.start()
-        self._preview_after_id = self.after(30, self._preview_poll)
+        self._preview_after_id = self.after(_PREVIEW_POLL_INTERVAL, self._preview_poll)
 
     def _stop_preview(self):
         """停止预览（等待后台线程释放摄像头）"""
@@ -765,15 +771,15 @@ class CameraRealtimeWindow(tk.Toplevel):
                 if not self._preview_thread_running:
                     break
 
-                if not ret or elapsed > 0.5:
+                if not ret or elapsed > _PREVIEW_READ_TIMEOUT:
                     fail_count += 1
                     self._preview_fail_count = fail_count
-                    if fail_count >= 9:
+                    if fail_count >= _PREVIEW_DISCONNECT_THRESHOLD:
                         self._preview_lost = True
                     self._preview_frame_event.set()
-                    if fail_count >= 9:
+                    if fail_count >= _PREVIEW_DISCONNECT_THRESHOLD:
                         break
-                    time.sleep(0.1)
+                    time.sleep(_PREVIEW_RETRY_INTERVAL)
                     continue
 
                 fail_count = 0
@@ -799,12 +805,12 @@ class CameraRealtimeWindow(tk.Toplevel):
             fail = self._preview_fail_count
             if fail > 0:
                 self._show_retry_message(fail)
-                self._preview_after_id = self.after(30, self._preview_poll)
+                self._preview_after_id = self.after(_PREVIEW_POLL_INTERVAL, self._preview_poll)
                 return
             self._clear_retry_message()
             frame = self._preview_frame
             if frame is None:
-                self._preview_after_id = self.after(30, self._preview_poll)
+                self._preview_after_id = self.after(_PREVIEW_POLL_INTERVAL, self._preview_poll)
                 return
             self._display_preview_frame(frame)
             # ROI框叠加（画在canvas上，不修改帧）
@@ -827,7 +833,7 @@ class CameraRealtimeWindow(tk.Toplevel):
                         oy + (roi['y'] + roi['height']) * scale,
                         outline=hex_color, width=2, tags="roi"
                     )
-        self._preview_after_id = self.after(30, self._preview_poll)
+        self._preview_after_id = self.after(_PREVIEW_POLL_INTERVAL, self._preview_poll)
 
     def _show_retry_message(self, count):
         """在预览画布上显示重试提示"""
@@ -835,7 +841,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         ch = self.preview_canvas.winfo_height()
         if cw < 10 or ch < 10:
             return
-        text = f"信号丢失，获取中...({count}/9)"
+        text = f"信号丢失，获取中...({count}/{_PREVIEW_DISCONNECT_THRESHOLD})"
         if self._retry_text_id is None:
             # 第一次创建，先清"无数据"文字
             if self._no_data_text_id:
