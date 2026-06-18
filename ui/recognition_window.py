@@ -1512,43 +1512,20 @@ class RecognitionWindow(tk.Toplevel):
         if not messagebox.askyesno("确认删除", f"确定要删除选中的 {len(selected)} 个事件吗？", parent=self):
             return
 
-        # 先收集所有要删除的索引，避免删除时索引偏移
-        indices_to_delete = set()
+        # 通过 _events_item_map 直接查找事件（与 on_event_double_click 一致的方式）
+        events_to_delete = []
         for item in selected:
-            values = self.events_tree.item(item, 'values')
-            if not values:
-                continue
-            time_str = values[0]  # 时间戳列
-            ev_type = values[1]        # 事件类型列
+            ev = self._events_item_map.get(item)
+            if ev is not None and ev in self.events:
+                events_to_delete.append(ev)
 
-            # 在 events 列表中查找匹配的事件
-            for i, ev in enumerate(self.events):
-                t = ev.get('time', 0)
-                ev_mins = int(t // 60)
-                ev_secs = int(t % 60)
-                ev_time_str = f"{ev_mins:02d}:{ev_secs:02d}"
-                if ev['type'] == ev_type and ev_time_str == time_str:
-                    has_value = values[2] != "-"
-                    if has_value:
-                        val_str = values[2].rstrip('%')
-                        ev_val = ev.get('value')
-                        if ev_val is not None and int(ev_val) == int(val_str):
-                            indices_to_delete.add(i)
-                            break
-                    else:
-                        if ev.get('value') is None:
-                            indices_to_delete.add(i)
-                            break
-
-        # 按索引降序删除，避免偏移
-        deleted_events = []
-        for idx in sorted(indices_to_delete, reverse=True):
-            deleted_events.append(self.events[idx])
-            del self.events[idx]
+        # 从 self.events 中移除
+        for ev in events_to_delete:
+            self.events.remove(ev)
 
         # 从 DB 删除（raw_data 模式直接落库）
         if self._rw_session_id:
-            for ev in deleted_events:
+            for ev in events_to_delete:
                 try:
                     self._event_repo.delete_event(
                         self._rw_session_id, ev.get('type', ''), ev.get('frame', 0))
@@ -1557,7 +1534,7 @@ class RecognitionWindow(tk.Toplevel):
 
         self.refresh_events_display()
         self.update_cache()
-        self.log(f"已删除 {len(indices_to_delete)} 个事件")
+        self.log(f"已删除 {len(events_to_delete)} 个事件")
 
 if __name__ == "__main__":
     root = tk.Tk()
