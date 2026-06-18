@@ -13,6 +13,7 @@ from utils.signal import Signal
 _NONE_FRAME_RETRY_INTERVAL = 0.05  # 取到空帧时的重试间隔（秒）
 _TEMP_DIFF_THRESHOLD_DEFAULT = 3.0  # 温差异常检测默认阈值（℃/帧）
 _MAX_EFFECTIVE_GAP = 4             # 温差异常检测最大有效gap，防止长时间遮挡后阈值过大（4帧×3℃=12℃）
+_PAUSE_CHECK_INTERVAL = 0.1        # 暂停循环唤醒检查间隔（秒）
 
 
 class CameraProcessingThread(threading.Thread):
@@ -77,7 +78,7 @@ class CameraProcessingThread(threading.Thread):
         while not self._stop_event.is_set():
             # 处理暂停
             while not self._pause_event.is_set() and not self._stop_event.is_set():
-                time.sleep(0.1)
+                time.sleep(_PAUSE_CHECK_INTERVAL)
 
             if self._stop_event.is_set():
                 break
