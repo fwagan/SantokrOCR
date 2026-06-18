@@ -33,9 +33,10 @@ class Dashboard(tk.Tk):
         try:
             if getattr(sys, 'frozen', False):
                 base_path = sys._MEIPASS
+                icon_path = os.path.join(base_path, 'icon.ico')
             else:
                 base_path = os.path.dirname(os.path.abspath(__file__))
-            icon_path = os.path.join(base_path, '..', 'icon.ico')
+                icon_path = os.path.join(base_path, '..', 'icon.ico')
             if os.path.exists(icon_path):
                 self.iconbitmap(default=icon_path)
         except Exception:
