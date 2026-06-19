@@ -91,9 +91,18 @@ def execute_with_lock(db_path: str, callback):
 
     Returns:
         callback 的返回值
+
+    Note:
+        如果 callback 抛出异常，会自动回滚当前事务，
+        避免事务悬空在下一次复用同一连接时造成不一致。
     """
     conn = get_connection(db_path)
     with _global_lock:
         conn_lock = _connections[db_path][1]
     with conn_lock:
-        return callback(conn)
+        try:
+            return callback(conn)
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
