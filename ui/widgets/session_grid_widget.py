@@ -54,6 +54,7 @@ class SessionGridWidget(ttk.Frame):
         self._date_from_var = tk.StringVar()
         self._date_to_var = tk.StringVar()
         self._bean_var = tk.StringVar(value='全部')
+        self._only_starred_var = tk.BooleanVar(value=False)
 
         # 创建 UI
         self._create_filter_bar()
@@ -91,6 +92,9 @@ class SessionGridWidget(ttk.Frame):
         self._bean_combo.pack(side='left', padx=2)
 
         self._populate_bean_combo()
+
+        ttk.Checkbutton(frame, text='仅星标',
+                        variable=self._only_starred_var).pack(side='left', padx=(10, 2))
 
         ttk.Button(frame, text='筛选', command=self.refresh).pack(
             side='left', padx=(10, 2))
@@ -251,7 +255,8 @@ class SessionGridWidget(ttk.Frame):
 
         sessions = self._session_repo.list_filtered(
             date_from=date_from, date_to=date_to,
-            bean_id=bean_id, is_raw_data=False)
+            bean_id=bean_id, is_raw_data=False,
+            is_favorite=True if self._only_starred_var.get() else None)
         count = 0
 
         for s in sessions:
@@ -284,6 +289,7 @@ class SessionGridWidget(ttk.Frame):
         self._date_from_var.set('')
         self._date_to_var.set('')
         self._bean_var.set('全部')
+        self._only_starred_var.set(False)
         for item in self._grid_tree.get_children():
             self._grid_tree.delete(item)
         if self._on_status:

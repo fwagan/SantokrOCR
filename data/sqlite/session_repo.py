@@ -140,8 +140,12 @@ class SqliteSessionRepository:
 
     def list_filtered(self, date_from: str = '', date_to: str = '',
                        bean_id: Optional[int] = None,
-                       is_raw_data: bool = False) -> List[dict]:
-        """按日期和豆名筛选会话，JOIN bean 表返回富化结果
+                       is_raw_data: bool = False,
+                       is_favorite: Optional[bool] = None) -> List[dict]:
+        """按日期、豆名和收藏状态筛选会话，JOIN bean 表返回富化结果
+
+        Args:
+            is_favorite: 若不为 None，则按收藏状态筛选（True=仅收藏，False=仅非收藏）
 
         Returns:
             包含 bean 信息的 dict 列表（含 bean_name, bean_variety, bean_origin）
@@ -168,6 +172,9 @@ class SqliteSessionRepository:
             if bean_id is not None:
                 query += " AND rs.bean_id = ?"
                 params.append(bean_id)
+            if is_favorite is not None:
+                query += " AND rs.is_favorite = ?"
+                params.append(1 if is_favorite else 0)
 
             query += " ORDER BY rs.roast_date DESC, rs.roast_time DESC, rs.created_at DESC"
             rows = conn.execute(query, params).fetchall()
