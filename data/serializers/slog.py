@@ -20,13 +20,22 @@ import logging
 import os
 
 from data.json._utils import atomic_write
-from data.types import EventType
+from data.types import EventType, RoastSession
 
 logger = logging.getLogger(__name__)
 
 _CURRENT_VERSION = 1
 _DEFAULT_HEATER_INITIAL = 60.0
 _DEFAULT_FAN_INITIAL = 50.0
+
+
+def _try_float(v):
+    if v is None or v == '':
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
 
 # 必需事件列表（缺少任一事件时 read() 发出警告）
 _REQUIRED_EVENTS = [
@@ -42,18 +51,12 @@ class SlogSerializer:
     # ── 读取 ──
 
     @classmethod
-    def read(cls, path: str) -> dict:
-        """读取 .slog 文件，返回符合 RoastSession 结构的 dict（含 version 信息）
+    def read(cls, path: str) -> RoastSession:
+        """读取 .slog 文件，返回 RoastSession 兼容 dict
 
-        Returns:
-            {
-                'results': [...],
-                'events': [...],
-                'heater_initial': float,
-                'fan_initial': float,
-                'roast_info': {...},   # 可能为空 dict
-                '_version': int,       # 文件原始版本号（内部使用）
-            }
+        从 roast_info 中提取常用字段（roast_date、roast_time、notes 等）
+        并映射到 RoastSession 字段名（density→density_override 等）。
+        额外返回 _version（原始版本号）、bean_name。
 
         Raises:
             FileNotFoundError: 文件不存在
@@ -90,16 +93,29 @@ class SlogSerializer:
             logger.warning(f".slog 文件 'roast_info' 字段格式异常: {type(roast_info).__name__}")
             roast_info = {}
 
-        session = {
-            'results': results,
-            'events': events,
+        session: RoastSession = {
+            'session_id': '',
+            'is_raw_data': False,
+            'is_favorite': False,
+            'bean_id': None,
             'heater_initial': data.get('heater_initial', _DEFAULT_HEATER_INITIAL),
             'fan_initial': data.get('fan_initial', _DEFAULT_FAN_INITIAL),
-            'roast_info': roast_info,
-            '_version': version,
+            'roast_date': roast_info.get('roast_date', ''),
+            'roast_time': roast_info.get('roast_time', ''),
+            'roast_no': roast_info.get('roast_no', ''),
+            'roast_total': roast_info.get('roast_total', ''),
+            'density_override': _try_float(roast_info.get('density')),
+            'moisture_override': _try_float(roast_info.get('moisture')),
+            'green_weight': _try_float(roast_info.get('green_weight')),
+            'roasted_weight': _try_float(roast_info.get('roasted_weight')),
+            'notes': roast_info.get('notes', ''),
+            'results': results,
+            'events': events,
         }
 
         cls._check_required_events(session, path)
+        session['_version'] = version
+        session['bean_name'] = roast_info.get('bean_name', '')
         return session
 
     @classmethod
