@@ -24,31 +24,21 @@ def _get_db_path() -> str:
 
 
 def _build_roast_session(data: dict, session_id: str) -> dict:
-    ri = data.get('roast_info') or {}
     return {
         'session_id': session_id,
         'is_raw_data': False,
         'heater_initial': data.get('heater_initial', 60.0),
         'fan_initial': data.get('fan_initial', 50.0),
-        'density_override': _try_float(ri.get('density')),
-        'moisture_override': _try_float(ri.get('moisture')),
-        'roast_date': ri.get('roast_date', ''),
-        'roast_time': ri.get('roast_time', ''),
-        'roast_no': ri.get('roast_no', ''),
-        'roast_total': ri.get('roast_total', ''),
-        'green_weight': _try_float(ri.get('green_weight')),
-        'roasted_weight': _try_float(ri.get('roasted_weight')),
-        'notes': ri.get('notes', ''),
+        'density_override': data.get('density_override'),
+        'moisture_override': data.get('moisture_override'),
+        'roast_date': data.get('roast_date', ''),
+        'roast_time': data.get('roast_time', ''),
+        'roast_no': data.get('roast_no', ''),
+        'roast_total': data.get('roast_total', ''),
+        'green_weight': data.get('green_weight'),
+        'roasted_weight': data.get('roasted_weight'),
+        'notes': data.get('notes', ''),
     }
-
-
-def _try_float(v):
-    if v is None or v == '':
-        return None
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return None
 
 
 def import_slog(slog_path: str, db_path: str) -> str:

@@ -339,39 +339,40 @@ class SlogViewer(tk.Toplevel):
         )
 
         # 加载烘焙信息
-        roast_info = data.get('roast_info', {})
-        for key, var in self.roast_vars.items():
-            var.set(roast_info.get(key, ''))
-        # 解析日期为年/月/日
-        date_str = roast_info.get('roast_date', '')
+        self.roast_vars['roast_no'].set(data.get('roast_no', ''))
+        self.roast_vars['roast_total'].set(data.get('roast_total', ''))
+        self.roast_vars['green_weight'].set(str(data.get('green_weight') or ''))
+        self.roast_vars['roasted_weight'].set(str(data.get('roasted_weight') or ''))
+
+        date_str = data.get('roast_date', '')
         if date_str:
             parts = date_str.split('-')
             if len(parts) == 3:
                 self.roast_vars['roast_date_year'].set(parts[0])
                 self.roast_vars['roast_date_month'].set(parts[1])
                 self.roast_vars['roast_date_day'].set(parts[2])
-        # 解析时间为时/分
-        time_str = roast_info.get('roast_time', '')
+        time_str = data.get('roast_time', '')
         if time_str:
             parts = time_str.split(':')
             if len(parts) == 2:
                 self.roast_vars['roast_time_hour'].set(parts[0])
                 self.roast_vars['roast_time_minute'].set(parts[1])
         self.roast_notes.delete('1.0', tk.END)
-        self.roast_notes.insert('1.0', roast_info.get('notes', ''))
+        self.roast_notes.insert('1.0', data.get('notes', ''))
 
         # 通过 bean_name 加载生豆信息
-        bean_name = roast_info.get('bean_name', '')
+        bean_name = data.get('bean_name', '')
         self.bean_name_var.set(bean_name)
         if bean_name:
             bean = next((b for b in self._beans_data if b['name'] == bean_name), None)
             if bean:
                 self._apply_bean_info(bean)
-                # density/moisture override from slog
-                if roast_info.get('density'):
-                    self.roast_vars['density'].set(roast_info['density'])
-                if roast_info.get('moisture'):
-                    self.roast_vars['moisture'].set(roast_info['moisture'])
+                density = data.get('density_override')
+                if density is not None:
+                    self.roast_vars['density'].set(str(density))
+                moisture = data.get('moisture_override')
+                if moisture is not None:
+                    self.roast_vars['moisture'].set(str(moisture))
             else:
                 messagebox.showwarning("警告", f"找不到生豆信息: {bean_name}", parent=self)
 
