@@ -81,6 +81,7 @@ class SlogViewer(tk.Toplevel):
         self._bean_manager = None
         self.roast_vars = {}
         self._create_roast_vars()
+        self.roast_favorite_var = tk.BooleanVar(value=False)
 
         # 创建菜单栏
         self.create_menu()
@@ -298,6 +299,12 @@ class SlogViewer(tk.Toplevel):
         ttk.Label(row, text="备注:", width=12, anchor="w").pack(side="left")
         self.roast_notes = tk.Text(row, height=4, width=20)
         self.roast_notes.pack(side="left", fill="x", expand=True, padx=(0, 2))
+
+        # 收藏（星标）
+        fav_row = ttk.Frame(roast_frame)
+        fav_row.pack(fill="x", padx=6, pady=4)
+        ttk.Checkbutton(fav_row, text="收藏（星标）",
+                        variable=self.roast_favorite_var).pack(side="left")
 
     def load_file(self, file_path):
         """从文件加载数据"""
@@ -553,6 +560,8 @@ class SlogViewer(tk.Toplevel):
         # notes
         self.roast_notes.delete('1.0', tk.END)
         self.roast_notes.insert('1.0', session.get('notes', ''))
+        # 收藏
+        self.roast_favorite_var.set(session.get('is_favorite', False))
 
     def save_to_database(self):
         """保存当前曲线/烘焙信息到数据库"""
@@ -605,6 +614,7 @@ class SlogViewer(tk.Toplevel):
             'green_weight': self._try_float(roast_info.get('green_weight')),
             'roasted_weight': self._try_float(roast_info.get('roasted_weight')),
             'notes': self.roast_notes.get('1.0', tk.END).strip(),
+            'is_favorite': self.roast_favorite_var.get(),
         }
 
         # 原子写入

@@ -372,18 +372,18 @@ class SlogComparer(tk.Toplevel):
                                  command=lambda i=idx: self._on_visible_toggled(i))
             cb.pack(side="left", padx=(2, 5))
 
-            # 文件名（显示短名称）
-            name_label = ttk.Label(row, text=slog['name'], width=30, anchor="w")
-            name_label.pack(side="left", padx=(0, 5), fill="x", expand=True)
-
-            # 颜色下拉
+            # 颜色下拉（靠右）
             color_var = slog['color']
             color_cb = ttk.Combobox(row, values=COLOR_NAMES, state="readonly",
                                      width=8)
             color_cb.set(color_var.get())
             color_cb.bind('<<ComboboxSelected>>',
                           lambda e, i=idx: self._on_color_changed(i, e.widget))
-            color_cb.pack(side="left", padx=(0, 2))
+            color_cb.pack(side="right", padx=(0, 10))
+
+            # 文件名（占据中间剩余空间）
+            name_label = ttk.Label(row, text=slog['name'], anchor="w")
+            name_label.pack(side="left", padx=(0, 5), fill="x", expand=True)
 
             # 右键菜单
             name_label.bind('<Button-3>',
@@ -513,6 +513,9 @@ class SlogComparer(tk.Toplevel):
             'name': fname,
             'visible': tk.BooleanVar(value=True),
             'color': tk.StringVar(value=COLOR_NAMES[color_idx]),
+            'is_favorite': False,
+            'roast_date': '',
+            'roast_time': '',
             'results': results,
             'events': events,
             'heater_initial': heater_initial,
@@ -569,12 +572,17 @@ class SlogComparer(tk.Toplevel):
             return
 
         name = self._session_repo.get_display_name(session_id)
+        if session.get('is_favorite'):
+            name = f'★ {name}'
 
         color_idx = len(self.slogs) % len(COLOR_MAP)
         slog_data = {
             'path': session_id,
             'name': name,
             'visible': tk.BooleanVar(value=True),
+            'is_favorite': session.get('is_favorite', False),
+            'roast_date': session.get('roast_date', ''),
+            'roast_time': session.get('roast_time', ''),
             'color': tk.StringVar(value=COLOR_NAMES[color_idx]),
             'results': results,
             'events': events,
@@ -596,8 +604,16 @@ class SlogComparer(tk.Toplevel):
 
         self._process_slog(slog_data)
         self.slogs.append(slog_data)
+        self._sort_slogs()
         self._rebuild_slog_list()
         self._on_refresh()
+
+    def _sort_slogs(self):
+        """按星标→日期→时间排序（星标优先，日期/时间降序）"""
+        def _sort_key(s):
+            fav = 0 if not s.get('is_favorite') else 1
+            return (fav, s.get('roast_date', ''), s.get('roast_time', ''))
+        self.slogs.sort(key=_sort_key, reverse=True)
 
     def _validate_required_events(self, events):
         """校验必需事件是否存在"""
