@@ -37,6 +37,11 @@ from data.sqlite.bean_repo import SqliteBeanRepository
 from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
 from ui.ideal_curve_dialog import IdealCurveDialog
+from ui.modbus_config_dialog import ModbusConfigDialog
+from core.modbus_config import (load_modbus_config, save_modbus_config,
+                                 resolve_device_port, probe_device,
+                                 auto_detect_device)
+from core.modbus_reader import ModbusReader
 
 # ── 常量 ──
 _PREVIEW_POLL_INTERVAL = 30       # 预览帧轮询间隔（ms）
@@ -57,12 +62,16 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.rois = None
         self.results = []
         self.extractor = VideoDigitExtractor()
+        self._data_source = tk.StringVar(value="modbus")  # "camera" | "modbus"
 
         # 线程
         self.processing_thread = None
+        self._modbus_reader = None
+        self._source = None  # 当前活跃的 TemperatureDataSource
         self._is_exporting = False  # 导出标志，用于阻止导出中关闭窗口
+        self._paused_elapsed = 0.0
 
-        # 帧缓存
+        # 帧缓存（仅摄像头模式）
         self._cache = RealTimeProcessCache()
 
 
@@ -90,8 +99,12 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._preview_lost = False
         self._preview_fail_count = 0
 
+        # Modbus 预览轮询 + 配置缓存
+        self._modbus_preview_after_id = None
+        self._modbus_cfg = {}
+
         # 窗口设置（自适应屏幕90%，不超过3200x1900）
-        self.title("实时识别 - 摄像头")
+        self.title("实时识别 - 有线传输")
         sw = self.winfo_screenwidth()
         sh = self.winfo_screenheight()
         w = min(3200, int(sw * 0.9))
@@ -109,11 +122,10 @@ class CameraRealtimeWindow(tk.Toplevel):
         # 延迟到窗口映射后按真实DPI设fig尺寸并重绘
         self.after_idle(self._fit_chart)
 
-        # 启动预览
-        self._start_preview()
-
-        # 自动检测并选择第一个可用摄像头
-        self._auto_select_first_camera()
+        # 默认有线传输，仅在摄像头模式时启动预览
+        if self._data_source.get() == "camera":
+            self._start_preview()
+            self._auto_select_first_camera()
 
         # 后台清理旧缓存会话
         threading.Thread(target=RealTimeProcessCache.cleanup_old_sessions,
@@ -145,61 +157,106 @@ class CameraRealtimeWindow(tk.Toplevel):
         top_bar = ttk.Frame(self, padding=8)
         top_bar.pack(fill="x")
 
-        # 数据源选择
+        # 数据源切换（有线传输在前，摄像头在后）
         ttk.Label(top_bar, text="数据源:").pack(side="left", padx=(0, 4))
-        ttk.Button(top_bar, text="刷新数据源", command=self._detect_cameras).pack(side="left", padx=(0, 4))
+        self._modbus_rb = ttk.Radiobutton(top_bar, text="有线传输",
+                                           variable=self._data_source, value="modbus",
+                                           command=self._on_data_source_changed)
+        self._modbus_rb.pack(side="left", padx=(0, 2))
+        self._camera_rb = ttk.Radiobutton(top_bar, text="摄像头",
+                                           variable=self._data_source, value="camera",
+                                           command=self._on_data_source_changed)
+        self._camera_rb.pack(side="left", padx=(0, 8))
+
+        # ── 摄像头特有控件 ──
+        self._camera_ctrl_frame = ttk.Frame(top_bar)
+        self._camera_ctrl_frame.pack(side="left")
+
+        self._camera_detect_btn = ttk.Button(self._camera_ctrl_frame, text="刷新数据源",
+                                              command=self._detect_cameras)
+        self._camera_detect_btn.pack(side="left", padx=(0, 2))
         self.source_var = tk.StringVar()
-        self.source_combo = ttk.Combobox(top_bar, textvariable=self.source_var,
+        self.source_combo = ttk.Combobox(self._camera_ctrl_frame, textvariable=self.source_var,
                                           state="readonly", width=30)
-        self.source_combo.pack(side="left", padx=4)
+        self.source_combo.pack(side="left", padx=2)
         self.source_combo.bind("<<ComboboxSelected>>", self._on_source_changed)
 
-        # 选择ROI按钮（临时：点击时保存 cProfile dump）
-        ttk.Button(top_bar, text="选择ROI", command=self._select_roi).pack(side="left", padx=8)
+        ttk.Button(self._camera_ctrl_frame, text="选择ROI",
+                   command=self._select_roi).pack(side="left", padx=8)
         self.roi_status_var = tk.StringVar(value="未配置")
-        ttk.Label(top_bar, textvariable=self.roi_status_var, width=16, relief="sunken", padding=3).pack(side="left", padx=4)
+        ttk.Label(self._camera_ctrl_frame, textvariable=self.roi_status_var,
+                  width=16, relief="sunken", padding=3).pack(side="left", padx=4)
+
+        # 旋转角度（摄像头特异）
+        ttk.Label(self._camera_ctrl_frame, text="旋转角度:").pack(side="left", padx=(12, 4))
+        self.rotation_var = tk.StringVar(value="5")
+        ttk.Entry(self._camera_ctrl_frame, textvariable=self.rotation_var,
+                  width=5).pack(side="left", padx=4)
+
+        # ── Modbus 特有控件 ──
+        self._modbus_ctrl_frame = ttk.Frame(top_bar)
+        # 默认隐藏，切换到 Modbus 时显示
+        self._modbus_ctrl_frame.pack_forget()
+
+        ttk.Button(self._modbus_ctrl_frame, text="⚙ 设备配置",
+                   command=self._open_modbus_config).pack(side="left")
+
+        # ── 公共控件（两模式共有） ──
+        common_frame = ttk.Frame(top_bar)
+        common_frame.pack(side="left", padx=(8, 0))
 
         # 采样间隔
-        ttk.Label(top_bar, text="采样间隔(s):").pack(side="left", padx=(16, 4))
-        self.interval_var = tk.StringVar(value="0.25")
-        ttk.Entry(top_bar, textvariable=self.interval_var, width=6).pack(side="left", padx=4)
+        ttk.Label(common_frame, text="采样间隔(s):").pack(side="left", padx=(0, 4))
+        self.interval_var = tk.StringVar(value="1.0")
+        ttk.Entry(common_frame, textvariable=self.interval_var, width=6).pack(side="left", padx=4)
 
-        # 旋转角度
-        ttk.Label(top_bar, text="旋转角度:").pack(side="left", padx=(12, 4))
-        self.rotation_var = tk.StringVar(value="5")
-        ttk.Entry(top_bar, textvariable=self.rotation_var, width=5).pack(side="left", padx=4)
+        # 操作按钮
+        self.start_btn = ttk.Button(common_frame, text="开始实时识别",
+                                     command=self._start_realtime, state="disabled")
+        self.start_btn.pack(side="left", padx=(4, 2))
 
-        # 操作按钮（旋转角度右侧）
-        self.start_btn = ttk.Button(top_bar, text="开始实时识别", command=self._start_realtime, state="disabled")
-        self.start_btn.pack(side="left", padx=(12, 4))
+        self.pause_btn = ttk.Button(common_frame, text="暂停",
+                                     command=self._pause_realtime, state="disabled")
+        self.pause_btn.pack(side="left", padx=2)
 
-        self.pause_btn = ttk.Button(top_bar, text="暂停", command=self._pause_realtime, state="disabled")
-        self.pause_btn.pack(side="left", padx=4)
+        self.stop_btn = ttk.Button(common_frame, text="停止",
+                                    command=self._stop_realtime, state="disabled")
+        self.stop_btn.pack(side="left", padx=2)
 
-        self.stop_btn = ttk.Button(top_bar, text="停止", command=self._stop_realtime, state="disabled")
-        self.stop_btn.pack(side="left", padx=4)
+        self.clear_btn = ttk.Button(common_frame, text="清空已识别数据",
+                                     command=self._clear_all_data)
+        self.clear_btn.pack(side="left", padx=2)
 
-        self.clear_btn = ttk.Button(top_bar, text="清空已识别数据", command=self._clear_all_data)
-        self.clear_btn.pack(side="left", padx=4)
+        self.export_session_btn = ttk.Button(common_frame, text="导出会话",
+                                              command=self._export_session, state="disabled")
+        self.export_session_btn.pack(side="left", padx=2)
 
-        self.export_session_btn = ttk.Button(top_bar, text="导出会话", command=self._export_session, state="disabled")
-        self.export_session_btn.pack(side="left", padx=4)
+        self.save_db_btn = ttk.Button(common_frame, text="保存会话到数据库",
+                                       command=self._save_to_database, state="disabled")
+        self.save_db_btn.pack(side="left", padx=2)
 
-        self.save_db_btn = ttk.Button(top_bar, text="保存会话到数据库", command=self._save_to_database, state="disabled")
-        self.save_db_btn.pack(side="left", padx=4)
-
-        # ── 主体：预览 + 右侧Notebook ──
+        # ── 主体：左侧预览/状态 + 右侧Notebook ──
         main = ttk.PanedWindow(self, orient="horizontal")
         main.pack(fill="both", expand=True, padx=8, pady=4)
+        self._main_pw = main
 
-        # 左侧：预览画布 + 实时状态
-        preview_frame = ttk.LabelFrame(main, text="摄像头预览", padding=4)
-        self.preview_canvas = tk.Canvas(preview_frame, bg="#222222", highlightthickness=0)
+        # ── 左侧：容器帧（容纳摄像头预览/温度读取器 + 底部实时状态栏）──
+        self._left_container = ttk.Frame(main)
+        main.add(self._left_container, weight=45)
+
+        # 摄像头预览画布（在 _left_container 内，默认可见）
+        self._preview_container = ttk.LabelFrame(self._left_container, text="预览", padding=4)
+        self.preview_canvas = tk.Canvas(self._preview_container, bg="#222222", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True)
+        self._preview_container.pack(fill="both", expand=True)
 
-        self._realtime_status_frame = self._create_realtime_status(preview_frame)
+        # 温度读取器状态面板（在 _left_container 内，默认隐藏）
+        self._modbus_status_panel = ttk.LabelFrame(self._left_container, text="温度读取器", padding=4)
+        self._build_modbus_status_panel(self._modbus_status_panel)
+
+        # 底部实时状态栏（豆温/风温/ROR，在 _left_container 底部，两模式共用）
+        self._realtime_status_frame = self._create_realtime_status(self._left_container)
         self._realtime_status_frame.pack(side="bottom", fill="x", padx=4, pady=4)
-        main.add(preview_frame, weight=45)
 
         # 右侧：Notebook（曲线 + 数据表格）
         right_frame = ttk.Frame(main)
@@ -215,13 +272,12 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # Tab 2: 实时曲线
         curve_tab = ttk.Frame(self.notebook)
-        curve_tab.pack_propagate(False)  # 阻止FigureCanvasTkAgg塌缩父容器
+        curve_tab.pack_propagate(False)
         self.notebook.add(curve_tab, text="实时曲线")
 
         self.stats_panel = StatisticsPanel(curve_tab, is_realtime=True, results=[], figsize=(7, 5))
         self.stats_panel.pack(side="top", fill="both", expand=True)
 
-        # 曲线控制 dock bottom（实时模式：仅显示原曲线checkbox）
         ctrl_row = ttk.Frame(curve_tab)
         self.stats_panel.create_controls(ctrl_row, realtime_mode=True)
         ctrl_row.pack(side="bottom", fill="x", pady=(4, 0))
@@ -243,6 +299,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         self.time_var = tk.StringVar(value="运行时长: 00:00")
         ttk.Label(status_bar, textvariable=self.time_var, padding=(8, 4)).pack(side="right")
+
+        # 初始状态：摄像头模式已选中
+        self._on_data_source_changed()
 
     # ═══════════════════════════════════════════════════════════
     # 实时状态栏
@@ -328,6 +387,186 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._ror_var.set("--.-")
 
     # ═══════════════════════════════════════════════════════════
+    # 数据源切换
+    # ═══════════════════════════════════════════════════════════
+
+    def _on_data_source_changed(self):
+        """数据源切换：摄像头 ↔ 有线传输，切换UI控件可见性"""
+        if self._data_source.get() == "camera":
+            # 顶部工具栏：显示摄像头控件
+            self._camera_ctrl_frame.pack(side="left", before=self._modbus_ctrl_frame)
+            self._modbus_ctrl_frame.pack_forget()
+
+            # 左侧容器：显示预览画布，隐藏温度读取器
+            self._modbus_status_panel.pack_forget()
+            self._preview_container.pack(fill="both", expand=True)
+
+            # DataTable 恢复 OCR 列
+            self.data_table.show_ocr_columns()
+            self.data_table.set_view_frame_callback(self._on_view_frame)
+            self.export_session_btn.configure(state="normal" if self.results else "disabled")
+            self.title("实时识别 - 摄像头")
+            self._stop_modbus_preview()
+            self._start_preview()
+        else:
+            # 顶部工具栏：显示温度读取器控件
+            self._modbus_ctrl_frame.pack(side="left", after=self._camera_ctrl_frame)
+            self._camera_ctrl_frame.pack_forget()
+
+            # 左侧容器：显示温度读取器，隐藏预览画布
+            self._preview_container.pack_forget()
+            self._modbus_status_panel.pack(fill="both", expand=True)
+
+            # 停止摄像头预览
+            self._stop_preview()
+            if self._get_active_source() and not self._get_active_source().is_stopped():
+                self._stop_realtime()
+            self.data_table.hide_ocr_columns()
+            self.data_table.set_view_frame_callback(None)
+            self.export_session_btn.configure(state="disabled")
+            self.title("实时识别 - 有线传输")
+            self._modbus_cfg = load_modbus_config()
+            self._update_modbus_status()
+            self._start_modbus_preview()
+
+    def _build_modbus_status_panel(self, parent):
+        """创建温度读取器状态面板（两行通道状态）"""
+        info_frame = ttk.Frame(parent, padding=24)
+        info_frame.pack(fill="both", expand=True)
+
+        # 豆温通道状态行
+        self._ch1_frame = ttk.Frame(info_frame)
+        self._ch1_frame.pack(fill="x", pady=(0, 12))
+        self._ch1_indicator = ttk.Label(self._ch1_frame, text="●", font=("", 20))
+        self._ch1_indicator.pack(side="left", padx=(0, 12))
+        self._ch1_text = ttk.Label(self._ch1_frame, text="未启用 (豆温)",
+                                    font=("", 14))
+        self._ch1_text.pack(side="left")
+
+        # 风温通道状态行
+        self._ch2_frame = ttk.Frame(info_frame)
+        self._ch2_frame.pack(fill="x")
+        self._ch2_indicator = ttk.Label(self._ch2_frame, text="●", font=("", 20))
+        self._ch2_indicator.pack(side="left", padx=(0, 12))
+        self._ch2_text = ttk.Label(self._ch2_frame, text="未启用 (风温)",
+                                    font=("", 14))
+        self._ch2_text.pack(side="left")
+
+    def _start_modbus_preview(self):
+        """启动 Modbus 预览轮询：定时读取设备温度，更新状态面板"""
+        self._stop_modbus_preview()
+        self._modbus_preview_after_id = self.after(1000, self._modbus_preview_tick)
+
+    def _stop_modbus_preview(self):
+        """停止 Modbus 预览轮询"""
+        if self._modbus_preview_after_id:
+            self.after_cancel(self._modbus_preview_after_id)
+            self._modbus_preview_after_id = None
+
+    def _modbus_preview_tick(self):
+        """轮询一次 Modbus 温度并更新状态面板"""
+        if self._data_source.get() != "modbus":
+            return
+        try:
+            cfg = self._modbus_cfg or {}
+            ch = cfg.get('channels', {}).get('temp1', {})
+            if ch.get('enabled', False):
+                # 端口解析：先试保存的端口，不通则扫描
+                port = resolve_device_port(ch)
+                if port:
+                    # 端口变化时自动更新配置
+                    if port != ch.get('port', ''):
+                        cfg['channels']['temp1']['port'] = port
+                        save_modbus_config(cfg)
+                        self._modbus_cfg = cfg
+                    temp = probe_device(
+                        port, slave_id=ch.get('slave_id', 1),
+                        register=ch.get('register', 0),
+                        baudrate=ch.get('baudrate', 9600),
+                    )
+                    if temp is not None:
+                        self._ch1_indicator.configure(foreground="#44bb44")
+                        self._ch1_text.configure(text=f"已连接 (豆温) {temp:.1f}℃")
+                    else:
+                        self._ch1_indicator.configure(foreground="#ff4444")
+                        self._ch1_text.configure(text="未连接 (豆温)")
+                else:
+                    self._ch1_indicator.configure(foreground="#ff4444")
+                    self._ch1_text.configure(text="未连接 (豆温)")
+        except Exception:
+            pass
+        self._modbus_preview_after_id = self.after(1000, self._modbus_preview_tick)
+
+    def _update_modbus_status(self):
+        """更新温度读取器状态面板（双通道）"""
+        _GREEN = "#44bb44"
+        _RED = "#ff4444"
+        _GRAY = "#888888"
+
+        cfg = self._modbus_cfg or {}
+        channels = cfg.get('channels', {})
+
+        # 没有已启用通道时自动探测
+        if not any(ch.get('enabled', False) and ch.get('port', '')
+                   for ch in channels.values()):
+            try:
+                device = auto_detect_device()
+                if device:
+                    cfg.setdefault('channels', {})['temp1'] = device
+                    save_modbus_config(cfg)
+                    self._modbus_cfg = cfg
+                    channels = cfg.get('channels', {})
+            except Exception:
+                pass
+
+        def update_channel(frame, indicator, text_label, key, label):
+            """更新单个通道的状态显示"""
+            ch = channels.get(key, {})
+            enabled = ch.get('enabled', False)
+            port = ch.get('port', '')
+
+            if enabled and port:
+                # 已启用 — 尝试获取最新温度
+                temp_str = None
+                if key == 'temp1' and self.results:
+                    last = self.results[-1]
+                    t = last.get('temp1_full', '')
+                    if t and '?' not in t:
+                        temp_str = t
+
+                if temp_str is not None:
+                    # 有数据: 已连接
+                    indicator.configure(foreground=_GREEN)
+                    text_label.configure(text=f"已连接 ({label}) {temp_str}℃")
+                else:
+                    # 已启用但无数据: 未连接
+                    indicator.configure(foreground=_RED)
+                    text_label.configure(text=f"未连接 ({label})")
+            else:
+                # 未启用
+                indicator.configure(foreground=_GRAY)
+                text_label.configure(text=f"未启用 ({label}) ???.?")
+
+            frame.pack(fill="x", pady=(0, 12) if key == 'temp1' else 0)
+
+        update_channel(self._ch1_frame, self._ch1_indicator, self._ch1_text,
+                       'temp1', '豆温')
+        update_channel(self._ch2_frame, self._ch2_indicator, self._ch2_text,
+                       'temp2', '风温')
+
+        # 有已启用通道时允许开始
+        any_enabled = any(
+            ch.get('enabled', False) and ch.get('port', '')
+            for ch in channels.values()
+        )
+        self.start_btn.configure(state="normal" if any_enabled else "disabled")
+
+    def _open_modbus_config(self):
+        """打开 Modbus 设备配置对话框（模态）"""
+        dlg = ModbusConfigDialog(self)
+        self.wait_window(dlg)
+        self._modbus_cfg = load_modbus_config()
+        self._update_modbus_status()
     # 理想曲线
     # ═══════════════════════════════════════════════════════════
 
@@ -955,8 +1194,22 @@ class CameraRealtimeWindow(tk.Toplevel):
     # 实时处理控制
     # ═══════════════════════════════════════════════════════════
 
+    def _get_active_source(self):
+        """返回当前活跃的 TemperatureDataSource 实例"""
+        if self._data_source.get() == "camera":
+            return self.processing_thread
+        else:
+            return self._modbus_reader
+
     def _start_realtime(self):
-        """开始实时识别"""
+        """开始实时识别（摄像头或 Modbus）"""
+        if self._data_source.get() == "camera":
+            self._start_realtime_camera()
+        else:
+            self._start_realtime_modbus()
+
+    def _start_realtime_camera(self):
+        """摄像头模式：启动 CameraProcessingThread"""
         if not self.rois:
             messagebox.showwarning("警告", "请先选择ROI", parent=self)
             return
@@ -969,7 +1222,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             messagebox.showerror("错误", "采样间隔必须大于0", parent=self)
             return
 
-        # 检查残留数据（停止后重新开始）
+        # 检查残留数据
         if self.results:
             if not messagebox.askyesno("新一轮识别", "开始新一轮识别将清空当前数据，是否继续？", parent=self):
                 return
@@ -986,16 +1239,13 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.extractor._pipeline = None
 
         # 清空之前的结果
-        self.results = []
-        self.data_table.clear()
-        self.stats_panel.set_results([])
-        self.stats_panel.set_update_interval(interval)
-        self._reset_status_display()
+        self._reset_for_new_session(interval)
 
         # 启动帧缓存会话
         if self._cache.has_session():
             self._cache.clear()
         self._cache.start_writer()
+
         self.processing_thread = CameraProcessingThread(
             extractor=self.extractor,
             get_frame=lambda: self._preview_frame,
@@ -1003,43 +1253,101 @@ class CameraRealtimeWindow(tk.Toplevel):
             interval=interval,
             cache=self._cache
         )
+        self._source = self.processing_thread
 
         # 连接信号
-        self.processing_thread.result_signal.connect(self._on_result)
-        self.processing_thread.status_signal.connect(self._on_status)
-        self.processing_thread.finished_signal.connect(self._on_finished)
+        self._source.result_signal.connect(self._on_result)
+        self._source.status_signal.connect(self._on_status)
+        self._source.finished_signal.connect(self._on_finished)
 
         # 启动
-        self.processing_thread.start()
+        self._source.start()
 
-        # 更新UI
+        self._on_realtime_started(interval, self._get_source_label())
+
+    def _start_realtime_modbus(self):
+        """Modbus 模式：启动 ModbusReader"""
+        try:
+            interval = float(self.interval_var.get())
+            if interval <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("错误", "采样间隔必须大于0", parent=self)
+            return
+
+        if self.results:
+            if not messagebox.askyesno("新一轮识别", "开始新一轮识别将清空当前数据，是否继续？", parent=self):
+                return
+            self.results.clear()
+            self.data_table.clear()
+            self.stats_panel.clear_data()
+
+        self._reset_for_new_session(interval)
+
+        # 创建 ModbusReader
+        cfg = self._modbus_cfg or load_modbus_config()
+        ch = cfg.get('channels', {}).get('temp1', {})
+        if not ch.get('enabled', False):
+            messagebox.showwarning("警告", "温度读取器未配置，请先进行设备配置", parent=self)
+            return
+
+        self._modbus_reader = ModbusReader(
+            temp1_config=ch,
+            temp2_config=None,
+            interval=interval,
+        )
+        self._source = self._modbus_reader
+
+        self._source.result_signal.connect(self._on_result)
+        self._source.status_signal.connect(self._on_status)
+        self._source.finished_signal.connect(self._on_finished)
+
+        self._source.start()
+
+        self._on_realtime_started(interval, f"Modbus ({ch.get('port', '?')})")
+
+    def _reset_for_new_session(self, interval):
+        """清空数据 + 重置状态，供两种模式共用"""
+        self.results = []
+        self.data_table.clear()
+        self.stats_panel.set_results([])
+        self.stats_panel.set_update_interval(interval)
+        self._reset_status_display()
+
+    def _on_realtime_started(self, interval, source_label):
+        """开始实时识别后的UI更新，供两种模式共用"""
+        self._stop_modbus_preview()  # 释放 COM 口给 ModbusReader
         self.start_btn.config(state="disabled")
         self.pause_btn.config(state="normal")
         self.stop_btn.config(state="normal")
         self.export_session_btn.config(state="disabled")
         self.save_db_btn.config(state="disabled")
+        # 运行中禁用数据源切换
+        self._camera_rb.configure(state="disabled")
+        self._modbus_rb.configure(state="disabled")
         self._start_time = time.time()
         self._update_elapsed_time()
-
-        self._log(f"开始实时识别，数据源: {self._get_source_label()}，间隔: {interval}s")
+        self._log(f"开始实时识别，数据源: {source_label}，间隔: {interval}s")
 
     def _pause_realtime(self):
         """暂停/继续"""
-        if not self.processing_thread:
+        source = self._get_active_source()
+        if not source:
             return
-        if self.processing_thread.is_paused():
-            self.processing_thread.resume()
+        if source.is_paused():
+            source.resume()
             self.pause_btn.config(text="暂停")
             self._start_time = time.time() - self._paused_elapsed
         else:
-            self.processing_thread.pause()
+            source.pause()
             self.pause_btn.config(text="继续")
             self._paused_elapsed = time.time() - self._start_time
 
     def _stop_realtime(self):
         """停止识别"""
-        if self.processing_thread:
-            self.processing_thread.stop()
+        source = self._get_active_source()
+        if source:
+            source.stop()
         self._reset_buttons()
 
     def _clear_all_data(self):
@@ -1053,21 +1361,33 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.clear_data()
         self.save_db_btn.config(state="disabled")
         self.export_session_btn.config(state="disabled")
-        if self.processing_thread and self.processing_thread.is_alive():
-            self.processing_thread.reset_temperature_tracking()
+        source = self._get_active_source()
+        if source and not source.is_stopped():
+            source.reset_temperature_tracking()
         self._reset_status_display()
 
     def _reset_buttons(self):
         """重置按钮状态"""
-        self.start_btn.config(state="normal" if self.rois else "disabled")
+        if self._data_source.get() == "camera":
+            self.start_btn.config(state="normal" if self.rois else "disabled")
+        else:
+            self.start_btn.config(state="normal")
         self.pause_btn.config(state="disabled", text="暂停")
         self.stop_btn.config(state="disabled")
-        self.export_session_btn.config(state="normal")
-        self.save_db_btn.config(state="normal")
+        # 导出仅摄像头模式可用
+        if self._data_source.get() == "camera":
+            self.export_session_btn.config(state="normal" if self.results else "disabled")
+        else:
+            self.export_session_btn.config(state="disabled")
+        # 停止后恢复数据源切换
+        self._camera_rb.configure(state="normal")
+        self._modbus_rb.configure(state="normal")
+        self.save_db_btn.config(state="normal" if self.results else "disabled")
 
     def _update_elapsed_time(self):
         """更新运行时长显示"""
-        if self.processing_thread and not self.processing_thread.is_stopped():
+        source = self._get_active_source()
+        if source and not source.is_stopped():
             elapsed = time.time() - self._start_time if hasattr(self, '_start_time') else 0
             mins = int(elapsed // 60)
             secs = int(elapsed % 60)
@@ -1090,6 +1410,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.data_table.add_row(result)
         self.stats_panel.append_data(result)
         self._update_realtime_status(result)
+        # 有线传输模式下更新通道状态面板
+        if self._data_source.get() == "modbus":
+            self._update_modbus_status()
 
     def _on_status(self, message):
         """处理状态更新（由后台线程触发，调度到主线程）"""
@@ -1113,15 +1436,21 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._reset_buttons()
         self.status_var.set(message)
         self._log(message)
-        self.processing_thread = None
-
+        if self._data_source.get() == "camera":
+            self.processing_thread = None
+        else:
+            self._modbus_reader = None
+            self._start_modbus_preview()  # 恢复预览轮询
+        self._source = None
 
     # ═══════════════════════════════════════════════════════════
     # 其他
     # ═══════════════════════════════════════════════════════════
 
     def _on_view_frame(self, frame_num, timestamp, data):
-        """双击表格行：打开 FrameViewer（cache 模式）"""
+        """双击表格行：打开 FrameViewer（仅摄像头模式有效）"""
+        if self._data_source.get() != "camera":
+            return
         if self._cache and self._cache.cached_count() > 0:
             try:
                 FrameViewer(
@@ -1144,7 +1473,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         messagebox.showwarning("警告", "没有可用的缓存帧数据", parent=self)
 
     def _export_session(self):
-        """导出当前会话为 .srlog（ZIP 含帧截图 + 结果数据）"""
+        """导出当前会话为 .srlog（ZIP 含帧截图 + 结果数据，仅摄像头模式）"""
+        if self._data_source.get() != "camera":
+            return
         if not self._cache or self._cache.cached_count() == 0:
             messagebox.showwarning("警告", "没有可导出的会话数据", parent=self)
             return
@@ -1286,16 +1617,17 @@ class CameraRealtimeWindow(tk.Toplevel):
             messagebox.showerror("保存失败", f"数据库写入错误:\n{e}", parent=self)
             return
 
-        # 保存帧截图
-        try:
-            cache_dir = self._cache.session_dir() if self._cache else None
-            if cache_dir and os.path.isdir(cache_dir):
-                target_dir = Paths.ensure_frame_captures(sid)
-                count = FileOperations.copy_frames(cache_dir, target_dir)
-                self._log(f"帧截图已保存: {target_dir} ({count} 帧)")
-        except Exception as e:
-            self._log(f"帧截图保存失败: {e}")
-            messagebox.showwarning("保存完成", f"数据已保存，但帧截图写入失败:\n{e}", parent=self)
+        # 保存帧截图（仅摄像头模式）
+        if self._data_source.get() == "camera":
+            try:
+                cache_dir = self._cache.session_dir() if self._cache else None
+                if cache_dir and os.path.isdir(cache_dir):
+                    target_dir = Paths.ensure_frame_captures(sid)
+                    count = FileOperations.copy_frames(cache_dir, target_dir)
+                    self._log(f"帧截图已保存: {target_dir} ({count} 帧)")
+            except Exception as e:
+                self._log(f"帧截图保存失败: {e}")
+                messagebox.showwarning("保存完成", f"数据已保存，但帧截图写入失败:\n{e}", parent=self)
 
         self.save_db_btn.config(state="disabled")
         self._log(f"已保存到数据库: {sid}")
@@ -1307,12 +1639,14 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.parent.log(f"[实时] {message}")
 
     def destroy(self):
-        """重写 destroy：缓存ROI，释放摄像头"""
-        # 窗口关闭前持久化ROI
-        if self.rois:
-            self._save_camera_rois()
+        """重写 destroy：缓存ROI，释放摄像头/Modbus"""
+        # 停止数据源
+        source = self._get_active_source()
+        if source and not source.is_stopped():
+            source.stop()
+        # 预览线程清理
         self._stop_preview()
-        # 兜底：_stop_preview 超时后线程可能还卡在 cap.read() 中
+        self._stop_modbus_preview()
         if hasattr(self, '_cap') and self._cap is not None:
             try:
                 self._cap.release()
@@ -1320,6 +1654,9 @@ class CameraRealtimeWindow(tk.Toplevel):
                 pass
         if self._cache:
             self._cache.stop_writer()
+        # 窗口关闭前持久化ROI
+        if self.rois:
+            self._save_camera_rois()
         super().destroy()
 
     def _on_closing(self):
@@ -1327,9 +1664,10 @@ class CameraRealtimeWindow(tk.Toplevel):
         if self._is_exporting:
             messagebox.showinfo("提示", "会话正在导出，请等待完成后再关闭窗口。", parent=self)
             return
-        if self.processing_thread and not self.processing_thread.is_stopped():
+        source = self._get_active_source()
+        if source and not source.is_stopped():
             if messagebox.askyesno("确认退出", "实时识别正在运行，确定退出吗？", parent=self):
-                self.processing_thread.stop()
+                source.stop()
             else:
                 return
         self.destroy()

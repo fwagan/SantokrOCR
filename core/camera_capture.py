@@ -9,6 +9,7 @@ import time
 from typing import Optional
 
 from utils.signal import Signal
+from .temperature_source import TemperatureDataSource
 
 _NONE_FRAME_RETRY_INTERVAL = 0.05  # 取到空帧时的重试间隔（秒）
 _TEMP_DIFF_THRESHOLD_DEFAULT = 3.0  # 温差异常检测默认阈值（℃/帧）
@@ -16,7 +17,7 @@ _MAX_EFFECTIVE_GAP = 4             # 温差异常检测最大有效gap，防止�
 _PAUSE_CHECK_INTERVAL = 0.1        # 暂停循环唤醒检查间隔（秒）
 
 
-class CameraProcessingThread(threading.Thread):
+class CameraProcessingThread(threading.Thread, TemperatureDataSource):
     """摄像头实时处理线程"""
 
     def __init__(self, extractor, get_frame, rois, interval=0.25, cache=None,
