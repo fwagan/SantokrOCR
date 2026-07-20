@@ -6,5 +6,6 @@ __pycache__/
 build/
 dist/
 .superpowers/
+config/
 docs/
 ruff.toml

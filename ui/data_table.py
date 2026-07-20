@@ -63,9 +63,23 @@ class DataTable(ttk.Frame):
 
     def setup_columns(self):
         """配置表格列"""
+        self._ocr_column_ids = {'temp1_normal', 'temp1_faulty_digit'}
+        self._ocr_column_widths = {}  # 保存原始宽度用于恢复
         for col_id, col_text, col_width in self.columns:
             self.tree.heading(col_id, text=col_text)
             self.tree.column(col_id, width=col_width, minwidth=50)
+            if col_id in self._ocr_column_ids:
+                self._ocr_column_widths[col_id] = col_width
+
+    def hide_ocr_columns(self):
+        """隐藏 OCR 特有列（temp1_normal, temp1_faulty_digit），用于 Modbus 模式"""
+        for col_id in self._ocr_column_ids:
+            self.tree.column(col_id, width=0, minwidth=0, stretch=False)
+
+    def show_ocr_columns(self):
+        """恢复显示 OCR 特有列，用于摄像头模式"""
+        for col_id, width in self._ocr_column_widths.items():
+            self.tree.column(col_id, width=width, minwidth=50, stretch=True)
 
     def setup_tags(self):
         """配置标签颜色"""
@@ -103,7 +117,9 @@ class DataTable(ttk.Frame):
         abnormal_category = data.get('abnormal_category')
         if abnormal_category == 'temperature_diff':
             tags.append('abnormal_temp')
-        elif data.get('temp1_faulty_digit') == -1 or '?' in str(data.get('temp2', '')):
+        elif (data.get('temp1_faulty_digit') == -1
+              or '?' in str(data.get('temp1_full', ''))
+              or '?' in str(data.get('temp2', ''))):
             tags.append('recognition_failed')
         return tags
 
