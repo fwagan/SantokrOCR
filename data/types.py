@@ -18,6 +18,7 @@ class EventType:
     FC_START = "一爆开始"
     FC_END = "一爆结束"
     SC_START = "二爆开始"
+    SC_END = "二爆结束"
     ROAST_END = "烘焙结束"
     HEATER_ADJUST = "调整火力"
     FAN_ADJUST = "调整风门"

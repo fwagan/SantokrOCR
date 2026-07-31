@@ -364,6 +364,24 @@ class StatisticsPanel(ttk.Frame):
         if hasattr(self, 'resampled_time') and self.resampled_time is not None and len(self.resampled_time) > 0:
             self.plot_charts()
 
+    def set_heater_fan_initial(self, heater_initial, fan_initial):
+        """设置初始火力/风门值（来自 cmd:start），不重置事件列表"""
+        self.heater_initial = float(heater_initial)
+        self.fan_initial = float(fan_initial)
+        if hasattr(self, 'resampled_time') and self.resampled_time is not None and len(self.resampled_time) > 0:
+            self.plot_charts()
+
+    def add_event(self, event):
+        """追加单个事件（来自 Web 端）并重绘图表
+
+        事件需已换算为烘焙时间轴时间；同时写入 _original_events，
+        使 process_data() 重算时保留该事件。
+        """
+        self.events.append(event)
+        self._original_events.append(event)
+        if hasattr(self, 'resampled_time') and self.resampled_time is not None and len(self.resampled_time) > 0:
+            self.plot_charts()
+
     def set_ideal_curve(self, ideal_data, show_bean=True, show_ror=False):
         """设置理想曲线数据并重绘"""
         self._ideal_data = ideal_data

@@ -16,6 +16,7 @@ import time
 import os
 import threading
 import traceback
+import math
 from typing import Optional
 import numpy as np
 from PIL import Image, ImageTk
@@ -42,6 +43,8 @@ from core.modbus_config import (load_modbus_config, save_modbus_config,
                                  resolve_device_port, probe_device,
                                  auto_detect_device)
 from core.modbus_reader import ModbusReader
+from core.ipc_server import IpcServer, load_ipc_config
+from data.types import EventType
 
 # ── 常量 ──
 _PREVIEW_POLL_INTERVAL = 30       # 预览帧轮询间隔（ms）
@@ -63,6 +66,21 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.results = []
         self.extractor = VideoDigitExtractor()
         self._data_source = tk.StringVar(value="modbus")  # "camera" | "modbus"
+
+        # ── 烘焙状态机（Web 事件标记） ──
+        # "idle"          实时识别未开启
+        # "waiting_charge" 实时识别已开启，等待入豆（维持滚动窗口，不记录）
+        # "roasting"      已入豆，正常记录
+        self._roast_state = "idle"
+        self._interval = 1.0                 # 当前采样间隔（秒）
+        self._rolling_window = []            # 等待入豆期间的滚动窗口（5s 数据）
+        self._charge_pending = False         # cmd:start 已到达，等待下一帧作入豆帧
+        self._charge_shift = 0.0             # 入豆后时间轴偏移（烘焙时间 = 原始 - shift）
+        self._end_pending_after_id = None    # 烘焙结束后的自动停止定时器
+        # IPC（Web 进程通信）
+        self._ipc_server = None
+        self._latest_result = None           # 最新采样帧（供 get_temp 读取，各状态都更新）
+        self._turnaround_offset = None       # 回温检测到的 offset（get_temp 捎带）
 
         # 线程
         self.processing_thread = None
@@ -130,6 +148,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         # 后台清理旧缓存会话
         threading.Thread(target=RealTimeProcessCache.cleanup_old_sessions,
                          args=(5,), daemon=True).start()
+
+        # 启动 IPC server（接收 Web 进程命令）
+        self._start_ipc_server()
 
     def _fit_chart(self):
         """窗口映射后按显示器真实DPI设fig尺寸并重绘"""
@@ -526,10 +547,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             port = ch.get('port', '')
 
             if enabled and port:
-                # 已启用 — 尝试获取最新温度
+                # 已启用 — 尝试获取最新温度（含等待入豆期间，此时 results 为空）
                 temp_str = None
-                if key == 'temp1' and self.results:
-                    last = self.results[-1]
+                if key == 'temp1' and self._latest_result:
+                    last = self._latest_result
                     t = last.get('temp1_full', '')
                     if t and '?' not in t:
                         temp_str = t
@@ -1304,10 +1325,15 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         self._source.start()
 
+        # Modbus 模式进入等待入豆：不记录，维持 5s 滚动窗口，等 cmd:start
+        self._roast_state = "waiting_charge"
+
         self._on_realtime_started(interval, f"Modbus ({ch.get('port', '?')})")
 
     def _reset_for_new_session(self, interval):
         """清空数据 + 重置状态，供两种模式共用"""
+        self._interval = interval
+        self._reset_web_state()
         self.results = []
         self.data_table.clear()
         self.stats_panel.set_results([])
@@ -1361,9 +1387,17 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.clear_data()
         self.save_db_btn.config(state="disabled")
         self.export_session_btn.config(state="disabled")
+        self._reset_web_state()
         source = self._get_active_source()
         if source and not source.is_stopped():
             source.reset_temperature_tracking()
+            # 清空后若 Modbus 仍在运行，回到等待入豆状态，恢复停止按钮可用
+            self._roast_state = ("waiting_charge"
+                                 if self._data_source.get() == "modbus" else "idle")
+            if self._roast_state == "waiting_charge":
+                self.stop_btn.config(state="normal")
+        else:
+            self._roast_state = "idle"
         self._reset_status_display()
 
     def _reset_buttons(self):
@@ -1403,16 +1437,113 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.after_idle(self._on_result_ui, result)
 
     def _on_result_ui(self, result):
-        """在主线程中执行识别结果处理"""
+        """在主线程中执行识别结果处理
+
+        按烘焙状态机分派：
+        - waiting_charge：不记录，维持滚动窗口；收到入豆命令后下一帧作入豆帧
+        - roasting：记录到表格/曲线（时间轴映射到烘焙时间）
+        - 其他（摄像头模式等）：原有直接记录行为
+        """
         if not self.winfo_exists():
             return
+        self._latest_result = result
+        self._update_realtime_status(result)
+
+        if self._roast_state == "waiting_charge":
+            if self._charge_pending:
+                self._process_charge(result)
+            else:
+                self._rolling_window.append(result)
+                # 限制窗口：保留约 5s 数据（帧数 = 5s / 间隔）
+                max_frames = max(1, int(round(5.0 / max(self._interval, 0.001))))
+                if len(self._rolling_window) > max_frames:
+                    self._rolling_window = self._rolling_window[-max_frames:]
+            if self._data_source.get() == "modbus":
+                self._update_modbus_status()
+            return
+
+        if self._roast_state == "roasting":
+            r = self._remap_result(result)
+            self.results.append(r)
+            self.data_table.add_row(r)
+            self.stats_panel.append_data(r)
+            self._update_turnaround_cache()
+            if self._data_source.get() == "modbus":
+                self._update_modbus_status()
+            return
+
+        # 其他状态（摄像头模式）：原有直接记录行为
         self.results.append(result)
         self.data_table.add_row(result)
         self.stats_panel.append_data(result)
-        self._update_realtime_status(result)
-        # 有线传输模式下更新通道状态面板
         if self._data_source.get() == "modbus":
             self._update_modbus_status()
+
+    def _process_charge(self, charge_result):
+        """入豆处理：窗口数据 + 入豆帧 → 烘焙时间轴 0~5s，开始正常记录
+
+        入豆帧为收到 cmd:start 后的下一次采样帧，位于烘焙时间轴 5.00s。
+        滚动窗口内 5s 数据（本帧之前）作为第 0~5s 记录。
+        """
+        window = list(self._rolling_window)
+        self._rolling_window = []
+        self._charge_pending = False
+
+        # 烘焙时间轴偏移：入豆帧 → 5.0s，则 烘焙时间 = 原始时间 - (入豆帧原始时间 - 5.0)
+        charge_real = charge_result['timestamp']
+        shift = charge_real - 5.0
+        self._charge_shift = shift
+
+        # 记录窗口数据 + 入豆帧（入豆帧固定映射到烘焙 5.0s，窗口数据向前对齐）
+        frames = window + [charge_result]
+        for r in frames:
+            nr = self._remap_result(r)
+            self.results.append(nr)
+            self.data_table.add_row(nr)
+            self.stats_panel.append_data(nr)
+
+        # 入豆事件（烘焙时间轴 5.0s）
+        self._add_event_from_web(EventType.CHARGE, 5.0, None)
+        self._roast_state = "roasting"
+        # Web 模式下入豆后禁用停止按钮：唯一停止路径是 cmd:end 自动停止
+        # （避免命令校验与生效之间状态被"停止"改动）
+        self.stop_btn.config(state="disabled")
+        self._log(f"[Web] 入豆 @ 5.00s，窗口 {len(window)} 帧已记录")
+        if self._data_source.get() == "modbus":
+            self._update_modbus_status()
+
+    def _remap_result(self, result):
+        """将原始采样帧映射到烘焙时间轴（偏移 _charge_shift），返回新 dict
+
+        帧号按烘焙时间计算（_frame_for_time），与事件帧号统一；
+        窗口未满时（入豆过早）时间轴起点 < 0 对应的帧号随之正确。
+        """
+        r = dict(result)
+        ts = round(result['timestamp'] - self._charge_shift, 3)
+        r['timestamp'] = ts
+        r['original_timestamp'] = round(result['timestamp'], 3)
+        r['frame'] = self._frame_for_time(ts)
+        r['time_str'] = (
+            f"{int(ts // 60):02d}:{int(ts % 60):02d}:{int((ts % 1) * 1000):03d}"
+        )
+        return r
+
+    def _update_turnaround_cache(self):
+        """检测 stats_panel 中的回温事件，更新 offset 缓存（get_temp 捎带）
+
+        基准用事件列表中"入豆"事件的当前坐标，而非硬编码 5.0——
+        stats_panel 勾选"排除阶段外数据"时会把事件重基到 0，硬编码会导致偏移偏小。
+        """
+        base = 5.0
+        for ev in self.stats_panel.events:
+            if ev.get('type') == EventType.CHARGE:
+                base = float(ev.get('time', 5.0))
+                break
+        for ev in reversed(self.stats_panel.events):
+            if ev.get('type') == EventType.TURNAROUND:
+                self._turnaround_offset = round(float(ev.get('time', 0)) - base, 3)
+                return
+        self._turnaround_offset = None
 
     def _on_status(self, message):
         """处理状态更新（由后台线程触发，调度到主线程）"""
@@ -1442,6 +1573,228 @@ class CameraRealtimeWindow(tk.Toplevel):
             self._modbus_reader = None
             self._start_modbus_preview()  # 恢复预览轮询
         self._source = None
+        self._roast_state = "idle"
+        self._reset_web_state()
+
+    # ═══════════════════════════════════════════════════════════
+    # IPC server（Web 进程通信）
+    # ═══════════════════════════════════════════════════════════
+
+    def _start_ipc_server(self):
+        """启动 IPC server 后台线程，绑定失败时提示用户"""
+        if self._ipc_server is not None:
+            return
+        cfg = load_ipc_config()
+        self._ipc_server = IpcServer(handler=self._ipc_handler,
+                                     host=cfg['host'], port=cfg['port'])
+        self._ipc_server.start(on_bind_error=self._on_ipc_bind_error)
+
+    def _on_ipc_bind_error(self, exc):
+        """IPC 端口绑定失败（在 IpcServer 线程中调用）"""
+        # 先捕获 port 到局部变量，避免窗口关闭后 _ipc_server 已置 None 时空引用
+        port = self._ipc_server.port if self._ipc_server is not None else '?'
+        self.after_idle(lambda: messagebox.showerror(
+            "IPC 服务启动失败",
+            f"无法监听端口 {port}（可能被占用）：\n{exc}",
+            parent=self))
+
+    def _stop_ipc_server(self):
+        if self._ipc_server is not None:
+            self._ipc_server.stop()
+            self._ipc_server = None
+
+    # ── 命令分发 ──
+
+    def _ipc_handler(self, cmd):
+        """IPC 命令分发（在 IpcServer 后台线程中调用）
+
+        返回响应 dict；这里只做分发与基础校验，UI 更新通过 after_idle 调度到主线程。
+        """
+        if not isinstance(cmd, dict):
+            return {"ok": False, "error": "invalid command"}
+        name = cmd.get('cmd')
+        if name == 'get_temp':
+            return self._ipc_get_temp()
+        if name == 'start':
+            return self._ipc_start(cmd)
+        if name == 'add_event':
+            return self._ipc_add_event(cmd)
+        if name == 'add_value_event':
+            return self._ipc_add_value_event(cmd)
+        if name == 'end':
+            return self._ipc_end(cmd)
+        return {"ok": False, "error": f"unknown command: {name}"}
+
+    def _ipc_get_temp(self):
+        """get_temp：返回当前温度/状态/回温捎带"""
+        latest = self._latest_result
+        temp1 = temp2 = ror = None
+        if latest is not None:
+            t1 = latest.get('temp1_full', '')
+            if t1 and '?' not in t1:
+                try:
+                    temp1 = round(float(t1), 1)
+                except ValueError:
+                    pass
+            t2 = latest.get('temp2', '')
+            # Modbus 预留通道恒为 "0.0"，视为无风温（避免 Web 端显示假 0℃）
+            if t2 and '?' not in t2 and t2 != '0.0':
+                try:
+                    temp2 = round(float(t2), 1)
+                except ValueError:
+                    pass
+        if (self.stats_panel.ror_values is not None
+                and len(self.stats_panel.ror_values) > 0):
+            ror = round(float(self.stats_panel.ror_values[-1]), 1)
+        return {
+            'temp1': temp1,
+            'temp2': temp2,
+            'ror': ror,
+            'state': self._roast_state,
+            'turnaround_offset': self._turnaround_offset,
+        }
+
+    def _ipc_start(self, cmd):
+        """start：入豆。记录初始火力/风门，标记等待下一帧作入豆帧"""
+        if self._roast_state != "waiting_charge":
+            return {"ok": False, "error": f"当前状态不允许入豆: {self._roast_state}"}
+        heater = cmd.get('heater_initial')
+        fan = cmd.get('fan_initial')
+        try:
+            heater = float(heater) if heater is not None else None
+            fan = float(fan) if fan is not None else None
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "heater_initial/fan_initial 必须是数值"}
+        self.after_idle(self._apply_charge_start, heater, fan)
+        return {"ok": True}
+
+    def _ipc_add_event(self, cmd):
+        """add_event：标记一次性事件（一爆开始/结束、二爆开始/结束）"""
+        return self._handle_ipc_event(cmd, is_value_event=False)
+
+    def _ipc_add_value_event(self, cmd):
+        """add_value_event：标记带数值事件（调整火力/调整风门）"""
+        return self._handle_ipc_event(cmd, is_value_event=True)
+
+    def _ipc_end(self, cmd):
+        """end：烘焙结束。记录事件后继续记录 5 秒自动停止"""
+        if self._roast_state != "roasting":
+            return {"ok": False, "error": f"当前状态不允许结束: {self._roast_state}"}
+        if self._end_pending_after_id is not None:
+            return {"ok": False, "error": "烘焙结束已处理，忽略重复请求"}
+        ev = cmd.get('event') or {}
+        offset = ev.get('offset')
+        if offset is None:
+            return {"ok": False, "error": "缺少 offset"}
+        try:
+            offset = float(offset)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "offset 必须是数值"}
+        roast_time = 5.0 + self._ceil_to_frame(offset)
+        self.after_idle(self._apply_end_from_web, roast_time)
+        return {"ok": True}
+
+    def _handle_ipc_event(self, cmd, is_value_event):
+        """add_event / add_value_event 公共处理"""
+        if self._roast_state != "roasting":
+            return {"ok": False, "error": f"当前状态不允许标记事件: {self._roast_state}"}
+        ev = cmd.get('event') or {}
+        ev_type = ev.get('type')
+        offset = ev.get('offset')
+        if offset is None:
+            return {"ok": False, "error": "缺少 offset"}
+        try:
+            offset = float(offset)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "offset 必须是数值"}
+
+        valid_types = {EventType.FC_START, EventType.FC_END,
+                       EventType.SC_START, EventType.SC_END}
+        if is_value_event:
+            valid_types |= {EventType.HEATER_ADJUST, EventType.FAN_ADJUST}
+        if ev_type not in valid_types:
+            return {"ok": False, "error": f"不支持的事件类型: {ev_type}"}
+
+        value = ev.get('value')
+        if is_value_event:
+            if value is None:
+                return {"ok": False, "error": "缺少 value"}
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "value 必须是数值"}
+        else:
+            value = None
+
+        roast_time = 5.0 + self._ceil_to_frame(offset)
+        self.after_idle(self._add_event_from_web, ev_type, roast_time, value)
+        return {"ok": True}
+
+    # ── 主线程执行的操作（after_idle 调度） ──
+
+    def _apply_charge_start(self, heater, fan):
+        """cmd:start 的主线程处理：设置初始值，标记入豆待定"""
+        if self._roast_state != "waiting_charge":
+            return
+        if heater is not None and fan is not None:
+            self.stats_panel.set_heater_fan_initial(heater, fan)
+        self._charge_pending = True
+        self._log(f"[Web] 入豆请求已收到，等待下一采样帧作入豆帧")
+
+    def _add_event_from_web(self, ev_type, roast_time, value):
+        """在主线程添加一个来自 Web 端的事件"""
+        if not self.winfo_exists():
+            return
+        event = {
+            'type': ev_type,
+            'frame': self._frame_for_time(roast_time),
+            'time': roast_time,
+            'value': value,
+        }
+        self.stats_panel.add_event(event)
+        self._log(f"[Web] 事件: {ev_type} @ {roast_time:.2f}s")
+
+    def _apply_end_from_web(self, roast_time):
+        """cmd:end 的主线程处理：记录事件，安排 5 秒后自动停止
+
+        以 _end_pending_after_id 为锁，防止重复 end 产生重复事件。
+        """
+        if not self.winfo_exists():
+            return
+        if self._end_pending_after_id is not None:
+            return  # 已处理过，忽略重复
+        self._add_event_from_web(EventType.ROAST_END, roast_time, None)
+        self._end_pending_after_id = self.after(5000, self._auto_stop_after_end)
+        self._log(f"[Web] 烘焙结束 @ {roast_time:.2f}s，5 秒后自动停止")
+
+    def _auto_stop_after_end(self):
+        """烘焙结束后继续记录 5 秒，自动停止"""
+        self._end_pending_after_id = None
+        self._stop_realtime()
+        self._log("[Web] 已自动停止（烘焙结束）")
+
+    # ── 时间轴辅助 ──
+
+    def _ceil_to_frame(self, offset):
+        """将 offset 前向对齐到采样帧网格（offset=60.1 → 60.25 @0.25s）"""
+        interval = max(self._interval, 0.001)
+        return math.ceil(offset / interval) * interval
+
+    def _frame_for_time(self, roast_time):
+        """按烘焙时间计算采样帧序号（用于 EventRecord.frame）"""
+        interval = max(self._interval, 0.001)
+        return int(round(roast_time / interval))
+
+    def _reset_web_state(self):
+        """重置 Web 端相关的临时状态"""
+        self._rolling_window = []
+        self._charge_pending = False
+        self._charge_shift = 0.0
+        self._turnaround_offset = None
+        self._latest_result = None
+        if self._end_pending_after_id is not None:
+            self.after_cancel(self._end_pending_after_id)
+            self._end_pending_after_id = None
 
     # ═══════════════════════════════════════════════════════════
     # 其他
@@ -1639,7 +1992,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.parent.log(f"[实时] {message}")
 
     def destroy(self):
-        """重写 destroy：缓存ROI，释放摄像头/Modbus"""
+        """重写 destroy：缓存ROI，释放摄像头/Modbus/IPC"""
         # 停止数据源
         source = self._get_active_source()
         if source and not source.is_stopped():
@@ -1654,6 +2007,8 @@ class CameraRealtimeWindow(tk.Toplevel):
                 pass
         if self._cache:
             self._cache.stop_writer()
+        # 停止 IPC server
+        self._stop_ipc_server()
         # 窗口关闭前持久化ROI
         if self.rois:
             self._save_camera_rois()
