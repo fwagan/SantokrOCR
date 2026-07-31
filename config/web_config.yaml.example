@@ -1,0 +1,11 @@
+# Mobile Event Marker — 默认配置模板
+# 复制为 web_config.yaml 后按需修改；web_config.yaml 已被 git 忽略。
+# 主进程和 Web 进程均读取 web_config.yaml，缺失时回退到此模板值。
+
+web_server:
+  host: "0.0.0.0"    # 监听所有网卡（供手机访问）
+  port: 5000          # HTTP 端口
+
+ipc_socket:
+  host: "127.0.0.1"  # 仅本地
+  port: 9999
