@@ -84,7 +84,7 @@ def main():
     try:
         resp = send_cmd(cmd, host, port)
     except (ConnectionRefusedError, socket.timeout, OSError) as e:
-        print(f"✗ 连接失败: {e}")
+        print(f"[失败] 连接失败: {e}")
         print("  请确认主进程实时识别窗口已打开（IPC server 已启动）")
         sys.exit(1)
     print(f"← {json.dumps(resp, ensure_ascii=False, indent=2)}")

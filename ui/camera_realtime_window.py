@@ -1460,7 +1460,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             return
 
         if self._roast_state == "roasting":
-            r = self._remap_result(result)
+            r = self._remap_result(result, len(self.results))
             self.results.append(r)
             self.data_table.add_row(r)
             self.stats_panel.append_data(r)
@@ -1524,8 +1524,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         frames.extend(window)
         frames.append(charge_result)
 
-        for r in frames:
-            nr = self._remap_result(r)
+        for i, r in enumerate(frames):
+            nr = self._remap_result(r, i)
             self.results.append(nr)
             self.data_table.add_row(nr)
             self.stats_panel.append_data(nr)
@@ -1561,17 +1561,20 @@ class CameraRealtimeWindow(tk.Toplevel):
             'abnormal_category': None,
         }
 
-    def _remap_result(self, result):
+    def _remap_result(self, result, frame):
         """将原始采样帧映射到烘焙时间轴（偏移 _charge_shift），返回新 dict
 
-        帧号按烘焙时间计算（_frame_for_time），与事件帧号统一；
-        窗口未满时（入豆过早）时间轴起点 < 0 对应的帧号随之正确。
+        帧号用连续索引（frame 参数），保证唯一——满足 result 表
+        UNIQUE(session_id, frame) 约束。事件帧号独立按烘焙时间计算，不关联结果帧。
         """
         r = dict(result)
         ts = round(result['timestamp'] - self._charge_shift, 3)
+        # 采样节奏抖动导致窗口首帧可能略负（如 -0.006），归零避免首帧时间为负
+        if ts < 0:
+            ts = 0.0
         r['timestamp'] = ts
         r['original_timestamp'] = round(result['timestamp'], 3)
-        r['frame'] = self._frame_for_time(ts)
+        r['frame'] = frame
         r['time_str'] = (
             f"{int(ts // 60):02d}:{int(ts % 60):02d}:{int((ts % 1) * 1000):03d}"
         )
@@ -1590,8 +1593,12 @@ class CameraRealtimeWindow(tk.Toplevel):
                 break
         for ev in reversed(self.stats_panel.events):
             if ev.get('type') == EventType.TURNAROUND:
-                self._turnaround_offset = round(float(ev.get('time', 0)) - base, 3)
-                return
+                offset = round(float(ev.get('time', 0)) - base, 3)
+                # 回温只可能在入豆之后发生，offset 必须 >= 0；
+                # 过滤负值（如填充帧恒定温度被回温算法误判），避免 Web 端收到负数时间
+                if offset >= 0:
+                    self._turnaround_offset = offset
+                    return
         self._turnaround_offset = None
 
     def _on_status(self, message):
@@ -1794,9 +1801,11 @@ class CameraRealtimeWindow(tk.Toplevel):
         """在主线程添加一个来自 Web 端的事件"""
         if not self.winfo_exists():
             return
+        # 事件 frame 按烘焙时间算相对帧号（不关联结果帧，modbus 模式下无实际用途）
+        frame = int(round(roast_time / max(self._interval, 0.001)))
         event = {
             'type': ev_type,
-            'frame': self._frame_for_time(roast_time),
+            'frame': frame,
             'time': roast_time,
             'value': value,
         }
@@ -1830,11 +1839,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         """将 offset 前向对齐到采样帧网格（offset=60.1 → 60.25 @0.25s）"""
         interval = max(self._interval, 0.001)
         return math.ceil(offset / interval) * interval
-
-    def _frame_for_time(self, roast_time):
-        """按烘焙时间计算采样帧序号（用于 EventRecord.frame）"""
-        interval = max(self._interval, 0.001)
-        return int(round(roast_time / interval))
 
     def _reset_web_state(self):
         """重置 Web 端相关的临时状态"""
