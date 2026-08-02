@@ -1,0 +1,8 @@
+# 测试依赖 —— Modbus 温度读取器模拟器专用
+# 独立于主 requirements.txt（不写入主依赖文件）。
+#
+# 若环境已安装 pymodbus 可跳过本文件（检查方式：python -c "import pymodbus; print(pymodbus.__version__)"）。
+# 已测试于 pymodbus 3.13.1；SimData/SimDevice 完整集成进 server 自 3.13.0 起，故下限取 3.13。
+
+pymodbus>=3.13
+pyserial>=3.5
