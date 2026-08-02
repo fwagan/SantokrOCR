@@ -12,8 +12,8 @@
   - 数据格式: signed int16 × 10（读取后 ÷10 得温度℃）
   - 探头断开标志: 0x7FFF (32767)
 
-温度模拟（默认"烘焙升温曲线"）：
-  - 从室温（~25℃）按设定速率线性升温（℃/min）
+温度模拟（默认模拟"回温检测"所需的 V 型曲线）：
+  - 默认从 175℃ 开始线性下降（℃/min），控制台按 R（或回车）翻转趋势转为上升
   - 可选高斯噪声、可选探头断开（立即或运行 N 秒后）
 
 使用前提：安装 com0com 创建虚拟串口对（如 COM10 ↔ COM11），
@@ -22,7 +22,7 @@
 
 示例:
   python tools/modbus_mock_server/mock_modbus_server.py --port COM10
-  python tools/modbus_mock_server/mock_modbus_server.py --port COM10 --start-temp 30 --rate 20 --noise 0.5
+  python tools/modbus_mock_server/mock_modbus_server.py --port COM10 --rate 20 --trend up --noise 0.5
 """
 
 import argparse
@@ -39,6 +39,11 @@ from pymodbus.framer import FramerType
 from pymodbus.server import ModbusSerialServer
 from pymodbus.simulator import DataType, SimData, SimDevice
 
+try:
+    import msvcrt  # Windows 控制台按键检测（翻转趋势用），仅 Windows 可用
+except ImportError:
+    msvcrt = None  # 非 Windows 环境下无按键翻转功能
+
 # ── 设备协议常量（与真实设备一致，勿改）──
 DEFAULT_SLAVE_ID = 1          # 从站地址
 TEMP_REGISTER = 0             # 温度所在输入寄存器地址
@@ -52,8 +57,9 @@ DEFAULT_PARITY = "N"
 DEFAULT_STOPBITS = 1
 
 # ── 温度模拟默认参数 ──
-DEFAULT_START_TEMP = 25.0     # 起始温度（℃），接近室温
-DEFAULT_RATE = 10.0           # 升温速率（℃/min）
+DEFAULT_START_TEMP = 175.0    # 起始温度（℃），默认回温场景的高温起点
+DEFAULT_TREND = "down"        # 初始趋势：down=下降，up=上升
+DEFAULT_RATE = 10.0           # 趋势变化速率（℃/min），升降同幅
 DEFAULT_STEP = 1.0            # 采样步长（秒）
 DEFAULT_NOISE = 0.0           # 高斯噪声幅度（℃），0 表示无噪声
 
@@ -64,22 +70,28 @@ _SHUTDOWN_TIMEOUT = 5.0       # 等待 server 关闭的超时（秒）
 
 
 class TemperatureSimulator:
-    """烘焙升温温度模型
+    """烘焙温度模型（V 型：先降后升，模拟回温检测）
 
-    从起始温度按固定速率线性升温（℃/min），可选高斯噪声与探头断开。
-    温度按"启动以来经过的时间"计算，保证控制台显示与寄存器返回一致。
+    默认从起始温度（175℃）按固定速率线性下降，控制台按 R/回车可翻转趋势
+    转为上升（升降速率同幅）。翻转时以当前温度续算，温度不跳变。
+    可选高斯噪声与探头断开。温度按"启动以来经过的时间"计算，
+    保证控制台显示与寄存器返回一致。
     """
 
     def __init__(self, start_temp: float, rate_c_per_min: float,
                  noise_amplitude: float = 0.0,
                  probe_disconnect: bool = False,
-                 disconnect_after_seconds: float | None = None):
+                 disconnect_after_seconds: float | None = None,
+                 initial_rising: bool = False):
         self.start_temp = start_temp
         self.rate_c_per_min = rate_c_per_min
         self.noise_amplitude = noise_amplitude
         self.probe_disconnect = probe_disconnect           # 立即断开
         self.disconnect_after_seconds = disconnect_after_seconds  # 延时断开
-        self._start_time = time.monotonic()
+        self._rising = initial_rising                      # False=下降, True=上升
+        self._base_temp = start_temp                       # 当前趋势段的起始温度
+        self._base_time = time.monotonic()                 # 当前趋势段的起始时刻
+        self._start_time = self._base_time
 
     def elapsed(self) -> float:
         """启动以来经过的秒数"""
@@ -98,10 +110,34 @@ class TemperatureSimulator:
         """当前模拟温度（℃）；探头断开返回 None"""
         if self.is_disconnected():
             return None
-        temp = self.start_temp + self.rate_c_per_min * (self.elapsed() / 60.0)
+        sign = 1.0 if self._rising else -1.0
+        temp = self._base_temp + sign * self.rate_c_per_min * (
+            (time.monotonic() - self._base_time) / 60.0)
         if self.noise_amplitude > 0:
             temp += self._noise()
         return temp
+
+    def is_rising(self) -> bool:
+        """当前是否上升趋势"""
+        return self._rising
+
+    def flip_direction(self) -> bool:
+        """翻转趋势方向（降↔升），保持温度连续不跳变；返回翻转后的上升标志"""
+        now = time.monotonic()
+        sign = 1.0 if self._rising else -1.0
+        self._base_temp += sign * self.rate_c_per_min * ((now - self._base_time) / 60.0)
+        self._base_time = now
+        self._rising = not self._rising
+        return self._rising
+
+    def reset(self, start_temp: float, rate_c_per_min: float,
+              initial_rising: bool = False) -> None:
+        """重置温度模型起始状态（自检复用）"""
+        self.start_temp = start_temp
+        self.rate_c_per_min = rate_c_per_min
+        self._rising = initial_rising
+        self._base_temp = start_temp
+        self._base_time = time.monotonic()
 
     def raw_value(self) -> int:
         """寄存器原始值（int16 × 10，无符号形式）；探头断开返回 0x7FFF"""
@@ -188,8 +224,10 @@ def print_banner(args) -> None:
     print("=" * 62)
     print(f"  监听串口   : {args.port}（从站 {args.slave_id}，{args.baud} 8N1）")
     print(f"  app 配置   : 设备配置 → temp1 → 端口选配对另一端（com0com 对中的另一个 COM 口）")
+    trend_text = "上升" if args.trend == "up" else "下降"
     print(f"  起始温度   : {args.start_temp:.1f} ℃")
-    print(f"  升温速率   : {args.rate:.1f} ℃/min")
+    print(f"  变化速率   : {args.rate:.1f} ℃/min（升降同幅）")
+    print(f"  初始趋势   : {trend_text}（运行中按 R 或回车翻转趋势）")
     if args.noise > 0:
         print(f"  噪声幅度   : ±{args.noise:.1f} ℃（高斯）")
     if args.probe_disconnect:
@@ -201,7 +239,7 @@ def print_banner(args) -> None:
     if args.verbose:
         print("  帧追踪     : 开启")
     print("-" * 62)
-    print(f"   {'时间':>8} | {'寄存器':>6} | {'温度(℃)':>8}")
+    print(f"   {'时间':>8} | {'寄存器':>6} | {'温度(℃)':>8} | 趋势")
     print("-" * 62, flush=True)
 
 
@@ -217,6 +255,7 @@ async def run_server(args) -> int:
         noise_amplitude=args.noise,
         probe_disconnect=args.probe_disconnect,
         disconnect_after_seconds=args.disconnect_after,
+        initial_rising=(args.trend == "up"),
     )
 
     device = build_sim_device(sim, args.slave_id)
@@ -241,13 +280,24 @@ async def run_server(args) -> int:
     print_banner(args)
     try:
         while True:
+            flipped = False
+            if msvcrt is not None and msvcrt.kbhit():
+                key = msvcrt.getch()
+                if key in (b"r", b"R", b"\r"):
+                    rising = sim.flip_direction()
+                    flipped = True
+
             raw = sim.raw_value()
             temp = sim.temperature()
             ts = time.strftime("%H:%M:%S")
+            trend = "升" if sim.is_rising() else "降"
             if temp is None:
-                print(f"   {ts:>8} | {raw:6d} |  探头断开", flush=True)
+                print(f"   {ts:>8} | {raw:6d} |  探头断开 | --", flush=True)
             else:
-                print(f"   {ts:>8} | {raw:6d} | {temp:8.1f}", flush=True)
+                print(f"   {ts:>8} | {raw:6d} | {temp:8.1f} | {trend}", flush=True)
+            if flipped:
+                print(f"   >>> 已翻转趋势：现在{'上升' if rising else '下降'}（回温检测点）",
+                      flush=True)
             await asyncio.sleep(args.step)
     finally:
         # Ctrl+C（asyncio.run 取消主任务）时走这里做优雅退出
@@ -274,7 +324,8 @@ def run_self_test(args) -> int:
     sim = TemperatureSimulator(
         start_temp=args.start_temp,
         rate_c_per_min=args.rate,
-        noise_amplitude=0.0,   # 自检关闭噪声，保证断言稳定
+        noise_amplitude=0.0,      # 自检关闭噪声，保证断言稳定
+        initial_rising=True,      # 自检"正常升温"用例需要上升趋势
     )
     device = build_sim_device(sim, args.slave_id)
     server = None
@@ -332,8 +383,7 @@ def run_self_test(args) -> int:
         sim.probe_disconnect = False
 
         # 3) 负温度：signed int16 × 10 换算正确
-        sim.start_temp = -5.0
-        sim.rate_c_per_min = 0.0
+        sim.reset(start_temp=-5.0, rate_c_per_min=0.0)
         value = read_temp()
         assert abs(value - (-5.0)) < 1e-6, f"负温度换算错误: {value}"
         print(f"  [自检] 负温度: {value:.1f}℃  OK")
@@ -364,9 +414,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slave-id", type=int, default=DEFAULT_SLAVE_ID,
                         help="从站地址")
     parser.add_argument("--start-temp", type=float, default=DEFAULT_START_TEMP,
-                        help="起始温度（℃）")
+                        help=f"起始温度（℃），默认 {DEFAULT_START_TEMP:.0f}")
     parser.add_argument("--rate", type=float, default=DEFAULT_RATE,
-                        help="升温速率（℃/min）")
+                        help="趋势变化速率（℃/min），升降同幅")
+    parser.add_argument("--trend", choices=["down", "up"], default=DEFAULT_TREND,
+                        help="初始趋势：down=下降（默认），up=上升；运行中按 R 或回车翻转")
     parser.add_argument("--step", type=float, default=DEFAULT_STEP,
                         help="采样步长（秒）")
     parser.add_argument("--noise", type=float, default=DEFAULT_NOISE,
