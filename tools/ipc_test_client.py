@@ -1,7 +1,7 @@
 """IPC 测试工具 — 模拟 Web 进程向主进程发送命令
 
 用法：
-    python tools/ipc_test_client.py get_temp
+    python tools/ipc_test_client.py get_status
     python tools/ipc_test_client.py start --heater 50 --fan 80
     python tools/ipc_test_client.py add_event --type 一爆开始 --offset 60
     python tools/ipc_test_client.py add_value_event --type 调整火力 --offset 240 --value 60
@@ -40,7 +40,7 @@ def main():
     parser = argparse.ArgumentParser(description="IPC 命令测试工具")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("get_temp", help="查询当前温度/状态")
+    sub.add_parser("get_status", help="查询当前温度/状态")
 
     p_start = sub.add_parser("start", help="入豆（开始烘焙）")
     p_start.add_argument("--heater", type=float, default=50.0, help="初始火力")
@@ -63,8 +63,8 @@ def main():
     cfg = load_ipc_config()
     host, port = cfg['host'], cfg['port']
 
-    if args.cmd == "get_temp":
-        cmd = {"cmd": "get_temp"}
+    if args.cmd == "get_status":
+        cmd = {"cmd": "get_status"}
     elif args.cmd == "start":
         cmd = {"cmd": "start",
                "heater_initial": args.heater, "fan_initial": args.fan}
