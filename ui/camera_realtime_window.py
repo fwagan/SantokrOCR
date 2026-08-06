@@ -16,7 +16,6 @@ import time
 import os
 import threading
 import traceback
-import math
 from typing import Optional
 import numpy as np
 from PIL import Image, ImageTk
@@ -79,8 +78,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._charged_pending = False        # cmd:start 已到达，等待下一采样帧作入豆帧
         self._charge_shift = 0.0             # 入豆后时间轴偏移（烘焙时间 = 原始 - shift）
         self._end_pending_after_id = None    # 烘焙结束后的自动停止定时器
+        self._recent_event_keys = []         # M2：add_event 去重（(type, offset)，新会话清空）
         # Web 协作开关（默认关闭，保留原 Modbus 工作流；开启后由 web 主控烘焙会话）
-        self._web_enabled = tk.BooleanVar(value=False)
+        self._web_enabled = tk.BooleanVar(value=True)  # Web 协作默认勾选（Phase 3 联调确认）
         # IPC（Web 进程通信）
         self._ipc_server = None
         self._latest_result = None           # 最新采样帧（供 get_status 读取，各状态都更新）
@@ -226,7 +226,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         ttk.Button(self._modbus_ctrl_frame, text="⚙ 设备配置",
                    command=self._open_modbus_config).pack(side="left")
 
-        # Web 协作开关（仅 Modbus 模式；默认关闭保留原工作流，开启后由 web 主控烘焙会话）
+        # Web 协作开关（仅 Modbus 模式；默认勾选由 web 主控烘焙会话，关闭保留原工作流）
         self._web_check = ttk.Checkbutton(self._modbus_ctrl_frame, text="Web事件标记",
                                            variable=self._web_enabled)
         self._web_check.pack(side="left", padx=(8, 0))
@@ -237,7 +237,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 采样间隔
         ttk.Label(common_frame, text="采样间隔(s):").pack(side="left", padx=(0, 4))
-        self.interval_var = tk.StringVar(value="1.0")
+        self.interval_var = tk.StringVar(value=str(_DEFAULT_SAMPLE_INTERVAL))  # UI 默认与常量同步（0.25s）
         ttk.Entry(common_frame, textvariable=self.interval_var, width=6).pack(side="left", padx=4)
 
         # 操作按钮（start 始终启用，未就绪点开始由各模式报错提示）
@@ -1712,6 +1712,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _ipc_start(self, cmd):
         """start：入豆。记录初始火力/风门，标记等待下一帧作入豆帧"""
+        if self._roast_state == "roasting":
+            # M1：已入豆（首次 start 已生效），目标已达成，视为成功（响应丢失重试场景）
+            return {"ok": True}
         if self._roast_state != "waiting_charge":
             return {"ok": False, "error": f"当前状态不允许入豆: {self._roast_state}"}
         heater = cmd.get('heater_initial')
@@ -1721,6 +1724,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             fan = float(fan) if fan is not None else None
         except (TypeError, ValueError):
             return {"ok": False, "error": "heater_initial/fan_initial 必须是数值"}
+        # 纵深防御：数值范围 0-100（前端已校验，此处防任意 Web 客户端）
+        for name, val in (('heater_initial', heater), ('fan_initial', fan)):
+            if val is not None and not (0 <= val <= 100):
+                return {"ok": False, "error": f"{name} 必须在 0-100 之间"}
         self.after_idle(self._apply_charge_start, heater, fan)
         return {"ok": True}
 
@@ -1737,7 +1744,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         if self._roast_state != "roasting":
             return {"ok": False, "error": f"当前状态不允许结束: {self._roast_state}"}
         if self._end_pending_after_id is not None:
-            return {"ok": False, "error": "烘焙结束已处理，忽略重复请求"}
+            # M1：end 已处理过，目标已达成，视为成功（前端重试场景）
+            return {"ok": True}
         ev = cmd.get('event') or {}
         offset = ev.get('offset')
         if offset is None:
@@ -1746,7 +1754,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             offset = float(offset)
         except (TypeError, ValueError):
             return {"ok": False, "error": "offset 必须是数值"}
-        roast_time = _EXTRA_RECORD_SECONDS + self._ceil_to_frame(offset)
+        roast_time = _EXTRA_RECORD_SECONDS + offset
         self.after_idle(self._apply_end_from_web, roast_time)
         return {"ok": True}
 
@@ -1779,10 +1787,22 @@ class CameraRealtimeWindow(tk.Toplevel):
                 value = float(value)
             except (TypeError, ValueError):
                 return {"ok": False, "error": "value 必须是数值"}
+            # 纵深防御：数值范围 0-100（前端已校验，此处防任意 Web 客户端）
+            if not (0 <= value <= 100):
+                return {"ok": False, "error": f"{ev_type}值必须在 0-100 之间"}
         else:
             value = None
 
-        roast_time = _EXTRA_RECORD_SECONDS + self._ceil_to_frame(offset)
+        # M2 去重：同一 (type, offset) 视为重试重放，静默忽略
+        # （offset 相对固定 T0 单调递增，合法事件不可能同 offset；重试重发同一冻结 payload 才会撞）
+        key = (ev_type, offset)
+        if key in self._recent_event_keys:
+            return {"ok": True}
+        self._recent_event_keys.append(key)
+        if len(self._recent_event_keys) > 200:
+            self._recent_event_keys = self._recent_event_keys[-100:]
+
+        roast_time = _EXTRA_RECORD_SECONDS + offset
         self.after_idle(self._add_event_from_web, ev_type, roast_time, value)
         return {"ok": True}
 
@@ -1833,13 +1853,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._stop_realtime()
         self._log("[Web] 已自动停止（烘焙结束）")
 
-    # ── 时间轴辅助 ──
-
-    def _ceil_to_frame(self, offset):
-        """将 offset 前向对齐到采样帧网格（offset=60.1 → 60.25 @0.25s）"""
-        interval = max(self._interval, 0.001)
-        return math.ceil(offset / interval) * interval
-
     def _reset_web_state(self):
         """重置 Web 端相关的临时状态"""
         self._rolling_window = []
@@ -1847,6 +1860,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._charge_shift = 0.0
         self._turnaround_offset = None
         self._latest_result = None
+        self._recent_event_keys.clear()      # 新会话：清掉上一会话的事件去重键
         if self._end_pending_after_id is not None:
             self.after_cancel(self._end_pending_after_id)
             self._end_pending_after_id = None

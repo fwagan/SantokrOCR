@@ -8,7 +8,7 @@
 
 运行：python -m web.backend.server（从仓库根）
 
-注意：服务未鉴权，绑定 0.0.0.0 + CORS 全开，仅限可信局域网使用
+注意：服务未鉴权，绑定 0.0.0.0，仅限可信局域网使用
 （手机浏览器控制移动端的固有取舍，IPC socket 本身仅 localhost）。
 """
 
@@ -18,7 +18,6 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -30,16 +29,6 @@ logger = logging.getLogger(__name__)
 _VALID_CMDS = {"start", "add_event", "add_value_event", "end"}
 
 app = FastAPI(title="Mobile Event Marker", version="0.2.0")
-
-# 开发期 CORS：Vite dev (5173) → 本服务 (5000) 的跨源调用。
-# 生产由本服务伺服前端（同源），CORS 规则不触发，无影响。
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 async def _forward(cmd: dict) -> dict:
