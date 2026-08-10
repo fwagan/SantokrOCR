@@ -8,6 +8,7 @@ __all__ = [
     'recognition_window',
     'data_table',
     'frame_viewer',
+    'mark_event_dialog',
     'async_worker',
     'roi_selector',
     'statistics_panel',

@@ -4,7 +4,9 @@
 当前阶段使用 TypedDict 作为数据契约，后续可升级为 Pydantic BaseModel。
 """
 
-from typing import Dict, List, Optional, TypedDict
+from enum import StrEnum
+from typing import Optional, TypedDict
+
 from typing_extensions import NotRequired
 
 # ============================================================
@@ -12,7 +14,7 @@ from typing_extensions import NotRequired
 # ============================================================
 
 
-class EventType:
+class EventType(StrEnum):
     CHARGE = "入豆"
     TURNAROUND = "回温"
     FC_START = "一爆开始"
@@ -22,6 +24,11 @@ class EventType:
     ROAST_END = "烘焙结束"
     HEATER_ADJUST = "调整火力"
     FAN_ADJUST = "调整风门"
+
+
+# 事件类型完整列表（UI 下拉框展示顺序，后端单一来源）
+# 由 StrEnum 派生：不可变、天然有序；成员本身是 str，可直接用于比较/落库/序列化
+EVENT_TYPES = [e.value for e in EventType]
 
 
 # ============================================================
@@ -74,7 +81,7 @@ class RoiConfig(TypedDict):
 
     仅用于 AppData JSON cache，不写入 SQLite。
     """
-    rois: Dict[str, RoiEntry]
+    rois: dict[str, RoiEntry]
     rotation_angle: NotRequired[float]
     start_frame: NotRequired[int]
 
@@ -141,5 +148,5 @@ class RoastSession(TypedDict, total=False):
     roasted_weight: Optional[float]
     notes: str
     # .slog 交换格式（组装时从对应表读取）
-    results: List[ResultRecord]
-    events: List[EventRecord]
+    results: list[ResultRecord]
+    events: list[EventRecord]
