@@ -10,10 +10,11 @@ IpcServer — 主进程侧 TCP socket 服务器
 
 import json
 import logging
-import os
 import socket
 import threading
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
+
+from web.backend.config import load_web_config, main_app_base
 
 logger = logging.getLogger(__name__)
 
@@ -25,30 +26,13 @@ _RECV_TIMEOUT = 5.0        # 单次请求接收超时（秒）
 _ACCEPT_TIMEOUT = 0.5      # accept 轮询间隔，用于响应 stop()
 
 
-def load_ipc_config() -> Dict[str, int]:
-    """加载 IPC socket 端口配置
+def load_ipc_config() -> Dict[str, Any]:
+    """沿优先级链加载 IPC socket 端口配置（链定义见 web.backend.config）
 
-    读取顺序：config/web_config.yaml → config/web_config.yaml.example → 默认值。
-    web_config.yaml 为运行时配置（git 忽略），.example 为默认模板。
+    与 web.backend.ipc_client.load_config 读取同一配置链，两端须得到相同结果。
     """
-    base = os.path.dirname(os.path.dirname(__file__))
-    for name in ('web_config.yaml', 'web_config.yaml.example'):
-        path = os.path.join(base, 'config', name)
-        if not os.path.exists(path):
-            continue
-        try:
-            import yaml
-            with open(path, 'r', encoding='utf-8') as f:
-                cfg = yaml.safe_load(f) or {}
-            ipc = cfg.get('ipc_socket', {}) or {}
-            return {
-                'host': ipc.get('host', DEFAULT_HOST),
-                'port': int(ipc.get('port', DEFAULT_PORT)),
-            }
-        except Exception:
-            logger.warning(f"加载 IPC 配置失败: {path}，使用默认值")
-            continue
-    return {'host': DEFAULT_HOST, 'port': DEFAULT_PORT}
+    ipc = load_web_config(main_app_base())['ipc_socket']
+    return {'host': ipc['host'], 'port': ipc['port']}
 
 
 class IpcServer:

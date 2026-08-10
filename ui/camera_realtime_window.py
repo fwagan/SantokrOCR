@@ -14,6 +14,7 @@ from tkinter import ttk, messagebox, filedialog
 import cv2
 import time
 import os
+import queue
 import threading
 import traceback
 from typing import Optional
@@ -43,6 +44,8 @@ from core.modbus_config import (load_modbus_config, save_modbus_config,
                                  auto_detect_device)
 from core.modbus_reader import ModbusReader
 from core.ipc_server import IpcServer, load_ipc_config
+from web.backend.config import WebConfigError, main_app_base
+from web.backend.launcher import ensure_web_running
 from data.types import EventType
 
 # ── 常量 ──
@@ -1332,6 +1335,10 @@ class CameraRealtimeWindow(tk.Toplevel):
         # Web 协作关闭：保持原 Modbus 工作流，立即正常记录
         self._roast_state = ("waiting_charge" if self._web_enabled.get() else "idle")
 
+        # Web 事件标记勾选时自动启动 Web 进程（后台线程，不阻塞 UI；已运行则跳过）
+        if self._web_enabled.get():
+            self._ensure_web_started()
+
         self._on_realtime_started(interval, f"Modbus ({ch.get('port', '?')})")
 
     def _reset_for_new_session(self, interval):
@@ -1637,10 +1644,16 @@ class CameraRealtimeWindow(tk.Toplevel):
     # ═══════════════════════════════════════════════════════════
 
     def _start_ipc_server(self):
-        """启动 IPC server 后台线程，绑定失败时提示用户"""
+        """启动 IPC server 后台线程，配置缺失/非法或绑定失败时提示用户"""
         if self._ipc_server is not None:
             return
-        cfg = load_ipc_config()
+        try:
+            cfg = load_ipc_config()
+        except WebConfigError as e:
+            messagebox.showerror("IPC 服务配置错误",
+                                 f"{e}\n\nWeb 事件标记功能不可用。",
+                                 parent=self)
+            return
         self._ipc_server = IpcServer(handler=self._ipc_handler,
                                      host=cfg['host'], port=cfg['port'])
         self._ipc_server.start(on_bind_error=self._on_ipc_bind_error)
@@ -1658,6 +1671,32 @@ class CameraRealtimeWindow(tk.Toplevel):
         if self._ipc_server is not None:
             self._ipc_server.stop()
             self._ipc_server = None
+
+    # ═══════════════════════════════════════════════════════════
+    # Web 进程自动启动（realtime + web 勾选时便利启动，不监控不重启）
+    # ═══════════════════════════════════════════════════════════
+
+    def _ensure_web_started(self) -> None:
+        """后台拉起 Web 进程（不等待、不做结果检测——
+        启动后 Web 窗口自会显示，用户自行确认状态；结果经独立 queue 回主线程记日志）"""
+        q = queue.Queue()
+        self.after(200, self._poll_web_msg, q)
+        def worker() -> None:
+            _, msg = ensure_web_running(main_app_base())
+            q.put(msg)   # 线程安全，不直接操作 tkinter
+        threading.Thread(target=worker, daemon=True,
+                         name="WebAutoStart").start()
+
+    def _poll_web_msg(self, q: queue.Queue) -> None:
+        """主线程轮询本轮 Web 启动结果消息；取到即记日志并停止（每会话一轮）"""
+        if not self.winfo_exists():
+            return
+        try:
+            msg = q.get_nowait()
+        except queue.Empty:
+            self.after(200, self._poll_web_msg, q)   # 消息未到，继续等
+            return
+        self._log(f"[Web] {msg}")
 
     # ── 命令分发 ──
 

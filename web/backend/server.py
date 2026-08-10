@@ -14,14 +14,14 @@
 
 import json
 import logging
+import sys
 from pathlib import Path
 
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from .ipc_client import IpcError, load_config, send_cmd
+from .ipc_client import IpcError, send_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,16 @@ async def get_status():
     return resp
 
 
+@app.get("/api/health")
+async def health():
+    """健康探测端点：确认本服务在监听（供主进程自动启动探测用，不转发 IPC）
+
+    返回固定服务标记。主进程侧 launcher._http_probe 据此区分"我们的 Web 服务"
+    与端口上其他程序——避免仅凭 TCP 连通就把别的程序误报为"已在运行"。
+    """
+    return {"service": "mobile-event-marker", "ok": True}
+
+
 @app.post("/api/events")
 async def post_event(request: Request):
     """按 body 的 cmd 分发 start/add_event/add_value_event/end
@@ -78,9 +88,20 @@ async def post_event(request: Request):
     return await _forward(body)
 
 
+def _static_dist_dir() -> Path:
+    """前端构建产物目录
+    - 打包（frozen）：datas 打入 _MEIPASS/web/frontend/dist（onedir 下 _MEIPASS = _internal）
+    - dev：web/frontend/dist
+    """
+    if getattr(sys, "frozen", False):
+        base = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+        return base / "web" / "frontend" / "dist"
+    return Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
 def _mount_static(target: FastAPI) -> None:
     """静态挂载 Phase 3 React 构建产物（目录存在才挂载）"""
-    dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    dist = _static_dist_dir()
     if not dist.is_dir():
         logger.warning("前端构建产物不存在，跳过静态挂载: %s", dist)
         return
@@ -91,7 +112,8 @@ _mount_static(app)
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    cfg = load_config()
-    web = cfg["web_server"]
-    uvicorn.run(app, host=web["host"], port=web["port"], log_level="info")
+    # dev 运行：python -m web.backend.server（与 python -m web.backend.main 等价，
+    # 走 main.py 的单实例 / 端口冲突 / GUI 逻辑）
+    from .main import main
+
+    main()
