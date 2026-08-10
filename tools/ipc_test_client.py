@@ -7,7 +7,7 @@
     python tools/ipc_test_client.py add_value_event --type 调整火力 --offset 240 --value 60
     python tools/ipc_test_client.py end --offset 732
 
-读取 config/web_config.yaml（或 .example）中的 ipc_socket 端口。
+ipc_socket 端口走配置优先级链（见 web.backend.config）。
 """
 
 import argparse
@@ -19,6 +19,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.ipc_server import load_ipc_config  # noqa: E402
+from web.backend.config import WebConfigError  # noqa: E402
 
 
 def send_cmd(cmd: dict, host: str, port: int, timeout: float = 3.0) -> dict:
@@ -60,7 +61,11 @@ def main():
 
     args = parser.parse_args()
 
-    cfg = load_ipc_config()
+    try:
+        cfg = load_ipc_config()
+    except WebConfigError as e:
+        print(f"[失败] 读取配置错误: {e}")
+        sys.exit(1)
     host, port = cfg['host'], cfg['port']
 
     if args.cmd == "get_status":

@@ -41,6 +41,9 @@ a = Analysis(
         # Utils
         'utils.cache_manager',
         'utils.screen_utils',
+        # Web 自动启动（配置链读取 + 探测/启动 Web 进程，纯转发层不碰 SQLite）
+        'web.backend.config',
+        'web.backend.launcher',
         # Matplotlib backends (dynamic imports, must be explicit)
         'matplotlib.backends.backend_tkagg',
         'matplotlib.backends.backend_agg',
