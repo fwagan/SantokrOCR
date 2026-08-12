@@ -502,6 +502,8 @@ class RecognitionWindow(tk.Toplevel):
 
         # 设置帧查看器回调
         self.data_table.set_view_frame_callback(self.open_frame_viewer)
+        # 设置"在此帧标记事件"回调（不依赖帧查看器，供非视频源会话使用）
+        self.data_table.set_mark_event_at_frame_callback(self.mark_event_at_frame)
         # 设置行删除回调
         self.data_table.set_rows_deleted_callback(self.on_rows_deleted)
 
@@ -1320,16 +1322,72 @@ class RecognitionWindow(tk.Toplevel):
             messagebox.showerror("错误", error_msg, parent=self)
             self.log(error_msg)
 
-    def on_event_marked(self, event_data, is_overwrite=False):
-        """帧查看器中标记事件后的回调"""
-        action = "覆盖" if is_overwrite else "标记"
-        self.log(f"事件已{action}: {event_data['type']} @ 帧{event_data['frame']} 时间{event_data['time']:.1f}s")
+    def mark_event_at_frame(self, frame_num, timestamp):
+        """在指定帧标记事件（不依赖帧查看器，用于非视频源会话）
+
+        通过 MarkEventDialog 选择事件类型/数值，事件定位到选中行的帧。
+        覆盖时在单个事务内原子替换旧事件（on_event_marked 的 event_to_replace 传旧事件 dict），
+        避免先删后加两条独立事务造成的不一致窗口。
+        """
+        from ui.mark_event_dialog import MarkEventDialog
+        dlg = None
+        try:
+            dlg = MarkEventDialog(
+                parent=self,
+                frame_num=frame_num,
+                timestamp=timestamp,
+                events=self.events,
+                heater_initial=self.heater_initial_var.get(),
+                fan_initial=self.fan_initial_var.get(),
+            )
+            self.wait_window(dlg)
+            if dlg.result is None:
+                return
+        except Exception as e:
+            # 对话框构造/等待失败：记录并提示，不静默吞掉
+            self.log(f"打开事件标记对话框失败: {e}")
+            messagebox.showerror("错误", f"打开事件标记对话框失败: {e}", parent=self)
+            return
+        finally:
+            # 确保对话框被销毁，释放可能残留的 grab_set（极端构造失败场景）
+            if dlg is not None:
+                try:
+                    if dlg.winfo_exists():
+                        dlg.destroy()
+                except tk.TclError:
+                    pass
+
+        new_event, overwrite_event = dlg.result
+        # 更新内存事件列表（覆盖时先移除旧事件）
+        if overwrite_event is not None and overwrite_event in self.events:
+            self.events.remove(overwrite_event)
+        self.events.append(new_event)
+        # 覆盖时传旧事件触发单事务原子替换，否则传 None 走新增
+        self.on_event_marked(new_event, event_to_replace=overwrite_event)
+
+    def on_event_marked(self, event_data, event_to_replace=None):
+        """事件标记回调（帧查看器 / 表格右键标记共用）
+
+        event_to_replace：
+            - None           新增事件（add_event）
+            - dict(旧事件)    覆盖：单事务原子替换（replace_event）
+
+        说明：早期用 is_overwrite 承载"布尔 True=删旧 / 布尔 False=新增 / dict=替换"
+        三重语义，event_data 的含义随其类型翻转，易误用。现统一为"新增传 None、
+        覆盖传旧事件 dict"。FrameViewer.mark_event 同样传旧事件 dict 或 None（语法一致）；
+        待 FrameViewer 删除后此兼容写法随它一起消失。
+        """
+        if event_to_replace is not None:
+            self.log(f"事件已覆盖: {event_data['type']} @ 帧{event_data['frame']} 时间{event_data['time']:.1f}s")
+        else:
+            self.log(f"事件已标记: {event_data['type']} @ 帧{event_data['frame']} 时间{event_data['time']:.1f}s")
         # 写入 DB（raw_data 模式直接落库）
         if self._rw_session_id:
             try:
-                if is_overwrite:
-                    self._event_repo.delete_event(
-                        self._rw_session_id, event_data['type'], event_data['frame'])
+                if event_to_replace is not None:
+                    # 覆盖：删除旧事件 + 插入新事件，单事务原子替换
+                    self._event_repo.replace_event(
+                        self._rw_session_id, event_to_replace, event_data)
                 else:
                     self._event_repo.add_event(self._rw_session_id, event_data)
             except Exception as e:

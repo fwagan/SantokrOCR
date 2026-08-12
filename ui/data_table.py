@@ -43,6 +43,8 @@ class DataTable(ttk.Frame):
 
         # 回调函数，用于查看帧
         self.on_view_frame_callback = None
+        # 回调函数，用于在指定帧标记事件（不依赖帧查看器）
+        self.on_mark_event_at_frame_callback = None
 
         # 布局（使用grid确保纵横滚动条共存）
         self.grid_rowconfigure(0, weight=1)
@@ -94,6 +96,7 @@ class DataTable(ttk.Frame):
         """设置右键菜单"""
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="查看帧截图", command=self.view_frame)
+        self.context_menu.add_command(label="在此帧标记事件...", command=self.mark_event_at_frame)
         self.context_menu.add_command(label="复制选中行", command=self.copy_row)
         self.context_menu.add_separator()
         self.context_menu.add_command(label="删除选中行", command=self.delete_selected_rows)
@@ -239,6 +242,21 @@ class DataTable(ttk.Frame):
         if self.on_view_frame_callback:
             self.on_view_frame_callback(frame_num, timestamp, data)
 
+    def mark_event_at_frame(self):
+        """在选中行的帧上标记事件（不依赖帧查看器，供非视频源会话使用）"""
+        data = self.get_selected_row()
+        if not data:
+            return
+
+        try:
+            frame_num = int(data['frame'])
+            timestamp = float(data.get('timestamp', 0))
+        except (ValueError, KeyError):
+            return
+
+        if self.on_mark_event_at_frame_callback:
+            self.on_mark_event_at_frame_callback(frame_num, timestamp)
+
     def copy_row(self):
         """复制选中行的数据到剪贴板"""
         data = self.get_selected_row()
@@ -266,6 +284,9 @@ class DataTable(ttk.Frame):
             # 这样可以保持Shift/Ctrl多选
             if item not in self.tree.selection():
                 self.tree.selection_set(item)
+            # 未接入事件标记回调时禁用该项（如实时窗口 modbus 模式）
+            state = 'normal' if self.on_mark_event_at_frame_callback else 'disabled'
+            self.context_menu.entryconfig("在此帧标记事件...", state=state)
             self.context_menu.post(event.x_root, event.y_root)
 
     def sort_by_column(self, col_id, reverse=False):
@@ -302,6 +323,10 @@ class DataTable(ttk.Frame):
     def set_view_frame_callback(self, callback):
         """设置查看帧回调函数"""
         self.on_view_frame_callback = callback
+
+    def set_mark_event_at_frame_callback(self, callback):
+        """设置"在此帧标记事件"回调函数"""
+        self.on_mark_event_at_frame_callback = callback
 
     def delete_selected_rows(self):
         """删除选中行（单行或多行）"""

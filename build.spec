@@ -24,6 +24,7 @@ a = Analysis(
         'ui.data_table',
         'ui.async_worker',
         'ui.frame_viewer',
+        'ui.mark_event_dialog',
         'ui.roi_selector',
         'ui.statistics_panel',
         'ui.slog_viewer',

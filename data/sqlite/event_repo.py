@@ -67,6 +67,26 @@ class SqliteEventRepository:
             conn.commit()
         execute_with_lock(self.db_path, _add)
 
+    def replace_event(self, session_id: str, old_event: EventRecord, new_event: EventRecord) -> None:
+        """原子替换单个事件：同一事务内删除旧事件并插入新事件
+
+        覆盖唯一事件（如入豆/回温）时使用，避免"先删后加"两条独立事务
+        之间失败导致的事件丢失窗口。
+        """
+        def _replace(conn):
+            conn.execute(
+                "DELETE FROM event WHERE session_id = ? AND type = ? AND frame = ?",
+                (session_id, old_event.get('type', ''), old_event.get('frame', 0)),
+            )
+            conn.execute(
+                "INSERT INTO event (session_id, type, frame, time, value) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (session_id, new_event.get('type', ''), new_event.get('frame', 0),
+                 new_event.get('time', 0.0), new_event.get('value')),
+            )
+            conn.commit()
+        execute_with_lock(self.db_path, _replace)
+
     def delete_event(self, session_id: str, event_type: str, frame: int) -> None:
         """删除单个事件"""
         def _delete(conn):

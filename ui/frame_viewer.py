@@ -16,6 +16,8 @@ import threading
 from core.digit_recognition_pipeline import DigitRecognitionPipeline
 # 仅用于SEGMENT_AREAS常量（可视化），不参与实际识别
 from core.white_led_recognizer import WhiteLEDRecognizer
+# 事件类型单一来源（data.types.EventType）
+from data.types import EVENT_TYPES as _EVENT_TYPES
 
 from utils.screen_utils import center_window
 
@@ -33,10 +35,7 @@ def is_valid_temp_format(text: str) -> bool:
 class FrameViewer(tk.Toplevel):
     """帧查看器窗口"""
 
-    EVENT_TYPES = [
-        "入豆", "回温", "一爆开始", "一爆结束",
-        "二爆开始", "烘焙结束", "调整火力", "调整风门"
-    ]
+    EVENT_TYPES = _EVENT_TYPES
 
     def __init__(self, parent, extractor, video_path, rois, frame_num, timestamp, interval=0.25,
                  results=None, events=None, on_mark_event_callback=None,
@@ -792,16 +791,14 @@ class FrameViewer(tk.Toplevel):
 
         # 调整火力/调整风门可以多次记录（不检查重复）
         # 其他事件只能记录一次（检查重复并提示覆盖）
+        overwrite_event = None
         if event_type not in ("调整火力", "调整风门"):
             for ev in self.events:
                 if ev.get('type') == event_type:
                     from tkinter import messagebox
                     if not messagebox.askyesno("重复事件", f"已存在'{event_type}'事件，是否覆盖？", parent=self):
                         return
-                    # 通知回调删除旧事件
-                    if self.on_mark_event_callback:
-                        self.on_mark_event_callback(ev, is_overwrite=True)
-                    self.events.remove(ev)
+                    overwrite_event = ev
                     break
 
         # 创建新事件
@@ -811,9 +808,16 @@ class FrameViewer(tk.Toplevel):
             'time': round(self.current_timestamp, 1),
             'value': value
         }
+        # 更新内存事件列表（覆盖时先移除旧事件）
+        if overwrite_event is not None:
+            self.events.remove(overwrite_event)
         self.events.append(event_data)
+
+        # 通知回调：覆盖时传旧事件 dict（on_event_marked 走单事务原子替换），否则传 None 走新增。
+        # 说明：on_event_marked 的 event_to_replace 参数统一为"新增传 None / 覆盖传旧事件 dict"，
+        # 与表格右键标记路径（mark_event_at_frame）语法一致；待 FrameViewer 删除后此写法随它消失。
         if self.on_mark_event_callback:
-            self.on_mark_event_callback(event_data, is_overwrite=False)
+            self.on_mark_event_callback(event_data, event_to_replace=overwrite_event)
         self.destroy()
 
     def _get_record_color(self):
