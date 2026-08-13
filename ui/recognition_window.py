@@ -69,6 +69,7 @@ class RecognitionWindow(tk.Toplevel):
                 base_path = sys._MEIPASS
             else:
                 base_path = os.path.dirname(os.path.abspath(__file__))
+                base_path = os.path.join(base_path, '..')
             icon_path = os.path.join(base_path, 'icon.ico')
             if os.path.exists(icon_path):
                 self.iconbitmap(default=icon_path)

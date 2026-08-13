@@ -7,8 +7,14 @@ const STATE_LABEL: Record<RoastState, string> = {
   roasting: '烘焙中',
 }
 
-function fmt(v: number | null): string {
+// 温度显示格式：保留一位小数，null 显示 '--'
+function formatTemperature(v: number | null): string {
   return v != null ? v.toFixed(1) : '--'
+}
+
+// 火力/风门为整数百分比（0-100），null 显示 '--'
+function formatDial(v: number | null): string {
+  return v != null ? String(Math.round(v)) : '--'
 }
 
 interface Props {
@@ -16,24 +22,36 @@ interface Props {
   temp2: number | null
   ror: number | null
   state: RoastState | null
+  heater: number | null
+  fan: number | null
 }
 
-export default function TemperaturePanel({ temp1, temp2, ror, state }: Props) {
+export default function TemperaturePanel({ temp1, temp2, ror, state, heater, fan }: Props) {
   return (
     <div className="temp-panel">
       <div className="temp-cell">
-        <span className="temp-value temp1">{fmt(temp1)}</span>
+        <span className="temp-value temp1">{formatTemperature(temp1)}</span>
         <span className="temp-label">豆温 ℃</span>
       </div>
       <div className="temp-cell">
-        <span className="temp-value temp2">{fmt(temp2)}</span>
+        <span className="temp-value temp2">{formatTemperature(temp2)}</span>
         <span className="temp-label">风温 ℃</span>
       </div>
       <div className="temp-cell">
-        <span className="temp-value temp-ror">{fmt(ror)}</span>
+        <span className="temp-value temp-ror">{formatTemperature(ror)}</span>
         <span className="temp-label">ROR ℃/min</span>
       </div>
       <div className="temp-state">{state ? STATE_LABEL[state] : '连接中…'}</div>
+      <div className="temp-dials">
+        <div className="temp-cell">
+          <span className="temp-dial-value">{formatDial(heater)}</span>
+          <span className="temp-label">火力 %</span>
+        </div>
+        <div className="temp-cell">
+          <span className="temp-dial-value">{formatDial(fan)}</span>
+          <span className="temp-label">风门 %</span>
+        </div>
+      </div>
     </div>
   )
 }

@@ -110,6 +110,35 @@ export async function getStatus(): Promise<Status> {
 }
 
 /**
+ * 查询 offset（相对入豆秒）时刻的重采样豆温估算（GET /api/temp）
+ *
+ * 软读：网络错误 / 5s 超时 / 5xx 重试 3 次（短退避，同 postEvent 重试语义）；
+ * 200+ok:false（数据不足/超范围）与 4xx（参数错误）不重试，返回 null → 调用方显示 '--'。
+ */
+export async function getTemp(offset: number): Promise<number | null> {
+  for (let attempt = 0; attempt <= RETRY_COUNT; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[attempt - 1] ?? 400))
+    }
+    try {
+      const res = await request(`/api/temp?offset=${offset}`)
+      if (!res.ok) {
+        if (res.status >= 400 && res.status < 500) return null // 4xx 不重试
+        continue // 5xx/502 视为传输失败，继续重试
+      }
+      const data = (await res.json()) as { ok?: boolean; temp1?: number | null }
+      if (data.ok === false) return null
+      return typeof data.temp1 === 'number' && Number.isFinite(data.temp1)
+        ? data.temp1
+        : null
+    } catch {
+      // 网络错误/超时：继续重试（全部失败统一返回 null）
+    }
+  }
+  return null
+}
+
+/**
  * 发送事件命令（start / add_event / add_value_event / end）
  *
  * - payload 由调用方冻结（offset 在点击瞬间算好），重试原样重发

@@ -16,6 +16,10 @@ export interface PersistedSession {
   ended: boolean
   lastHeater: number
   lastFan: number
+  /** 一爆开始温度（get_temp 查询结果，随会话恢复回显） */
+  fcStartTemp: number | null
+  /** 一爆结束后冻结的 ΔT；必须持久化——否则 fcEnd 后恢复会话会用"恢复时刻"的当前豆温错误重冻 */
+  fcDeltaT: number | null
   /** 写入时间，用于兜底过期会话判定 */
   savedAt: number
 }

@@ -6,6 +6,8 @@ export interface TimerRow {
   label: string
   /** 当前应显示的秒数（已含修正/冻结逻辑） */
   seconds: number
+  /** 可选：行内显示的温度（回温时刻豆温，来自 get_temp） */
+  temp?: number | null
 }
 
 function formatTime(seconds: number): string {
@@ -25,7 +27,12 @@ export default function TimerPanel({ rows }: Props) {
     <div className="timer-panel">
       {rows.map((row) => (
         <div key={row.key} className="timer-row">
-          <span className="timer-label">{row.label}</span>
+          <span className="timer-meta">
+            <span className="timer-label">{row.label}</span>
+            {row.temp != null && (
+              <span className="timer-temp">{row.temp.toFixed(1)}℃</span>
+            )}
+          </span>
           <span className="timer-value">{formatTime(row.seconds)}</span>
         </div>
       ))}
