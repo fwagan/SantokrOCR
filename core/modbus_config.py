@@ -100,6 +100,7 @@ def probe_device(port: str, slave_id: int = 1, register: int = 0,
     Returns:
         温度值（℃）或 None
     """
+    client = None
     try:
         from pymodbus.client import ModbusSerialClient
         client = ModbusSerialClient(
@@ -108,11 +109,9 @@ def probe_device(port: str, slave_id: int = 1, register: int = 0,
             timeout=timeout,
         )
         if not client.connect():
-            client.close()
             return None
 
         result = client.read_input_registers(register, count=1, device_id=slave_id)
-        client.close()
 
         if result is None or result.isError():
             return None
@@ -130,6 +129,14 @@ def probe_device(port: str, slave_id: int = 1, register: int = 0,
     except Exception as e:
         logger.debug(f"探针 {port} 从站 {slave_id} 失败: {e}")
         return None
+
+    finally:
+        # 所有路径（connect 失败 / read 异常 / 错误结果 / 正常返回）都确保关闭串口，避免句柄泄漏
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def resolve_device_port(channel_config: dict, timeout: float = 0.5) -> Optional[str]:
