@@ -138,7 +138,7 @@
 }
 .timer-label {
   font-size: 16px;
-  color: var(--text-dim);
+  color: var(--text);
 }
 .timer-value {
   font-family: var(--mono);
@@ -185,6 +185,42 @@
   font-size: 14px;
   color: var(--accent);
   margin-top: 6px;
+}
+/* 火力/风门：温度表格下方一行两格 */
+.temp-dials {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+.temp-dial-value {
+  font-family: var(--mono);
+  font-size: 24px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+/* 一爆开始温度 + ΔT 栏：两列，复用 .temp-panel 基础 */
+.fc-panel {
+  grid-template-columns: repeat(2, 1fr);
+}
+/* ΔT 冻结态：数值由 ror 红切换为灰色（不加文字标签，颜色区分动态/冻结） */
+.temp-frozen {
+  color: var(--text-dim);
+}
+
+/* ── 计时器 ── */
+.timer-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.timer-temp {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--text-dim);
 }
 
 /* ── 事件按钮 ── */

@@ -1587,17 +1587,33 @@ class CameraRealtimeWindow(tk.Toplevel):
         )
         return r
 
+    def _compute_event_base(self):
+        """事件基准 = 入豆事件在当前坐标系的时间
+
+        Web 实时模式入豆恒在烘焙时间轴 _EXTRA_RECORD_SECONDS（stats_panel 的
+        exclude_outside_var 在实时模式恒为 False：checkbox 未创建、无法切换，
+        resampled_time 恒不重基）；用入豆事件当前坐标而非硬编码，防御未来重基
+        逻辑改动。供 get_temp（offset→烘焙时间）与 _update_turnaround_cache 共享，
+        防两路漂移。
+        """
+        base = _EXTRA_RECORD_SECONDS
+        # list() 对 list 在 GIL 下原子复制，读到的是某个一致快照；
+        # 主线程 process_data 可能同时 append/整表重赋值，取到旧快照属预期
+        # （base 兜底 _EXTRA_RECORD_SECONDS，下一帧 status 查询即刷新）。
+        events = list(self.stats_panel.events)
+        for ev in events:
+            if ev.get('type') == EventType.CHARGE:
+                base = float(ev.get('time', _EXTRA_RECORD_SECONDS))
+                break
+        return base
+
     def _update_turnaround_cache(self):
         """检测 stats_panel 中的回温事件，更新 offset 缓存（供 get_status 返回）
 
         基准用事件列表中"入豆"事件的当前坐标，而非硬编码——
         stats_panel 勾选"排除阶段外数据"时会把事件重基到 0，硬编码会导致偏移偏小。
         """
-        base = _EXTRA_RECORD_SECONDS
-        for ev in self.stats_panel.events:
-            if ev.get('type') == EventType.CHARGE:
-                base = float(ev.get('time', _EXTRA_RECORD_SECONDS))
-                break
+        base = self._compute_event_base()
         for ev in reversed(self.stats_panel.events):
             if ev.get('type') == EventType.TURNAROUND:
                 offset = round(float(ev.get('time', 0)) - base, 3)
@@ -1710,6 +1726,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         name = cmd.get('cmd')
         if name == 'get_status':
             return self._ipc_get_status()
+        if name == 'get_temp':
+            return self._ipc_get_temp(cmd)
         if name == 'start':
             return self._ipc_start(cmd)
         if name == 'add_event':
@@ -1738,7 +1756,8 @@ class CameraRealtimeWindow(tk.Toplevel):
                     temp2 = round(float(t2), 1)
                 except ValueError:
                     pass
-        if (self.stats_panel.ror_values is not None
+        if self._roast_state == "roasting" and (
+                self.stats_panel.ror_values is not None
                 and len(self.stats_panel.ror_values) > 0):
             ror = round(float(self.stats_panel.ror_values[-1]), 1)
         return {
@@ -1748,6 +1767,44 @@ class CameraRealtimeWindow(tk.Toplevel):
             'state': self._roast_state,
             'turnaround_offset': self._turnaround_offset,
         }
+
+    def _ipc_get_temp(self, cmd):
+        """get_temp：返回 offset（相对入豆秒）时刻的重采样豆温估算
+
+        offset 对应的具体时刻未必落在实际采样点上，用 stats_panel 的
+        resampled_time/resampled_temp1（等间隔线性插值）经 np.interp 估算。
+        数据不足/超范围返回 temp1=null（合法状态，前端显示 '--'），仅参数非法走 ok:false。
+        """
+        offset = cmd.get('offset')
+        if offset is None:
+            return {"ok": False, "error": "缺少 offset"}
+        try:
+            offset = float(offset)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "offset 必须是数值"}
+        if not np.isfinite(offset) or offset < 0:
+            return {"ok": False, "error": "offset 必须是非负有限数值"}
+
+        query_t = self._compute_event_base() + offset
+
+        # resampled 数组由 process_data 整表重建后整体赋值（非原地改写），
+        # 后台线程此处读取拿到一致快照；勿改为原地修改 resampled_time/resampled_temp1。
+        # rt/rv 是两次独立属性读取，可能因线程交错来自不同代（长度不同）→
+        # np.interp 抛 ValueError，故加长度一致性守卫，失败返回 null（前端 '--'）。
+        rt = self.stats_panel.resampled_time
+        rv = self.stats_panel.resampled_temp1
+        if (rt is None or rv is None or len(rt) < 2
+                or len(rv) == 0 or len(rt) != len(rv)):
+            return {"ok": True, "temp1": None}
+
+        # 超范围（查询点超出当前数据时间轴）对齐契约返回 null，而非钳制端点值
+        if query_t < rt[0] or query_t > rt[-1]:
+            return {"ok": True, "temp1": None}
+
+        temp = float(np.interp(query_t, rt, rv))
+        if not np.isfinite(temp):
+            return {"ok": True, "temp1": None}
+        return {"ok": True, "temp1": round(temp, 1)}
 
     def _ipc_start(self, cmd):
         """start：入豆。记录初始火力/风门，标记等待下一帧作入豆帧"""

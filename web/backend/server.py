@@ -3,6 +3,7 @@
 手机浏览器 ←HTTP→ 本服务 ←TCP socket→ 主进程(app)。
 
 - GET /api/status   → 转发 get_status（轮询温度/状态/回温 offset）
+- GET /api/temp     → 转发 get_temp（offset 时刻的重采样豆温估算）
 - POST /api/events  → 按 body 的 cmd 分发 start/add_event/add_value_event/end
 - 静态挂载 web/frontend/dist（Phase 3 React 构建产物，目录存在才挂载）
 
@@ -17,7 +18,7 @@ import logging
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -62,6 +63,21 @@ async def health():
     与端口上其他程序——避免仅凭 TCP 连通就把别的程序误报为"已在运行"。
     """
     return {"service": "mobile-event-marker", "ok": True}
+
+
+@app.get("/api/temp")
+async def get_temp(offset: float = Query(..., ge=0,
+                    description="相对入豆的秒数")):
+    """转发 get_temp：返回该 offset 时刻的重采样豆温估算
+
+    响应 {temp1: number|null}（null = 数据不足/超范围，前端显示 '--'）。
+    主进程 ok:false（offset 非法）→ HTTP 400；主进程不可达由 _forward 兜底 502。
+    """
+    resp = await _forward({"cmd": "get_temp", "offset": offset})
+    if resp.get("ok") is False:
+        raise HTTPException(status_code=400,
+                            detail=resp.get("error") or "参数错误")
+    return resp
 
 
 @app.post("/api/events")

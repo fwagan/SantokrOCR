@@ -5,7 +5,7 @@
 // - 点击入豆即乐观设置 T0 并起计时；start 失败（ok:false / 传输错误）回退 T0 归零
 // - 回温计时锚点 = T0 + turnaround_offset（服务端 offset 为相对入豆的秒数，轮询延迟自动修正）
 // - 一爆/二爆锚点 = T0 + 点击时 offset；end ok 后 ended=true 冻结全部计时器
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import {
   EVENT_TYPES,
   type AddEventPayload,
@@ -15,16 +15,42 @@ import {
   type RoastState,
   type StartPayload,
 } from './api'
-import { postEvent } from './api'
+import { getTemp, postEvent } from './api'
 import { useNow, useStatus } from './hooks'
 import { clearSession, readSession, writeSession } from './session'
 import ChargeForm from './components/ChargeForm'
 import EventButtons from './components/EventButtons'
+import FcPanel from './components/FcPanel'
 import StatusBanner from './components/StatusBanner'
 import TemperaturePanel from './components/TemperaturePanel'
 import TimerPanel, { type TimerRow } from './components/TimerPanel'
 import ValueDialog from './components/ValueDialog'
 import './App.css'
+
+// get_temp 延迟查询毫秒数：等主进程 resample（~1s 节流重建）追上，保证查询点数据一致
+const TEMP_QUERY_DELAY_MS = 2000
+
+/**
+ * 调度一次延迟温度查询（普通函数，非 hook）：delayMs 后查 offset 时刻温度，结果非 null 时回调。
+ * t0Ref 会话守卫：查询在途期间发生新入豆/重置（t0 变化）则丢弃过期结果。
+ * 返回 cancel 函数用于清理定时器（effect 场景调用方在 cleanup 中调用）。
+ * 一次性动作，无状态残留——结果由 onResult 直接消费。
+ */
+function scheduleDelayedTempQuery(
+  anchor: number,
+  t0: number,
+  t0Ref: RefObject<number | null>,
+  onResult: (temp: number) => void,
+  delayMs = TEMP_QUERY_DELAY_MS,
+): () => void {
+  const timer = setTimeout(() => {
+    getTemp((anchor - t0) / 1000).then((t) => {
+      if (t0Ref.current !== t0) return // 会话已变，丢弃过期结果
+      if (t != null) onResult(t)
+    })
+  }, delayMs)
+  return () => clearTimeout(timer)
+}
 
 export default function App() {
   const { status, error: pollError } = useStatus()
@@ -47,6 +73,17 @@ export default function App() {
   } | null>(null)
   const [lastHeater, setLastHeater] = useState(50) // 最近一次火力值（默认初始 50）
   const [lastFan, setLastFan] = useState(50)
+  // 历史时刻豆温（get_temp 查询结果）：回温温度、一爆开始温度；fcDeltaT 为一爆后冻结值
+  const [turnaroundTemp, setTurnaroundTemp] = useState<number | null>(null)
+  const [fcStartTemp, setFcStartTemp] = useState<number | null>(null)
+  const [fcDeltaT, setFcDeltaT] = useState<number | null>(null)
+  const turnaroundQueryRef = useRef(false) // 本会话是否已查过回温温度（防重复/StrictMode 双跑）
+  // 一爆开始/结束的修正查询由事件触发（handleAddEvent 内直接调度），无需 queryRef
+  const liveTempRef = useRef<number | null>(null) // 最新轮询豆温（冻结瞬间取快照）
+  liveTempRef.current = status?.temp1 ?? null
+  // 会话标识：入豆 UTC ms 在会话内恒定，供 scheduleDelayedTempQuery 丢弃跨会话过期结果
+  const t0Ref = useRef<number | null>(null)
+  t0Ref.current = t0
 
   const roastActive = t0 != null && !ended
   const now = useNow(roastActive)
@@ -67,6 +104,48 @@ export default function App() {
     }
   }, [status, t0, turnaroundStart])
 
+  // 回温温度：turnaroundStart 首次非 null 时延迟查询（状态驱动 → effect 内调度）
+  // queryRef 防重复（StrictMode 双跑只查一次），cleanup 清理定时器
+  useEffect(() => {
+    if (t0 == null || turnaroundStart == null) return
+    if (turnaroundQueryRef.current) return
+    turnaroundQueryRef.current = true
+    const anchor = turnaroundStart
+    const t0AtSchedule = t0
+    const cancel = scheduleDelayedTempQuery(anchor, t0AtSchedule, t0Ref, (temp) => {
+      setTurnaroundTemp(temp)
+    })
+    return () => {
+      cancel()
+      turnaroundQueryRef.current = false
+    }
+  }, [t0, turnaroundStart, t0Ref, turnaroundQueryRef])
+
+  // ΔT 冻结：fcEnd 或 ended 首次出现时用最近轮询豆温冻结一次（幂等，函数式更新）
+  // - ended 也算冻结触发：一爆开始后、一爆结束前手动 end（fcEnd 为 null）也应冻结
+  // - 依赖 status?.temp1：冻结瞬间若轮询断档（temp1=null），等下一轮恢复后再冻
+  // - fcDeltaT != null 守卫：恢复会话已持久化冻结值时跳过，避免用"当前"豆温错误重冻
+  useEffect(() => {
+    if ((fcEnd == null && !ended) || fcStartTemp == null || fcDeltaT != null) return
+    const live = liveTempRef.current
+    if (live != null) setFcDeltaT((prev) => prev ?? live - fcStartTemp)
+  }, [fcEnd, ended, fcStartTemp, fcDeltaT, status?.temp1])
+
+  // 重置烘焙会话的计时锚点/温度/查询防重（t0 与火力/风门由调用方单独处理）
+  // setter 与 ref 稳定，useCallback 依赖 [] 即可，便于在 effect 中作为稳定依赖引用
+  const resetRoastState = useCallback(() => {
+    setTurnaroundStart(null)
+    setFcStart(null)
+    setFcEnd(null)
+    setScStart(null)
+    setScEnd(null)
+    setEnded(false)
+    setTurnaroundTemp(null)
+    setFcStartTemp(null)
+    setFcDeltaT(null)
+    turnaroundQueryRef.current = false
+  }, [])
+
   // 新会话重置：任何"进入 waiting_charge"的状态转换（含黑障/后台错过 idle→waiting_charge 边沿）
   const prevStateRef = useRef<RoastState | null>(null)
   useEffect(() => {
@@ -74,12 +153,7 @@ export default function App() {
     const cur = status?.state ?? null
     if (cur === 'waiting_charge' && prev !== 'waiting_charge') {
       setT0(null)
-      setTurnaroundStart(null)
-      setFcStart(null)
-      setFcEnd(null)
-      setScStart(null)
-      setScEnd(null)
-      setEnded(false)
+      resetRoastState()
       clearSession() // 新烘焙会话，清掉旧会话残留
     }
     // M1 兜底：主进程已停止（end 已处理但响应丢失/黑障），冻结计时器避免无限空转
@@ -87,7 +161,7 @@ export default function App() {
       setEnded(true)
     }
     prevStateRef.current = cur
-  }, [status, t0])
+  }, [status, t0, resetRoastState])
 
   // 恢复持久化会话：误触刷新后，若主进程仍在 roasting 且有未结束会话 → 恢复 T0 与计时锚点
   const restoreCheckedRef = useRef(false)
@@ -104,6 +178,16 @@ export default function App() {
       setScEnd(s.scEnd)
       setLastHeater(s.lastHeater)
       setLastFan(s.lastFan)
+      setFcStartTemp(s.fcStartTemp ?? null)
+      setFcDeltaT(s.fcDeltaT ?? null)
+      // 恢复的会话：fcStartTemp/fcDeltaT 已持久化则直接显示（事件驱动查询天然不重查）；
+      // fcDeltaT 未持久化（fcEnd 点击时轮询断档、冻结未完成）→ 补一次一爆结束修正查询
+      if (s.fcEnd != null && s.fcDeltaT == null && s.fcStartTemp != null) {
+        const fcStartTemp = s.fcStartTemp
+        scheduleDelayedTempQuery(s.fcEnd, s.t0, t0Ref, (temp) => {
+          setFcDeltaT(temp - fcStartTemp)
+        })
+      }
       setToast('已恢复烘焙会话')
     } else {
       clearSession() // 无有效会话（首次进入 / 非 roasting），清理残留
@@ -123,9 +207,11 @@ export default function App() {
       ended,
       lastHeater,
       lastFan,
+      fcStartTemp,
+      fcDeltaT,
       savedAt: Date.now(),
     })
-  }, [t0, turnaroundStart, fcStart, fcEnd, scStart, scEnd, ended, lastHeater, lastFan])
+  }, [t0, turnaroundStart, fcStart, fcEnd, scStart, scEnd, ended, lastHeater, lastFan, fcStartTemp, fcDeltaT])
 
   // 统一提交：冻结 payload（offset 在点击瞬间算好）→ postEvent 内部重试
   // 200+ok:false 业务拒绝 / 传输失败 均在 postEvent 层处理；这里只做 UI 反馈
@@ -161,12 +247,7 @@ export default function App() {
     setT0(chargeT0)
     setLastHeater(h) // 入豆初始值即当前火力/风门，作为后续弹窗默认基准
     setLastFan(f)
-    setTurnaroundStart(null)
-    setFcStart(null)
-    setFcEnd(null)
-    setScStart(null)
-    setScEnd(null)
-    setEnded(false)
+    resetRoastState()
     setBusy(true)
     try {
       const payload: StartPayload = { cmd: 'start', heater_initial: h, fan_initial: f }
@@ -194,9 +275,22 @@ export default function App() {
       payload,
       () => {
         const anchor = base + offset * 1000
-        if (type === EVENT_TYPES.FC_START) setFcStart(anchor)
-        else if (type === EVENT_TYPES.FC_END) setFcEnd(anchor)
-        else if (type === EVENT_TYPES.SC_START) setScStart(anchor)
+        if (type === EVENT_TYPES.FC_START) {
+          setFcStart(anchor)
+          // 本地缓存兜底：点击瞬间的当前豆温立即显示，2s 后查询修正
+          setFcStartTemp(liveTempRef.current)
+          scheduleDelayedTempQuery(anchor, base, t0Ref, (temp) => {
+            setFcStartTemp(temp) // 修正为准确值
+          })
+        } else if (type === EVENT_TYPES.FC_END) {
+          setFcEnd(anchor)
+          // 冻结由 effect 触发（fcEnd 非 null）；2s 后查询一爆结束时刻温度修正冻结值
+          if (fcStartTemp != null) {
+            scheduleDelayedTempQuery(anchor, base, t0Ref, (temp) => {
+              setFcDeltaT(temp - fcStartTemp) // 修正冻结值
+            })
+          }
+        } else if (type === EVENT_TYPES.SC_START) setScStart(anchor)
         else if (type === EVENT_TYPES.SC_END) setScEnd(anchor)
       },
       `记录${type}`,
@@ -263,7 +357,12 @@ export default function App() {
 
   const rows: TimerRow[] = [{ key: 'roast', label: '烘焙计时', seconds: roastSeconds }]
   if (turnaroundSeconds != null) {
-    rows.push({ key: 'turnaround', label: '回温计时', seconds: turnaroundSeconds })
+    rows.push({
+      key: 'turnaround',
+      label: '回温计时',
+      seconds: turnaroundSeconds,
+      temp: turnaroundTemp,
+    })
   }
   if (fcStart != null) {
     rows.push({ key: 'fc', label: '一爆计时', seconds: fcSeconds ?? 0 })
@@ -271,6 +370,13 @@ export default function App() {
   if (fcEnd != null) {
     rows.push({ key: 'sc', label: '二爆计时', seconds: scSeconds ?? 0 })
   }
+
+  // ΔT 显示值：一爆结束前动态（当前实时豆温 − 一爆开始温度），一爆结束后冻结
+  const liveTemp = status?.temp1 ?? null
+  const deltaTFrozen = fcEnd != null || ended
+  const liveDeltaT =
+    liveTemp != null && fcStartTemp != null ? liveTemp - fcStartTemp : null
+  const displayedDeltaT = deltaTFrozen ? fcDeltaT : liveDeltaT
 
   const chargeEnabled = status?.state === 'waiting_charge' && !busy
   const buttonsEnabled = status?.state === 'roasting' && t0 != null && !ended && !busy
@@ -313,7 +419,17 @@ export default function App() {
         temp2={status?.temp2 ?? null}
         ror={status?.ror ?? null}
         state={status?.state ?? null}
+        heater={lastHeater}
+        fan={lastFan}
       />
+
+      {fcStart != null && (
+        <FcPanel
+          fcStartTemp={fcStartTemp}
+          deltaT={displayedDeltaT}
+          frozen={deltaTFrozen}
+        />
+      )}
 
       {t0 != null && (
         <EventButtons
