@@ -10,14 +10,17 @@ import {
   EVENT_TYPES,
   type AddEventPayload,
   type AddValueEventPayload,
+  type Checkpoint,
   type EndPayload,
   type EventCommand,
   type RoastState,
   type StartPayload,
 } from './api'
-import { getTemp, postEvent } from './api'
+import { getCheckpoints, getTemp, postEvent } from './api'
 import { useNow, useStatus } from './hooks'
 import { clearSession, readSession, writeSession } from './session'
+import { countdownColorClass, deriveCheckpoints, formatCountdown } from './checkpoint'
+import CheckpointPanel from './components/CheckpointPanel'
 import ChargeForm from './components/ChargeForm'
 import EventButtons from './components/EventButtons'
 import FcPanel from './components/FcPanel'
@@ -77,6 +80,13 @@ export default function App() {
   const [turnaroundTemp, setTurnaroundTemp] = useState<number | null>(null)
   const [fcStartTemp, setFcStartTemp] = useState<number | null>(null)
   const [fcDeltaT, setFcDeltaT] = useState<number | null>(null)
+  // checkpoint（Phase 2+3）：理想曲线静态列表 + 前端自治达成状态
+  const [checkpoints, setCheckpoints] = useState<Checkpoint[] | null>(null)
+  const [cachedCurveName, setCachedCurveName] = useState('')
+  const [expanded, setExpanded] = useState(false)
+  const [manualClicks, setManualClicks] = useState<Record<number, { at: number; temp: number | null }>>({})
+  const [endTime, setEndTime] = useState<number | null>(null)
+  const [endTemp, setEndTemp] = useState<number | null>(null)
   const turnaroundQueryRef = useRef(false) // 本会话是否已查过回温温度（防重复/StrictMode 双跑）
   // 一爆开始/结束的修正查询由事件触发（handleAddEvent 内直接调度），无需 queryRef
   const liveTempRef = useRef<number | null>(null) // 最新轮询豆温（冻结瞬间取快照）
@@ -84,6 +94,8 @@ export default function App() {
   // 会话标识：入豆 UTC ms 在会话内恒定，供 scheduleDelayedTempQuery 丢弃跨会话过期结果
   const t0Ref = useRef<number | null>(null)
   t0Ref.current = t0
+  // getCheckpoints 在途守卫：防后端掉线时曲线拉取请求叠加（与 getStatus 串行轮询语义对齐）
+  const checkpointsFetchingRef = useRef(false)
 
   const roastActive = t0 != null && !ended
   const now = useNow(roastActive)
@@ -143,6 +155,9 @@ export default function App() {
     setTurnaroundTemp(null)
     setFcStartTemp(null)
     setFcDeltaT(null)
+    setManualClicks({})
+    setEndTime(null)
+    setEndTemp(null)
     turnaroundQueryRef.current = false
   }, [])
 
@@ -163,6 +178,26 @@ export default function App() {
     prevStateRef.current = cur
   }, [status, t0, resetRoastState])
 
+  // 非 roasting 状态下，curve_name 变化时拉取 checkpoint 列表覆盖缓存
+  useEffect(() => {
+    if (status == null || status.state === 'roasting') return
+    const name = status.curve_name
+    if (!name) {
+      // 服务端无理想曲线（未加载或已清除）：清空本地缓存
+      setCheckpoints(null)
+      setCachedCurveName('')
+      return
+    }
+    if (name === cachedCurveName || checkpointsFetchingRef.current) return
+    checkpointsFetchingRef.current = true
+    getCheckpoints().then((cps) => {
+      checkpointsFetchingRef.current = false
+      if (cps == null) return // 网络失败：保持旧缓存与缓存名，下轮轮询自然重试
+      setCheckpoints(cps)
+      setCachedCurveName(name)
+    })
+  }, [status, cachedCurveName])
+
   // 恢复持久化会话：误触刷新后，若主进程仍在 roasting 且有未结束会话 → 恢复 T0 与计时锚点
   const restoreCheckedRef = useRef(false)
   useEffect(() => {
@@ -180,6 +215,9 @@ export default function App() {
       setLastFan(s.lastFan)
       setFcStartTemp(s.fcStartTemp ?? null)
       setFcDeltaT(s.fcDeltaT ?? null)
+      setManualClicks(s.manualClicks ?? {})
+      setCheckpoints((s.checkpoints as Checkpoint[] | null) ?? null)
+      setCachedCurveName(s.cachedCurveName ?? '')
       // 恢复的会话：fcStartTemp/fcDeltaT 已持久化则直接显示（事件驱动查询天然不重查）；
       // fcDeltaT 未持久化（fcEnd 点击时轮询断档、冻结未完成）→ 补一次一爆结束修正查询
       if (s.fcEnd != null && s.fcDeltaT == null && s.fcStartTemp != null) {
@@ -209,17 +247,31 @@ export default function App() {
       lastFan,
       fcStartTemp,
       fcDeltaT,
+      manualClicks,
+      checkpoints,
+      cachedCurveName,
       savedAt: Date.now(),
     })
-  }, [t0, turnaroundStart, fcStart, fcEnd, scStart, scEnd, ended, lastHeater, lastFan, fcStartTemp, fcDeltaT])
+  }, [
+    t0,
+    turnaroundStart,
+    fcStart,
+    fcEnd,
+    scStart,
+    scEnd,
+    ended,
+    lastHeater,
+    lastFan,
+    fcStartTemp,
+    fcDeltaT,
+    manualClicks,
+    checkpoints,
+    cachedCurveName,
+  ])
 
   // 统一提交：冻结 payload（offset 在点击瞬间算好）→ postEvent 内部重试
   // 200+ok:false 业务拒绝 / 传输失败 均在 postEvent 层处理；这里只做 UI 反馈
-  const submitCommand = async (
-    payload: EventCommand,
-    onOk: () => void,
-    failLabel: string,
-  ) => {
+  const submitCommand = async (payload: EventCommand, onOk: () => void, failLabel: string, onError?: () => void) => {
     setBusy(true)
     try {
       const resp = await postEvent(payload)
@@ -227,9 +279,11 @@ export default function App() {
         onOk()
       } else {
         setToast(`${failLabel}失败：${resp.error ?? '未知原因'}`)
+        onError?.()
       }
     } catch (e) {
       setToast(`${failLabel}失败：${e instanceof Error ? e.message : String(e)}`)
+      onError?.()
     } finally {
       setBusy(false)
     }
@@ -303,10 +357,7 @@ export default function App() {
     setDialog({ type, offset: (Date.now() - t0) / 1000 })
   }
 
-  const handleValueEvent = (
-    dlg: { type: '调整火力' | '调整风门'; offset: number },
-    value: number,
-  ) => {
+  const handleValueEvent = (dlg: { type: '调整火力' | '调整风门'; offset: number }, value: number) => {
     if (t0 == null || busy) return
     setDialog(null)
     if (!Number.isFinite(value) || value < 0 || value > 100) {
@@ -332,14 +383,32 @@ export default function App() {
     if (t0 == null || busy) return
     const base = t0
     const offset = (Date.now() - base) / 1000 // ms 精度
+    // 达成时刻以前端点击瞬间为准（乐观），不等待 app 回复；失败回退
+    const endAt = Date.now()
+    setEndTime(endAt)
+    setEndTemp(liveTempRef.current)
     const payload: EndPayload = { cmd: 'end', event: { type: EVENT_TYPES.ROAST_END, offset } }
-    submitCommand(payload, () => setEnded(true), '记录烘焙结束')
+    submitCommand(
+      payload,
+      () => setEnded(true),
+      '记录烘焙结束',
+      () => {
+        setEndTime(null)
+        setEndTemp(null)
+      },
+    )
+  }
+
+  const handleManualCheck = (index: number) => {
+    if (derived == null || derived.nextIndex !== index) return
+    const row = derived.rows[index]
+    if (row == null || row.achieved || row.cp.type !== 'manual') return
+    setManualClicks((prev) => ({ ...prev, [index]: { at: Date.now(), temp: liveTempRef.current } }))
   }
 
   // ── 计时器行数据（由锚点计算，TimerPanel 纯展示） ──
   const roastSeconds = t0 != null ? (now - t0) / 1000 : 0
-  const turnaroundSeconds =
-    turnaroundStart != null ? (now - turnaroundStart) / 1000 : null
+  const turnaroundSeconds = turnaroundStart != null ? (now - turnaroundStart) / 1000 : null
   const fcSeconds =
     fcStart != null
       ? fcEnd != null
@@ -374,8 +443,7 @@ export default function App() {
   // ΔT 显示值：一爆结束前动态（当前实时豆温 − 一爆开始温度），一爆结束后冻结
   const liveTemp = status?.temp1 ?? null
   const deltaTFrozen = fcEnd != null || ended
-  const liveDeltaT =
-    liveTemp != null && fcStartTemp != null ? liveTemp - fcStartTemp : null
+  const liveDeltaT = liveTemp != null && fcStartTemp != null ? liveTemp - fcStartTemp : null
   const displayedDeltaT = deltaTFrozen ? fcDeltaT : liveDeltaT
 
   const chargeEnabled = status?.state === 'waiting_charge' && !busy
@@ -393,12 +461,33 @@ export default function App() {
             ? EVENT_TYPES.FC_END
             : EVENT_TYPES.FC_START
 
+  // ── checkpoint 派生：达成/时间/countdown（达成状态前端自治） ──
+  const derived = checkpoints
+    ? deriveCheckpoints(
+        checkpoints,
+        {
+          t0,
+          turnaroundStart,
+          turnaroundTemp,
+          fcStart,
+          fcEnd,
+          scStart,
+          scEnd,
+          endTime,
+          endTemp,
+          fcStartTemp,
+          manualClicks,
+        },
+        now,
+      )
+    : null
+  const nextCountdownText = derived != null && derived.remaining != null ? formatCountdown(derived.remaining) : null
+  const nextCountdownColor = derived != null && derived.remaining != null ? countdownColorClass(derived.remaining) : ''
+
   return (
     <div className="app">
       <StatusBanner error={pollError} toast={toast} busy={busy} />
-      {midRoastReload && (
-        <div className="banner banner-warn">烘焙进程由其他终端控制，当前终端事件标记不可用</div>
-      )}
+      {midRoastReload && <div className="banner banner-warn">烘焙进程由其他终端控制，当前终端事件标记不可用</div>}
 
       {t0 == null ? (
         <ChargeForm
@@ -423,13 +512,7 @@ export default function App() {
         fan={lastFan}
       />
 
-      {fcStart != null && (
-        <FcPanel
-          fcStartTemp={fcStartTemp}
-          deltaT={displayedDeltaT}
-          frozen={deltaTFrozen}
-        />
-      )}
+      {fcStart != null && <FcPanel fcStartTemp={fcStartTemp} deltaT={displayedDeltaT} frozen={deltaTFrozen} />}
 
       {t0 != null && (
         <EventButtons
@@ -442,6 +525,18 @@ export default function App() {
           onHeater={() => openValueDialog('调整火力')}
           onFan={() => openValueDialog('调整风门')}
           onEnd={handleEnd}
+        />
+      )}
+
+      {derived != null && derived.rows.length > 0 && (
+        <CheckpointPanel
+          rows={derived.rows}
+          nextIndex={derived.nextIndex}
+          countdownText={nextCountdownText}
+          countdownColorClass={nextCountdownColor}
+          expanded={expanded}
+          onToggleExpanded={() => setExpanded((v) => !v)}
+          onManualCheck={handleManualCheck}
         />
       )}
 

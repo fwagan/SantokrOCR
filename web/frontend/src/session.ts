@@ -20,6 +20,12 @@ export interface PersistedSession {
   fcStartTemp: number | null
   /** 一爆结束后冻结的 ΔT；必须持久化——否则 fcEnd 后恢复会话会用"恢复时刻"的当前豆温错误重冻 */
   fcDeltaT: number | null
+  /** manual checkpoint 达成记录（index → 点击时刻/温度） */
+  manualClicks: Record<number, { at: number; temp: number | null }>
+  /** 已加载的理想曲线 checkpoint 列表（刷新后恢复，roasting 中也显示） */
+  checkpoints: unknown[] | null
+  /** 已加载的理想曲线名（恢复后用于缓存校验，避免重复拉取） */
+  cachedCurveName: string
   /** 写入时间，用于兜底过期会话判定 */
   savedAt: number
 }
