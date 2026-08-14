@@ -60,12 +60,8 @@ export default function CheckpointPanel({
           >
             <span className="checkpoint-box">{nextRow.cp.type === 'manual' ? '☐' : '☒'}</span>
             <span className="checkpoint-event">{nextRow.cp.event}</span>
-            {nextRow.cp.temp != null && (
-              <span className="checkpoint-temp">{nextRow.cp.temp}℃</span>
-            )}
-            {nextRow.cp.value !== '' && (
-              <span className="checkpoint-value">({nextRow.cp.value})</span>
-            )}
+            {nextRow.cp.temp != null && <span className="checkpoint-temp">{nextRow.cp.temp}℃</span>}
+            {nextRow.cp.value !== '' && <span className="checkpoint-value">({nextRow.cp.value})</span>}
           </button>
           {countdownText != null && (
             <span className={`checkpoint-countdown ${countdownColorClass}`}>{countdownText}</span>
@@ -79,12 +75,8 @@ export default function CheckpointPanel({
             <div key={r.index} className="checkpoint-row checkpoint-incoming-row">
               <span className="checkpoint-box">{r.cp.type === 'manual' ? '☐' : '☒'}</span>
               <span className="checkpoint-event">{r.cp.event}</span>
-              {r.cp.temp != null && (
-                <span className="checkpoint-temp">{r.cp.temp}℃</span>
-              )}
-              {r.cp.value !== '' && (
-                <span className="checkpoint-value">({r.cp.value})</span>
-              )}
+              {r.cp.temp != null && <span className="checkpoint-temp">{r.cp.temp}℃</span>}
+              {r.cp.value !== '' && <span className="checkpoint-value">({r.cp.value})</span>}
             </div>
           ))}
         </div>
@@ -112,9 +104,7 @@ function PassedRow({ row }: { row: CheckpointState }) {
       {showTime && (
         <span className="checkpoint-time">
           {timeIdeal}
-          {timeIdeal !== '' && timeActual !== '' && (
-            <span className="checkpoint-time-sep">/</span>
-          )}
+          {timeIdeal !== '' && timeActual !== '' && <span className="checkpoint-time-sep">/</span>}
           {timeActual}
         </span>
       )}
