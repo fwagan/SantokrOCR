@@ -55,6 +55,20 @@ async def get_status():
     return resp
 
 
+@app.get("/api/checkpoints")
+async def get_checkpoints():
+    """转发 get_checkpoints：返回 {checkpoints: [...] | null}
+
+    主进程未加载理想曲线时 checkpoints 为 null（前端据此隐藏 checkpoint 区域）。
+    主进程内部异常时兜底返回 {"ok": false, "error": "..."}，此处映射为 HTTP 500。
+    """
+    resp = await _forward({"cmd": "get_checkpoints"})
+    if resp.get("ok") is False:
+        raise HTTPException(status_code=500,
+                            detail=resp.get("error") or "主进程内部错误")
+    return resp
+
+
 @app.get("/api/health")
 async def health():
     """健康探测端点：确认本服务在监听（供主进程自动启动探测用，不转发 IPC）
