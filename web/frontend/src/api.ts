@@ -14,12 +14,22 @@ export interface Status {
   ror: number | null
   state: RoastState
   turnaround_offset: number | null
+  curve_name: string
 }
 
 /** POST /api/events 响应（200 + ok:false = 业务拒绝） */
 export interface EventResponse {
   ok: boolean
   error?: string
+}
+
+/** checkpoint 静态条目（桌面端 build_checkpoints 下发） */
+export interface Checkpoint {
+  type: 'auto' | 'manual'
+  event: string
+  temp: number | null
+  value: string
+  offset: number | null
 }
 
 // 事件类型（与 data/types.py EventType 对齐）
@@ -107,6 +117,32 @@ export async function getStatus(): Promise<Status> {
     )
   }
   return (await res.json()) as Status
+}
+
+/**
+ * 获取 checkpoint 静态列表（GET /api/checkpoints）
+ *
+ * 返回 null = 无理想曲线（checkpoints: null）或全部重试失败（调用方静默保留旧缓存）。
+ * 网络错误 / 5s 超时 / 5xx 重试 3 次（短退避，同 getTemp 语义）；4xx 不重试直接返回 null。
+ */
+export async function getCheckpoints(): Promise<Checkpoint[] | null> {
+  for (let attempt = 0; attempt <= RETRY_COUNT; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS[attempt - 1] ?? 400))
+    }
+    try {
+      const res = await request('/api/checkpoints')
+      if (!res.ok) {
+        if (res.status >= 400 && res.status < 500) return null
+        continue
+      }
+      const data = (await res.json()) as { checkpoints: Checkpoint[] | null }
+      return data.checkpoints
+    } catch {
+      // 网络/超时：继续重试
+    }
+  }
+  return null
 }
 
 /**
