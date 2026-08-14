@@ -7,7 +7,6 @@
 
 export type RoastState = 'idle' | 'waiting_charge' | 'roasting'
 
-/** GET /api/status 响应（主进程透传 5 字段，都可能为 null） */
 export interface Status {
   temp1: number | null
   temp2: number | null
