@@ -22,9 +22,9 @@ export interface CheckpointState {
   index: number
   cp: Checkpoint
   achieved: boolean
-  /** 达成时刻（ms epoch；auto 锚点时间 / manual 点击 at）；未达成 null */
+  /** 达成时刻（UTC ms）；auto 事件未发生 / manual 未点击且未被 auto 补齐 → null */
   achievedAt: number | null
-  /** 达成时的实际豆温，未记录为 null */
+  /** 达成时的实际豆温；自动补齐的 manual 为 null */
   actualTemp: number | null
   /** 相对回温的理想秒数（回温=0）；回温行本身为 null（不显示） */
   idealRelSec: number | null
@@ -36,10 +36,8 @@ export interface DerivedCheckpoints {
   rows: CheckpointState[]
   /** 第一个未达成 checkpoint 的 index；null = 全部达成 */
   nextIndex: number | null
-  /** next 的 countdown 剩余秒（remaining）；null = 不显示（gap / 首条 / 已全达成） */
+  /** next 的 countdown 剩余秒（remaining）；null = 不显示（首条或已全达成） */
   remaining: number | null
-  /** 存在 j > next 已达成（悬空 gap） */
-  hasGap: boolean
 }
 
 export function deriveCheckpoints(
@@ -57,7 +55,7 @@ export function deriveCheckpoints(
   }
   const turnaroundAbs = turnaroundIdx >= 0 ? idealAbs[turnaroundIdx] : null
 
-  // 2. 每行状态
+  // 2. 每行状态（先按锚点 / manualClicks 判定）
   const rows: CheckpointState[] = checkpoints.map((cp, i) => {
     const achievedAt = achievedAtOf(cp.event, anchors, i)
     let idealRelSec: number | null = null
@@ -65,7 +63,7 @@ export function deriveCheckpoints(
       idealRelSec = idealAbs[i] - turnaroundAbs
     }
     let actualRelSec: number | null = null
-    if (achievedAt != null && anchors.turnaroundStart != null) {
+    if (achievedAt != null && anchors.turnaroundStart != null && i !== turnaroundIdx) {
       actualRelSec = (achievedAt - anchors.turnaroundStart) / 1000
     }
     return {
@@ -79,20 +77,33 @@ export function deriveCheckpoints(
     }
   })
 
-  // 3. next + countdown（gap 置空）
-  const nextIndex = rows.findIndex((r) => !r.achieved)
-  let hasGap = false
-  let remaining: number | null = null
-  if (nextIndex >= 0) {
-    hasGap = rows.slice(nextIndex + 1).some((r) => r.achieved)
-    if (nextIndex > 0 && !hasGap) {
-      const prevAt = rows[nextIndex - 1].achievedAt
-      if (prevAt != null) {
-        remaining = (prevAt + (checkpoints[nextIndex].delta ?? 0) * 1000 - now) / 1000
+  // 3. auto 自动补齐：auto 达成时，其前方未达成 manual 视为达成（时刻 = auto，无实际温度）
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].achieved || rows[i].cp.type !== 'manual') continue
+    for (let j = i + 1; j < rows.length; j++) {
+      if (rows[j].achieved && rows[j].cp.type !== 'manual') {
+        const at = rows[j].achievedAt
+        rows[i].achieved = true
+        rows[i].achievedAt = at
+        if (at != null && anchors.turnaroundStart != null && i !== turnaroundIdx) {
+          rows[i].actualRelSec = (at - anchors.turnaroundStart) / 1000
+        }
+        break
       }
     }
   }
-  return { rows, nextIndex, remaining, hasGap }
+
+  // 4. next + countdown（恒前缀，相邻锚定：prev = next-1 必已达成）
+  const nextIdx = rows.findIndex((r) => !r.achieved)
+  const nextIndex = nextIdx >= 0 ? nextIdx : null
+  let remaining: number | null = null
+  if (nextIndex != null && nextIndex > 0) {
+    const prevAt = rows[nextIndex - 1].achievedAt
+    if (prevAt != null) {
+      remaining = (prevAt + (checkpoints[nextIndex].delta ?? 0) * 1000 - now) / 1000
+    }
+  }
+  return { rows, nextIndex, remaining }
 }
 
 /** 依据锚点状态取 checkpoint 的达成时刻（auto 事件未发生 / manual 未点击 → null） */
@@ -112,8 +123,11 @@ function achievedAtOf(event: string, a: AnchorInput, i: number): number | null {
       return a.scEnd
     case EVENT_TYPES.ROAST_END:
       return a.endTime
-    default:
+    case EVENT_TYPES.HEATER_ADJUST:
+    case EVENT_TYPES.FAN_ADJUST:
       return a.manualClicks[i]?.at ?? null
+    default:
+      return null
   }
 }
 
@@ -126,8 +140,11 @@ function actualTempOf(event: string, a: AnchorInput, i: number): number | null {
       return a.fcStartTemp
     case EVENT_TYPES.ROAST_END:
       return a.endTemp
-    default:
+    case EVENT_TYPES.HEATER_ADJUST:
+    case EVENT_TYPES.FAN_ADJUST:
       return a.manualClicks[i]?.temp ?? null
+    default:
+      return null
   }
 }
 
