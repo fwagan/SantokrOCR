@@ -42,6 +42,7 @@ def main():
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("get_status", help="查询当前温度/状态")
+    sub.add_parser("get_checkpoints", help="查询 checkpoint 静态列表")
 
     p_start = sub.add_parser("start", help="入豆（开始烘焙）")
     p_start.add_argument("--heater", type=float, default=50.0, help="初始火力")
@@ -68,7 +69,9 @@ def main():
         sys.exit(1)
     host, port = cfg['host'], cfg['port']
 
-    if args.cmd == "get_status":
+    if args.cmd == "get_checkpoints":
+        cmd = {"cmd": "get_checkpoints"}
+    elif args.cmd == "get_status":
         cmd = {"cmd": "get_status"}
     elif args.cmd == "start":
         cmd = {"cmd": "start",
