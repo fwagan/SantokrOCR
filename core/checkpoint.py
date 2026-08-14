@@ -31,7 +31,7 @@ def build_checkpoints(ideal_data: Optional[Dict[str, Any]]) -> Optional[List[Dic
             'event': str,
             'temp': float | None,     # smooth_temp1 上离事件时刻最近点的温度（1 位小数）
             'value': str,             # 入豆=火力/风门初始值；调整=百分比；其余 ''
-            'offset': float | None,   # 与上一 checkpoint 的理想时间差（秒），首条为 None
+            'delta': float | None,   # 与上一 checkpoint 的理想时间差（秒），首条为 None
         }
     """
     if not ideal_data:
@@ -55,7 +55,7 @@ def build_checkpoints(ideal_data: Optional[Dict[str, Any]]) -> Optional[List[Dic
         ev_type = ev.get('type', '')
         ev_time = float(ev.get('time', 0.0))
 
-        offset = (ev_time - prev_time) if prev_time is not None else None
+        delta = (ev_time - prev_time) if prev_time is not None else None
 
         if ev_type == '入豆':
             value = f"火力: {int(heater_initial or 0)}%  风门: {int(fan_initial or 0)}%"
@@ -70,7 +70,7 @@ def build_checkpoints(ideal_data: Optional[Dict[str, Any]]) -> Optional[List[Dic
             'event': ev_type,
             'temp': _find_temp(resampled_time, smooth_temp1, ev_time),
             'value': value,
-            'offset': offset,
+            'delta': delta,
         })
         prev_time = ev_time
 

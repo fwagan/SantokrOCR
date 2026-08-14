@@ -28,7 +28,8 @@ export interface Checkpoint {
   event: string
   temp: number | null
   value: string
-  offset: number | null
+  /** 与上一 checkpoint 的理想时间差（秒）；countdown = 上一达成时刻 + delta。首条（入豆）为 null */
+  delta: number | null
 }
 
 // 事件类型（与 data/types.py EventType 对齐）
