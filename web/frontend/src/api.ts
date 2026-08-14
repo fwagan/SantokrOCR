@@ -7,6 +7,7 @@
 
 export type RoastState = 'idle' | 'waiting_charge' | 'roasting'
 
+/** GET /api/status 响应 */
 export interface Status {
   temp1: number | null
   temp2: number | null
@@ -22,7 +23,7 @@ export interface EventResponse {
   error?: string
 }
 
-/** checkpoint 静态条目（桌面端 build_checkpoints 下发） */
+/** GET /api/checkpoints 响应 */
 export interface Checkpoint {
   type: 'auto' | 'manual'
   event: string
