@@ -47,6 +47,7 @@ from core.ipc_server import IpcServer, load_ipc_config
 from web.backend.config import WebConfigError, main_app_base
 from web.backend.launcher import ensure_web_running
 from data.types import EventType
+from core.checkpoint import build_checkpoints
 
 # ── 常量 ──
 _PREVIEW_POLL_INTERVAL = 30       # 预览帧轮询间隔（ms）
@@ -110,6 +111,8 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 理想曲线
         self.ideal_data = None
+        self.ideal_checkpoints = None          # checkpoint 静态列表（build_checkpoints 输出）
+        self.ideal_curve_name = ''             # 当前曲线名（get_status 下发给前端比对）
 
         # 预览
         self._preview_after_id = None
@@ -670,8 +673,17 @@ class CameraRealtimeWindow(tk.Toplevel):
         if ideal_data is None:
             return
 
+        checkpoints = build_checkpoints(ideal_data)
+        if checkpoints is None:
+            messagebox.showerror("无法加载理想曲线",
+                                 "理想曲线缺少核心事件（入豆/回温），无法生成 checkpoint。",
+                                 parent=self)
+            return
+
         ideal_data['path'] = path
         self.ideal_data = ideal_data
+        self.ideal_checkpoints = checkpoints
+        self.ideal_curve_name = os.path.basename(path)
 
         # 更新UI
         self.ideal_file_label.config(text=os.path.basename(path))
@@ -698,8 +710,17 @@ class CameraRealtimeWindow(tk.Toplevel):
         if ideal_data is None:
             return
 
+        checkpoints = build_checkpoints(ideal_data)
+        if checkpoints is None:
+            messagebox.showerror("无法加载理想曲线",
+                                 "理想曲线缺少核心事件（入豆/回温），无法生成 checkpoint。",
+                                 parent=self)
+            return
+
         ideal_data['session_id'] = session_id
         self.ideal_data = ideal_data
+        self.ideal_checkpoints = checkpoints
+        self.ideal_curve_name = display_name
 
         # 更新UI
         self.ideal_file_label.config(text=display_name)
@@ -782,6 +803,8 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _clear_ideal_slog(self):
         """清除理想曲线"""
         self.ideal_data = None
+        self.ideal_checkpoints = None
+        self.ideal_curve_name = ''
         self.ideal_file_label.config(text="未选择")
         self.ideal_info_text.config(state="normal")
         self.ideal_info_text.delete("1.0", "end")
@@ -1724,6 +1747,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         if not isinstance(cmd, dict):
             return {"ok": False, "error": "invalid command"}
         name = cmd.get('cmd')
+        if name == 'get_checkpoints':
+            return self._ipc_get_checkpoints()
         if name == 'get_status':
             return self._ipc_get_status()
         if name == 'get_temp':
@@ -1766,7 +1791,12 @@ class CameraRealtimeWindow(tk.Toplevel):
             'ror': ror,
             'state': self._roast_state,
             'turnaround_offset': self._turnaround_offset,
+            'curve_name': self.ideal_curve_name,
         }
+
+    def _ipc_get_checkpoints(self):
+        """get_checkpoints：返回 checkpoint 静态列表（未加载理想曲线时为 null）"""
+        return {'checkpoints': self.ideal_checkpoints}
 
     def _ipc_get_temp(self, cmd):
         """get_temp：返回 offset（相对入豆秒）时刻的重采样豆温估算
