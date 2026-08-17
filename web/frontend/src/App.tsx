@@ -87,6 +87,7 @@ export default function App() {
   const [manualClicks, setManualClicks] = useState<Record<number, { at: number; temp: number | null }>>({})
   const [endTime, setEndTime] = useState<number | null>(null)
   const [endTemp, setEndTemp] = useState<number | null>(null)
+  const [chargeTemp, setChargeTemp] = useState<number | null>(null) // 入豆瞬间豆温快照（入豆温差）
   const turnaroundQueryRef = useRef(false) // 本会话是否已查过回温温度（防重复/StrictMode 双跑）
   // 一爆开始/结束的修正查询由事件触发（handleAddEvent 内直接调度），无需 queryRef
   const liveTempRef = useRef<number | null>(null) // 最新轮询豆温（冻结瞬间取快照）
@@ -158,6 +159,7 @@ export default function App() {
     setManualClicks({})
     setEndTime(null)
     setEndTemp(null)
+    setChargeTemp(null)
     turnaroundQueryRef.current = false
   }, [])
 
@@ -215,6 +217,8 @@ export default function App() {
       setLastFan(s.lastFan)
       setFcStartTemp(s.fcStartTemp ?? null)
       setFcDeltaT(s.fcDeltaT ?? null)
+      setTurnaroundTemp(s.turnaroundTemp ?? null)
+      setChargeTemp(s.chargeTemp ?? null)
       setManualClicks(s.manualClicks ?? {})
       setCheckpoints((s.checkpoints as Checkpoint[] | null) ?? null)
       setCachedCurveName(s.cachedCurveName ?? '')
@@ -247,6 +251,8 @@ export default function App() {
       lastFan,
       fcStartTemp,
       fcDeltaT,
+      turnaroundTemp,
+      chargeTemp,
       manualClicks,
       checkpoints,
       cachedCurveName,
@@ -262,6 +268,8 @@ export default function App() {
     ended,
     lastHeater,
     lastFan,
+    turnaroundTemp,
+    chargeTemp,
     fcStartTemp,
     fcDeltaT,
     manualClicks,
@@ -301,7 +309,8 @@ export default function App() {
     setT0(chargeT0)
     setLastHeater(h) // 入豆初始值即当前火力/风门，作为后续弹窗默认基准
     setLastFan(f)
-    resetRoastState()
+    resetRoastState() // 先清空旧会话（含 chargeTemp null）
+    setChargeTemp(liveTempRef.current) // 再快照入豆豆温（避免被 reset 覆盖）
     setBusy(true)
     try {
       const payload: StartPayload = { cmd: 'start', heater_initial: h, fan_initial: f }
@@ -477,6 +486,7 @@ export default function App() {
           endTemp,
           fcStartTemp,
           manualClicks,
+          chargeTemp,
         },
         now,
       )
@@ -516,8 +526,9 @@ export default function App() {
 
       {t0 != null && (
         <EventButtons
-          enabled={buttonsEnabled}
+          disabled={!buttonsEnabled}
           ended={ended}
+          endDisabled={turnaroundStart == null && fcStart == null}
           nextCrack={nextCrack}
           onCrack={() => {
             if (nextCrack != null) handleAddEvent(nextCrack)

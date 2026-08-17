@@ -3,7 +3,8 @@
 // 布局（自上而下）：pass(es) 折叠区 → next 恒显(+countdown) → incoming 滚动区
 // 数据由 App 经 deriveCheckpoints 派生后传入；本组件不计算达成/时间，仅渲染。
 import type { CheckpointState } from '../checkpoint'
-import { formatRelTime } from '../checkpoint'
+import { formatCountdown } from '../checkpoint'
+import { EVENT_TYPES } from '../api'
 
 interface CheckpointPanelProps {
   rows: CheckpointState[]
@@ -58,7 +59,7 @@ export default function CheckpointPanel({
             disabled={nextRow.cp.type !== 'manual'}
             onClick={() => onManualCheck(nextRow.index)}
           >
-            <span className="checkpoint-box">{nextRow.cp.type === 'manual' ? '☐' : '☒'}</span>
+            <span className={boxClass(nextRow, true)} />
             <span className="checkpoint-event">{nextRow.cp.event}</span>
             {nextRow.cp.temp != null && <span className="checkpoint-temp">{nextRow.cp.temp}℃</span>}
             {nextRow.cp.value !== '' && <span className="checkpoint-value">({nextRow.cp.value})</span>}
@@ -73,7 +74,7 @@ export default function CheckpointPanel({
         <div className="checkpoint-incoming">
           {incoming.map((r) => (
             <div key={r.index} className="checkpoint-row checkpoint-incoming-row">
-              <span className="checkpoint-box">{r.cp.type === 'manual' ? '☐' : '☒'}</span>
+              <span className={boxClass(r, false)} />
               <span className="checkpoint-event">{r.cp.event}</span>
               {r.cp.temp != null && <span className="checkpoint-temp">{r.cp.temp}℃</span>}
               {r.cp.value !== '' && <span className="checkpoint-value">({r.cp.value})</span>}
@@ -85,29 +86,38 @@ export default function CheckpointPanel({
   )
 }
 
-/** 已达成行：☑ <event> <理想temp>/<实际temp>℃ (<value>) <理想time>/<实际time> */
+/** 已达成行：☑ 事件（value） 理想温度（温差） 时间（相对上一真实达成间隔偏差，正=提前） */
 function PassedRow({ row }: { row: CheckpointState }) {
   const tempIdeal = row.cp.temp != null ? `${row.cp.temp}℃` : ''
-  const tempActual = row.actualTemp != null ? `${row.actualTemp}℃` : ''
-  const tempStr = tempIdeal && tempActual ? `${tempIdeal}/${tempActual}` : tempIdeal || tempActual
+  const tempDiff =
+    row.actualTemp != null && row.cp.temp != null
+      ? `（${row.actualTemp - row.cp.temp > 0 ? '+' : ''}${(row.actualTemp - row.cp.temp).toFixed(1)}℃）`
+      : ''
+  const tempStr = `${tempIdeal}${tempDiff}`
 
-  const timeIdeal = row.idealRelSec != null ? formatRelTime(row.idealRelSec) : ''
-  const timeActual = row.actualRelSec != null ? formatRelTime(row.actualRelSec) : '--:--'
-  const showTime = row.idealRelSec != null || row.actualRelSec != null
+  // 时间 = 相对上一真实达成 checkpoint 的间隔偏差（正=提前，显示为 -mm:ss）；入豆不显示
+  const timeStr = row.deltaDiffSec != null ? formatCountdown(row.deltaDiffSec) : null
+  const showTime = timeStr != null && row.cp.event !== EVENT_TYPES.CHARGE
+
+  // value 仅 manual（调整火力/风门）显示；入豆不显示
+  const valueStr = row.cp.type === 'manual' && row.cp.value !== '' ? `(${row.cp.value})` : ''
 
   return (
     <div className="checkpoint-row checkpoint-passed-row">
-      <span className="checkpoint-box">☑</span>
+      <span className={boxClass(row, false)} />
       <span className="checkpoint-event">{row.cp.event}</span>
+      {valueStr !== '' && <span className="checkpoint-value">{valueStr}</span>}
       {tempStr !== '' && <span className="checkpoint-temp">{tempStr}</span>}
-      {row.cp.value !== '' && <span className="checkpoint-value">({row.cp.value})</span>}
-      {showTime && (
-        <span className="checkpoint-time">
-          {timeIdeal}
-          {timeIdeal !== '' && timeActual !== '' && <span className="checkpoint-time-sep">/</span>}
-          {timeActual}
-        </span>
-      )}
+      {showTime && <span className="checkpoint-time">{timeStr}</span>}
     </div>
   )
+}
+
+/** checkbox 类：真实达成=绿✓；被补齐=黄✓；next=蓝（manual空/auto短横）；incoming=灰（manual空/auto短横） */
+function boxClass(row: CheckpointState, isNext: boolean): string {
+  if (row.achieved && row.fabricated) return 'checkpoint-box box-fabricated box-check'
+  if (row.achieved) return 'checkpoint-box box-done box-check'
+  const state = isNext ? 'box-next' : 'box-incoming'
+  const mark = row.cp.type === 'manual' ? '' : 'box-dash'
+  return `checkpoint-box ${state} ${mark}`.trim()
 }

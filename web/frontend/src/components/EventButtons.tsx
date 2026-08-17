@@ -4,8 +4,10 @@
 //   L2 线性事件按钮之一（一爆开始/结束、二爆开始/结束 依次只显示下一个；add_event）
 //   L3 烘焙结束（end）
 interface Props {
-  enabled: boolean
+  disabled: boolean
   ended: boolean
+  /** 烘焙结束额外禁用（回温未触发时防误触） */
+  endDisabled: boolean
   /** 当前应显示的线性事件类型（一爆开始/结束、二爆开始/结束）；null=四个已完成 */
   nextCrack: string | null
   onCrack: () => void
@@ -15,8 +17,9 @@ interface Props {
 }
 
 export default function EventButtons({
-  enabled,
+  disabled,
   ended,
+  endDisabled,
   nextCrack,
   onCrack,
   onHeater,
@@ -27,18 +30,18 @@ export default function EventButtons({
     <div className="event-buttons">
       {ended && <div className="ended-note">烘焙已结束</div>}
       <div className="btn-grid">
-        <button type="button" className="btn btn-warn" onClick={onHeater} disabled={!enabled}>
+        <button type="button" className="btn btn-warn" onClick={onHeater} disabled={disabled}>
           调整火力
         </button>
-        <button type="button" className="btn btn-warn" onClick={onFan} disabled={!enabled}>
+        <button type="button" className="btn btn-warn" onClick={onFan} disabled={disabled}>
           调整风门
         </button>
         {nextCrack != null && (
-          <button type="button" className="btn btn-crack btn-wide" onClick={onCrack} disabled={!enabled}>
+          <button type="button" className="btn btn-crack btn-wide" onClick={onCrack} disabled={disabled}>
             {nextCrack}
           </button>
         )}
-        <button type="button" className="btn btn-danger btn-wide" onClick={onEnd} disabled={!enabled}>
+        <button type="button" className="btn btn-danger btn-wide" onClick={onEnd} disabled={disabled || endDisabled}>
           烘焙结束
         </button>
       </div>

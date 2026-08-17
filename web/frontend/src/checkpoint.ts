@@ -15,6 +15,8 @@ export interface AnchorInput {
   endTemp: number | null
   fcStartTemp: number | null
   manualClicks: Record<number, { at: number; temp: number | null }>
+  /** 入豆瞬间豆温快照（handleCharge 时记录，用于入豆温差）；Task B 接线前可缺失 */
+  chargeTemp?: number | null
 }
 
 /** 单个 checkpoint 的显示状态（App 派生后传给 CheckpointPanel 纯渲染） */
@@ -26,10 +28,10 @@ export interface CheckpointState {
   achievedAt: number | null
   /** 达成时的实际豆温；自动补齐的 manual 为 null */
   actualTemp: number | null
-  /** 相对回温的理想秒数（回温=0）；回温行本身为 null（不显示） */
-  idealRelSec: number | null
-  /** 相对回温的实际秒数（回温=0）；回温未达成前为 null（显示 --:--） */
-  actualRelSec: number | null
+  /** 相对上一真实达成 checkpoint 的间隔偏差秒（正=提前，显示为 -mm:ss）；首条/未达成/被补齐为 null */
+  deltaDiffSec: number | null
+  /** 是否被 auto 补齐达成（manual 未点击被后方 auto 越过）；真实达成为 false */
+  fabricated: boolean
 }
 
 export interface DerivedCheckpoints {
@@ -40,57 +42,47 @@ export interface DerivedCheckpoints {
   remaining: number | null
 }
 
-export function deriveCheckpoints(
-  checkpoints: Checkpoint[],
-  anchors: AnchorInput,
-  now: number,
-): DerivedCheckpoints {
-  // 1. 理想相对回温时间：delta 累加得相对入豆绝对秒，再减回温的绝对秒
-  const turnaroundIdx = checkpoints.findIndex((c) => c.event === EVENT_TYPES.TURNAROUND)
-  const idealAbs: number[] = []
-  let acc = 0
-  for (let i = 0; i < checkpoints.length; i++) {
-    if (i > 0) acc += checkpoints[i].delta ?? 0
-    idealAbs.push(acc)
-  }
-  const turnaroundAbs = turnaroundIdx >= 0 ? idealAbs[turnaroundIdx] : null
-
-  // 2. 每行状态（先按锚点 / manualClicks 判定）
+export function deriveCheckpoints(checkpoints: Checkpoint[], anchors: AnchorInput, now: number): DerivedCheckpoints {
+  // 1. 每行基本状态（锚点 / manualClicks 判定达成）
   const rows: CheckpointState[] = checkpoints.map((cp, i) => {
     const achievedAt = achievedAtOf(cp.event, anchors, i)
-    let idealRelSec: number | null = null
-    if (turnaroundAbs != null && turnaroundIdx >= 0 && i !== turnaroundIdx) {
-      idealRelSec = idealAbs[i] - turnaroundAbs
-    }
-    let actualRelSec: number | null = null
-    if (achievedAt != null && anchors.turnaroundStart != null && i !== turnaroundIdx) {
-      actualRelSec = (achievedAt - anchors.turnaroundStart) / 1000
-    }
     return {
       index: i,
       cp,
       achieved: achievedAt != null,
       achievedAt,
       actualTemp: actualTempOf(cp.event, anchors, i),
-      idealRelSec,
-      actualRelSec,
+      deltaDiffSec: null,
+      fabricated: false,
     }
   })
 
-  // 3. auto 自动补齐：auto 达成时，其前方未达成 manual 视为达成（时刻 = auto，无实际温度）
+  // 2. auto 自动补齐：auto 达成时，其前方未达成 manual 视为达成（时刻 = auto，无实际温度）
   for (let i = 0; i < rows.length; i++) {
     if (rows[i].achieved || rows[i].cp.type !== 'manual') continue
     for (let j = i + 1; j < rows.length; j++) {
       if (rows[j].achieved && rows[j].cp.type !== 'manual') {
-        const at = rows[j].achievedAt
         rows[i].achieved = true
-        rows[i].achievedAt = at
-        if (at != null && anchors.turnaroundStart != null && i !== turnaroundIdx) {
-          rows[i].actualRelSec = (at - anchors.turnaroundStart) / 1000
-        }
+        rows[i].achievedAt = rows[j].achievedAt
+        rows[i].fabricated = true
         break
       }
     }
+  }
+
+  // 3. delta 偏差：跳过被补齐 manual，用最近真实达成的理想位置差算预期间隔
+  let idealPos = 0 // 当前行的理想位置（相对入豆，delta 累加）
+  let prevRealIdeal = 0 // 最近真实达成行的理想位置
+  let prevRealAt: number | null = null // 最近真实达成行的达成时刻
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]
+    if (i > 0) idealPos += checkpoints[i].delta ?? 0
+    if (!r.achieved || r.achievedAt == null || r.fabricated) continue
+    if (prevRealAt != null) {
+      r.deltaDiffSec = idealPos - prevRealIdeal - (r.achievedAt - prevRealAt) / 1000
+    }
+    prevRealIdeal = idealPos
+    prevRealAt = r.achievedAt
   }
 
   // 4. next + countdown（恒前缀，相邻锚定：prev = next-1 必已达成）
@@ -134,6 +126,8 @@ function achievedAtOf(event: string, a: AnchorInput, i: number): number | null {
 /** 依据锚点状态取 checkpoint 达成时的实际豆温（无记录 → null） */
 function actualTempOf(event: string, a: AnchorInput, i: number): number | null {
   switch (event) {
+    case EVENT_TYPES.CHARGE:
+      return a.chargeTemp ?? null
     case EVENT_TYPES.TURNAROUND:
       return a.turnaroundTemp
     case EVENT_TYPES.FC_START:
@@ -148,17 +142,12 @@ function actualTempOf(event: string, a: AnchorInput, i: number): number | null {
   }
 }
 
-/** countdown 显示：remaining ≥ 0 → -mm:ss（倒计时）；< 0 → +mm:ss（已超时绝对值） */
+/** countdown 显示：remaining ≥ 0 → -mm:ss（倒计时）；< 0 → +mm:ss（已超时），统一 floor 取整 */
 export function formatCountdown(remaining: number): string {
-  const abs = Math.abs(remaining)
-  const str = formatMmSs(abs)
+  // 统一向负无穷取整（floor）：-1.1→-2, -0.9→-1, 0.5→0, 1.1→1；0 代表正好到点
+  const sec = Math.floor(remaining)
+  const str = formatMmSs(Math.abs(sec))
   return remaining >= 0 ? `-${str}` : `+${str}`
-}
-
-/** 相对回温时间显示：sec<0 → -mm:ss；≥0 → mm:ss */
-export function formatRelTime(sec: number): string {
-  const abs = Math.abs(sec)
-  return sec < 0 ? `-${formatMmSs(abs)}` : formatMmSs(abs)
 }
 
 /** countdown 颜色类：>10 默认白；≥-10 绿；<-10 黄（spec §2.3） */
