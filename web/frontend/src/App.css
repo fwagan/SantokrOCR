@@ -275,6 +275,16 @@
 .dialog-actions .btn {
   flex: 1;
 }
+/* 弹窗内「视为 checkpoint 达成」checkbox */
+.dialog-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
 
 /* ── checkpoint 列表（理想曲线检查点） ── */
 .checkpoint-panel {

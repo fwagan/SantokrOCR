@@ -46,6 +46,9 @@ export const EVENT_TYPES = {
   FAN_ADJUST: '调整风门',
 } as const
 
+/** 带值事件类型（调整火力/调整风门），由 EVENT_TYPES 派生（单一来源） */
+export type ValueEventType = typeof EVENT_TYPES.HEATER_ADJUST | typeof EVENT_TYPES.FAN_ADJUST
+
 export interface StartPayload {
   cmd: 'start'
   heater_initial: number
@@ -67,11 +70,7 @@ export interface EndPayload {
   event: { type: string; offset: number }
 }
 
-export type EventCommand =
-  | StartPayload
-  | AddEventPayload
-  | AddValueEventPayload
-  | EndPayload
+export type EventCommand = StartPayload | AddEventPayload | AddValueEventPayload | EndPayload
 
 const REQUEST_TIMEOUT_MS = 5000
 const RETRY_COUNT = 3
@@ -112,10 +111,7 @@ export async function getStatus(): Promise<Status> {
     throw e
   }
   if (!res.ok) {
-    throw new ApiError(
-      res.status === 502 ? '主进程不可达' : `状态获取失败 (HTTP ${res.status})`,
-      res.status,
-    )
+    throw new ApiError(res.status === 502 ? '主进程不可达' : `状态获取失败 (HTTP ${res.status})`, res.status)
   }
   return (await res.json()) as Status
 }
@@ -165,9 +161,7 @@ export async function getTemp(offset: number): Promise<number | null> {
       }
       const data = (await res.json()) as { ok?: boolean; temp1?: number | null }
       if (data.ok === false) return null
-      return typeof data.temp1 === 'number' && Number.isFinite(data.temp1)
-        ? data.temp1
-        : null
+      return typeof data.temp1 === 'number' && Number.isFinite(data.temp1) ? data.temp1 : null
     } catch {
       // 网络错误/超时：继续重试（全部失败统一返回 null）
     }
@@ -202,10 +196,7 @@ export async function postEvent(payload: EventCommand): Promise<EventResponse> {
         throw new ApiError(`请求错误 (HTTP ${res.status})`, res.status)
       }
       // 5xx（502 主进程不可达 / 500）：传输层失败，本轮重试
-      lastError = new ApiError(
-        res.status === 502 ? '主进程不可达' : `服务错误 (HTTP ${res.status})`,
-        res.status,
-      )
+      lastError = new ApiError(res.status === 502 ? '主进程不可达' : `服务错误 (HTTP ${res.status})`, res.status)
     } catch (e) {
       if (e instanceof ApiError) throw e // 4xx 直接抛出，不重试
       lastError =

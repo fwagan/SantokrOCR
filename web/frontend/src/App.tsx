@@ -15,6 +15,7 @@ import {
   type EventCommand,
   type RoastState,
   type StartPayload,
+  type ValueEventType,
 } from './api'
 import { getCheckpoints, getTemp, postEvent } from './api'
 import { useNow, useStatus } from './hooks'
@@ -71,8 +72,10 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null)
   // 火力/风门弹窗：offset 在点击调整按钮瞬间冻结（非发送时），值默认取最近一次调整结果
   const [dialog, setDialog] = useState<{
-    type: '调整火力' | '调整风门'
+    type: ValueEventType
     offset: number
+    at: number // 点击调整按钮瞬间（manual checkpoint 达成时刻）
+    temp: number | null // 点击瞬间豆温快照
   } | null>(null)
   const [lastHeater, setLastHeater] = useState(50) // 最近一次火力值（默认初始 50）
   const [lastFan, setLastFan] = useState(50)
@@ -360,13 +363,17 @@ export default function App() {
     )
   }
 
-  const openValueDialog = (type: '调整火力' | '调整风门') => {
+  const openValueDialog = (type: ValueEventType) => {
     if (t0 == null || busy) return
     // offset 在点击调整按钮瞬间冻结（ms 精度）；用户确认输入期间的耗时不计入事件时间
-    setDialog({ type, offset: (Date.now() - t0) / 1000 })
+    setDialog({ type, offset: (Date.now() - t0) / 1000, at: Date.now(), temp: liveTempRef.current })
   }
 
-  const handleValueEvent = (dlg: { type: '调整火力' | '调整风门'; offset: number }, value: number) => {
+  const handleValueEvent = (
+    dlg: { type: ValueEventType; offset: number; at: number; temp: number | null },
+    value: number,
+    achieved: boolean,
+  ) => {
     if (t0 == null || busy) return
     setDialog(null)
     if (!Number.isFinite(value) || value < 0 || value > 100) {
@@ -381,8 +388,15 @@ export default function App() {
       payload,
       () => {
         // 调整成功后缓存最新值，作为下次弹窗默认值
-        if (dlg.type === '调整火力') setLastHeater(value)
+        if (dlg.type === EVENT_TYPES.HEATER_ADJUST) setLastHeater(value)
         else setLastFan(value)
+        // manual checkpoint 达成：勾选「视为checkpoint达成」时，以按下按钮瞬间为达成时刻
+        if (achieved && derived?.nextIndex != null) {
+          const nextRow = derived.rows[derived.nextIndex]
+          if (nextRow != null && nextRow.cp.event === dlg.type) {
+            setManualClicks((prev) => ({ ...prev, [derived.nextIndex!]: { at: dlg.at, temp: dlg.temp } }))
+          }
+        }
       },
       `记录${dlg.type}`,
     )
@@ -493,6 +507,9 @@ export default function App() {
     : null
   const nextCountdownText = derived != null && derived.remaining != null ? formatCountdown(derived.remaining) : null
   const nextCountdownColor = derived != null && derived.remaining != null ? countdownColorClass(derived.remaining) : ''
+  // manual checkbox：next checkpoint 事件 == 弹窗类型时显示「视为checkpoint达成」
+  const nextManualEvent = derived?.nextIndex != null ? derived.rows[derived.nextIndex]?.cp.event : null
+  const showCheckpointCheck = dialog != null && dialog.type === nextManualEvent
 
   return (
     <div className="app">
@@ -533,8 +550,8 @@ export default function App() {
           onCrack={() => {
             if (nextCrack != null) handleAddEvent(nextCrack)
           }}
-          onHeater={() => openValueDialog('调整火力')}
-          onFan={() => openValueDialog('调整风门')}
+          onHeater={() => openValueDialog(EVENT_TYPES.HEATER_ADJUST)}
+          onFan={() => openValueDialog(EVENT_TYPES.FAN_ADJUST)}
           onEnd={handleEnd}
         />
       )}
@@ -551,14 +568,17 @@ export default function App() {
         />
       )}
 
-      <ValueDialog
-        title={dialog?.type ?? null}
-        defaultValue={dialog?.type === '调整火力' ? lastHeater : lastFan}
-        onConfirm={(v) => {
-          if (dialog) handleValueEvent(dialog, v)
-        }}
-        onClose={() => setDialog(null)}
-      />
+      {dialog && (
+        <ValueDialog
+          title={dialog.type}
+          defaultValue={dialog.type === EVENT_TYPES.HEATER_ADJUST ? lastHeater : lastFan}
+          showCheckpointCheck={showCheckpointCheck}
+          onConfirm={(v, achieved) => {
+            handleValueEvent(dialog, v, achieved)
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </div>
   )
 }
