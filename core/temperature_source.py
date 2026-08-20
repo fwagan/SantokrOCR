@@ -5,6 +5,7 @@ TemperatureDataSource — 温度数据源抽象接口
 """
 
 from abc import ABC, abstractmethod
+
 from utils.signal import Signal
 
 

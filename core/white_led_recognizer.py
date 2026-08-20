@@ -5,9 +5,10 @@
 基于test_doubao_2.py算法，专注于白色LED数字识别
 """
 
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
-from typing import Tuple, List, Dict, Optional
 
 
 class WhiteLEDRecognizer:

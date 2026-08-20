@@ -4,9 +4,10 @@
 基于OpenCV的数字识别器，专门针对7段数码管显示设计，支持正常位和故障位识别。
 """
 
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import cv2
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Union, Any
 
 from .feature_extractor import FeatureExtractor
 from .led_classifier import LEDDigitClassifier
@@ -327,8 +328,8 @@ def get_global_digit_recognizer(use_gpu=False, lang='ch'):
 
 def test_digit_recognizer():
     """测试数字识别器"""
-    import sys
     import os
+    import sys
 
     # 创建测试图像
     test_img = np.ones((100, 60, 3), dtype=np.uint8) * 50

@@ -8,11 +8,12 @@ is_debug=False 时仅运行识别，零额外开销。
 is_debug=True 时记录中间步骤图像和信息，供帧查看器调试标签页使用。
 """
 
-import numpy as np
-from typing import List, Tuple, Dict, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
-from .projection_segmenter import ProjectionSegmenter
+import numpy as np
+
 from .led_classifier import LEDDigitClassifier
+from .projection_segmenter import ProjectionSegmenter
 
 
 class DigitRecognitionPipeline:

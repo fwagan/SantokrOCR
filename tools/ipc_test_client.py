@@ -12,9 +12,9 @@ ipc_socket 端口走配置优先级链（见 web.backend.config）。
 
 import argparse
 import json
+import os
 import socket
 import sys
-import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

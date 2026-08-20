@@ -15,10 +15,10 @@ try:
 except Exception:
     pass
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
 import os
 import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 
 
 # 确保能导入项目模块
@@ -31,12 +31,12 @@ def _setup_path():
 
 
 _setup_path()
-from data.sqlite.bean_repo import SqliteBeanRepository
-from data.sqlite.session_repo import SqliteSessionRepository
-from data.sqlite.result_repo import SqliteResultRepository
-from data.sqlite.event_repo import SqliteEventRepository
-from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
+from data.sqlite.bean_repo import SqliteBeanRepository
+from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.session_writer import SessionWriter
 from ui.statistics_panel import StatisticsPanel
 
 

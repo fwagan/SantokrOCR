@@ -6,11 +6,12 @@
 专门针对白色LED多数字分割，使用旋转预处理和投影分析。
 """
 
+import os
+import shutil
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
-import os
-from typing import List, Dict, Tuple, Optional
-import shutil
 
 # ===================== 核心配置 =====================
 WHITE_LIT_RATIO = 0.25

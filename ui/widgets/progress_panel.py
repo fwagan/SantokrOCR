@@ -4,9 +4,9 @@
 显示处理进度、估计剩余时间等信息。
 """
 
+import time
 import tkinter as tk
 from tkinter import ttk
-import time
 
 
 class ProgressPanel(ttk.LabelFrame):

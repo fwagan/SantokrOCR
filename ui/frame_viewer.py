@@ -6,23 +6,24 @@
 包含识别调试标签页，显示中间识别步骤和7段数码管区域划分。
 """
 
+import os
+import re
+import threading
 import tkinter as tk
 from tkinter import ttk
-import os
+
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
-import threading
+
 from core.digit_recognition_pipeline import DigitRecognitionPipeline
+
 # 仅用于SEGMENT_AREAS常量（可视化），不参与实际识别
 from core.white_led_recognizer import WhiteLEDRecognizer
+
 # 事件类型单一来源（data.types.EventType）
 from data.types import EVENT_TYPES as _EVENT_TYPES
-
 from utils.screen_utils import center_window
-
-
-import re
 
 _TEMP_PATTERN = re.compile(r'^\d{3}\.\d$')
 

@@ -18,9 +18,10 @@
 更新：使用WhiteLEDRecognizer算法进行特征提取，专注于白色LED识别
 """
 
+from typing import Dict, List, Optional, Tuple
+
 import cv2
 import numpy as np
-from typing import Tuple, List, Dict, Optional
 
 from .white_led_recognizer import WhiteLEDRecognizer
 
@@ -335,8 +336,8 @@ def get_global_feature_extractor() -> FeatureExtractor:
 
 # 测试函数
 if __name__ == "__main__":
-    import sys
     import os
+    import sys
 
     # 创建测试图像
     test_img = np.ones((100, 60, 3), dtype=np.uint8) * 50  # 灰色背景
