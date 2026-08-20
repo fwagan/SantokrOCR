@@ -313,7 +313,7 @@ export default function App() {
     setT0(chargeT0)
     setLastHeater(h) // 入豆初始值即当前火力/风门，作为后续弹窗默认基准
     setLastFan(f)
-    setChargeTemp(liveTempRef.current) // 快照入豆豆温（须在 reset 之后）
+    setChargeTemp(liveTempRef.current) // 快照入豆豆温
     setBusy(true)
     try {
       const payload: StartPayload = { cmd: 'start', heater_initial: h, fan_initial: f }
