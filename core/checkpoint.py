@@ -7,18 +7,20 @@ Checkpoint — 基于理想曲线派生 checkpoint 静态列表（纯函数）
 达成状态不在此跟踪——完全由前端自理（spec: 2026-08-14-checkpoint-design）。
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import numpy as np
 
+from data.types import EventType
+
 # manual checkpoint 对应的事件（数值事件）；其余事件均为 auto
-_MANUAL_EVENT_TYPES = frozenset({"调整火力", "调整风门"})
+_MANUAL_CHECKPOINT_EVENT_TYPES = frozenset({EventType.HEATER_ADJUST, EventType.FAN_ADJUST})
 
 # 理想曲线必须包含的核心事件（防御性校验，缺一拒绝加载）
-_REQUIRED_EVENT_TYPES = frozenset({"入豆", "回温"})
+_REQUIRED_CHECKPOINT_EVENT_TYPES = frozenset({EventType.CHARGE, EventType.TURNAROUND})
 
 
-def build_checkpoints(ideal_data: Optional[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+def build_checkpoints(ideal_data: Optional[dict[str, Any]]) -> Optional[list[dict[str, Any]]]:
     """从 ideal_data 派生 checkpoint 静态列表
 
     每个理想曲线事件 → 一条 checkpoint，按事件 time 升序。
@@ -41,7 +43,7 @@ def build_checkpoints(ideal_data: Optional[Dict[str, Any]]) -> Optional[List[Dic
         return None
 
     event_types = {ev.get('type') for ev in events}
-    if not _REQUIRED_EVENT_TYPES.issubset(event_types):
+    if not _REQUIRED_CHECKPOINT_EVENT_TYPES.issubset(event_types):
         return None
 
     resampled_time = ideal_data.get('resampled_time')
@@ -49,7 +51,7 @@ def build_checkpoints(ideal_data: Optional[Dict[str, Any]]) -> Optional[List[Dic
     heater_initial = ideal_data.get('heater_initial')
     fan_initial = ideal_data.get('fan_initial')
 
-    checkpoints: List[Dict[str, Any]] = []
+    checkpoints: list[dict[str, Any]] = []
     prev_time: Optional[float] = None
     for ev in sorted(events, key=lambda e: float(e.get('time', 0.0))):
         ev_type = ev.get('type', '')
@@ -57,16 +59,16 @@ def build_checkpoints(ideal_data: Optional[Dict[str, Any]]) -> Optional[List[Dic
 
         delta = (ev_time - prev_time) if prev_time is not None else None
 
-        if ev_type == '入豆':
+        if ev_type == EventType.CHARGE:
             value = f"火力: {int(heater_initial or 0)}%  风门: {int(fan_initial or 0)}%"
-        elif ev_type in _MANUAL_EVENT_TYPES:
+        elif ev_type in _MANUAL_CHECKPOINT_EVENT_TYPES:
             ev_value = ev.get('value')
             value = f"{int(ev_value)}%" if ev_value is not None else ''
         else:
             value = ''
 
         checkpoints.append({
-            'type': 'manual' if ev_type in _MANUAL_EVENT_TYPES else 'auto',
+            'type': 'manual' if ev_type in _MANUAL_CHECKPOINT_EVENT_TYPES else 'auto',
             'event': ev_type,
             'temp': _find_temp(resampled_time, smooth_temp1, ev_time),
             'value': value,

@@ -275,3 +275,181 @@
 .dialog-actions .btn {
   flex: 1;
 }
+/* 弹窗内「视为 checkpoint 达成」checkbox */
+.dialog-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+
+/* ── checkpoint 列表（理想曲线检查点） ── */
+.checkpoint-panel {
+  background: var(--panel);
+  border-radius: 14px;
+  padding: 8px 12px;
+}
+.checkpoint-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.checkpoint-header:active {
+  opacity: 0.7;
+}
+.checkpoint-collapse {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+.checkpoint-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.checkpoint-passed {
+  border-top: 1px solid var(--border);
+  padding: 4px 0;
+}
+.checkpoint-empty {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 8px 0;
+  text-align: center;
+}
+.checkpoint-next {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding: 6px 0;
+}
+.checkpoint-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  width: 100%;
+  padding: 6px 0;
+  text-align: left;
+}
+.checkpoint-next-row {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.checkpoint-next-row:disabled {
+  cursor: default;
+  opacity: 1;
+}
+/* checkbox：纯 CSS 圆角方框，状态色 + 内部标记（达成✓ / auto短横 / manual空） */
+.checkpoint-box {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-radius: 4px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.box-done {
+  border-color: #46c46a;
+  color: #46c46a;
+}
+.box-next {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.box-incoming {
+  border-color: var(--text-dim);
+  color: var(--text-dim);
+}
+.box-fabricated {
+  border-color: #ffc78a;
+  color: #ffc78a;
+}
+/* 对勾：两条边框旋转 -45° */
+.box-check::after {
+  content: '';
+  width: 5px;
+  height: 3px;
+  border-left: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-1px) rotate(-45deg);
+  border-radius: 1px;
+}
+/* 短横：auto 未达成（横线） */
+.box-dash::after {
+  content: '';
+  width: 6px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 1px;
+}
+/* 行元素：event 重点，temp/value/time 次要 */
+.checkpoint-event {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+.checkpoint-temp,
+.checkpoint-value {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.checkpoint-temp {
+  font-family: var(--mono);
+}
+.checkpoint-time {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* next 强调：event 加粗，countdown 大 */
+.checkpoint-next-row .checkpoint-event {
+  font-weight: 600;
+}
+.checkpoint-countdown {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.checkpoint-countdown.cd-green {
+  color: #46c46a;
+}
+.checkpoint-countdown.cd-yellow {
+  color: #ffc78a;
+}
+/* incoming / passed 弱化 */
+.checkpoint-incoming {
+  border-top: 1px solid var(--border);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.checkpoint-incoming-row,
+.checkpoint-incoming-row .checkpoint-event {
+  font-size: 14px;
+  color: var(--text-dim);
+}
+.checkpoint-passed-row,
+.checkpoint-passed-row .checkpoint-event {
+  font-size: 14px;
+  color: var(--text-dim);
+}

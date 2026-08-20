@@ -1,0 +1,9 @@
+# pre-commit 钩子：commit 前自动 ruff --fix（含 organize import）
+# 安装：pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        # 只跑 organize import（I，可自动修复）；E/F/W 后续全量清理再接
+        args: [--fix, --select, I]

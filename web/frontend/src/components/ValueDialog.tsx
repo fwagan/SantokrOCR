@@ -1,25 +1,27 @@
 // 火力/风门数值输入弹窗（add_value_event）
-// title 非 null 时显示；确认后由 App 发送 add_value_event（offset+value，offset 在点击时已冻结）
-// 默认值取最近一次调整结果（defaultValue，来自 App 的 lastHeater/lastFan）
+// 由 App 条件渲染（dialog 非 null 才挂载），每次打开组件重建 → 内部 state 天然归零
+// 确认后由 App 发送 add_value_event（offset+value，offset 在点击时已冻结）
 import { useEffect, useState } from 'react'
+import { type ValueEventType } from '../api'
 
 interface Props {
-  title: '调整火力' | '调整风门' | null
+  title: ValueEventType
   /** 最近一次调整值（无调整时=入豆初始值），作为弹窗默认输入 */
   defaultValue: number
-  onConfirm: (value: number) => void
+  /** 是否显示「视为 checkpoint 达成」checkbox（仅 next checkpoint 为对应 manual 事件时） */
+  showCheckpointCheck: boolean
+  onConfirm: (value: number, achieved: boolean) => void
   onClose: () => void
 }
 
-export default function ValueDialog({ title, defaultValue, onConfirm, onClose }: Props) {
+export default function ValueDialog({ title, defaultValue, showCheckpointCheck, onConfirm, onClose }: Props) {
   const [value, setValue] = useState('50')
+  const [achieved, setAchieved] = useState(false)
 
-  // 每次打开重置为最近一次调整值
+  // 打开时填入最近一次调整值
   useEffect(() => {
-    if (title) setValue(String(defaultValue))
-  }, [title, defaultValue])
-
-  if (!title) return null
+    setValue(String(defaultValue))
+  }, [defaultValue])
 
   return (
     <div className="dialog-overlay" onClick={onClose}>
@@ -35,11 +37,17 @@ export default function ValueDialog({ title, defaultValue, onConfirm, onClose }:
           value={value}
           onChange={(e) => setValue(e.target.value)}
         />
+        {showCheckpointCheck && (
+          <label className="dialog-checkbox">
+            <input type="checkbox" checked={achieved} onChange={(e) => setAchieved(e.target.checked)} />
+            视为checkpoint达成
+          </label>
+        )}
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>
             取消
           </button>
-          <button type="button" className="btn btn-primary" onClick={() => onConfirm(Number(value))}>
+          <button type="button" className="btn btn-primary" onClick={() => onConfirm(Number(value), achieved)}>
             确认
           </button>
         </div>
