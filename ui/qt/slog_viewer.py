@@ -8,9 +8,9 @@
 4. 烘焙信息管理（豆种、产地等）
 """
 
+import json
 import os
 import sys
-import json
 
 
 def _setup_path():
@@ -23,16 +23,29 @@ def _setup_path():
 _setup_path()
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QGroupBox, QLabel, QLineEdit, QComboBox, QPushButton,
-    QPlainTextEdit, QScrollArea, QMessageBox, QFileDialog,
-    QFormLayout, QSpinBox, QFrame,
-)
 from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ui.qt.statistics_panel import StatisticsPanel
 from ui.qt.bean_manager import BeanManagerDialog
+from ui.qt.statistics_panel import StatisticsPanel
 
 
 class SlogViewer(QMainWindow):

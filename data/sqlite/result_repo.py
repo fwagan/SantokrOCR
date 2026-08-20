@@ -1,8 +1,7 @@
 """SqliteResultRepository：基于 SQLite 的帧温度结果存储"""
 
-from typing import List, Optional
-
 import logging
+from typing import List, Optional
 
 from data.sqlite.connection import execute_with_lock, get_default_db_path
 from data.sqlite.schema import ensure_schema

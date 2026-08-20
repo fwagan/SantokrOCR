@@ -11,7 +11,7 @@
 import copy
 import os
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox, ttk
 
 from data.sqlite.bean_repo import SqliteBeanRepository
 

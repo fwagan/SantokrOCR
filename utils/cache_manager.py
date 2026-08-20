@@ -16,16 +16,15 @@
     events.json        # 事件列表
 """
 
-import os
-import time
 import json
 import logging
+import os
+import time
 from typing import Dict, List, Optional
 
-from data.types import RoiConfig, RoiEntry
-
 from data.facade import CacheFacade
-from data.json._utils import json_lock, atomic_write, load_json
+from data.json._utils import atomic_write, json_lock, load_json
+from data.types import RoiConfig, RoiEntry
 
 logger = logging.getLogger(__name__)
 

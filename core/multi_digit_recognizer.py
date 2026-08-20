@@ -5,14 +5,15 @@
 专门针对7段数码管显示设计，支持温度值识别。
 """
 
+from typing import Dict, List, Optional, Tuple, Union
+
 import cv2
 import numpy as np
-from typing import List, Tuple, Dict, Optional, Union
+
+from .led_classifier import LEDDigitClassifier
 
 # 使用投影分割器（基于test_doubao_multiple_1.py算法，100%准确率）
 from .projection_segmenter import ProjectionSegmenter
-
-from .led_classifier import LEDDigitClassifier
 
 
 class MultiDigitRecognizer:
@@ -370,8 +371,8 @@ def _calculate_temperature_from_digits(digit_string: str, decimal_pos: Optional[
 
 def test_recognizer():
     """测试多数字识别器"""
-    import sys
     import os
+    import sys
 
     # 创建测试图像
     test_img = np.ones((100, 200, 3), dtype=np.uint8) * 50

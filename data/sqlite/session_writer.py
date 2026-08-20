@@ -7,10 +7,10 @@
 from typing import List, Optional
 
 from data.sqlite.connection import execute_with_lock, get_connection
-from data.sqlite.session_repo import SqliteSessionRepository
-from data.sqlite.result_repo import SqliteResultRepository
 from data.sqlite.event_repo import SqliteEventRepository
-from data.types import ResultRecord, EventRecord, RoastSession
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.types import EventRecord, ResultRecord, RoastSession
 
 
 class SessionWriter:

@@ -3,10 +3,9 @@
 当前版本: 3
 """
 
+import logging
 import sqlite3
 from typing import Optional
-
-import logging
 
 from .connection import get_connection
 

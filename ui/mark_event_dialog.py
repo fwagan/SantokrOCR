@@ -6,7 +6,7 @@
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox, ttk
 
 from data.types import EVENT_TYPES
 from utils.screen_utils import center_window

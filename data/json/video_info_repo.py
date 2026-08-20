@@ -1,11 +1,10 @@
 """JsonVideoInfoRepository：视频元信息存储"""
 
+import logging
 import os
 from typing import Dict, List, Optional
 
-import logging
-
-from data.json._utils import json_lock, atomic_write, load_json
+from data.json._utils import atomic_write, json_lock, load_json
 from data.types import VideoInfo
 
 logger = logging.getLogger(__name__)
