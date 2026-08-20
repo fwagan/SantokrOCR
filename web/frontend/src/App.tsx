@@ -83,7 +83,7 @@ export default function App() {
   const [turnaroundTemp, setTurnaroundTemp] = useState<number | null>(null)
   const [fcStartTemp, setFcStartTemp] = useState<number | null>(null)
   const [fcDeltaT, setFcDeltaT] = useState<number | null>(null)
-  // checkpoint（Phase 2+3）：理想曲线静态列表 + 前端自治达成状态
+  // checkpoint：理想曲线静态列表 + 前端自治达成状态
   const [checkpoints, setCheckpoints] = useState<Checkpoint[] | null>(null)
   const [cachedCurveName, setCachedCurveName] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -309,11 +309,11 @@ export default function App() {
       return
     }
     const chargeT0 = Date.now() // 点击瞬间 UTC（点击就动，失败再归零）
+    resetRoastState() // 先重置旧会话，再设新值
     setT0(chargeT0)
     setLastHeater(h) // 入豆初始值即当前火力/风门，作为后续弹窗默认基准
     setLastFan(f)
-    resetRoastState() // 先清空旧会话（含 chargeTemp null）
-    setChargeTemp(liveTempRef.current) // 再快照入豆豆温（避免被 reset 覆盖）
+    setChargeTemp(liveTempRef.current) // 快照入豆豆温（须在 reset 之后）
     setBusy(true)
     try {
       const payload: StartPayload = { cmd: 'start', heater_initial: h, fan_initial: f }
