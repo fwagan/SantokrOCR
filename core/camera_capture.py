@@ -9,6 +9,7 @@ import time
 from typing import Optional
 
 from utils.signal import Signal
+
 from .temperature_source import TemperatureDataSource
 
 _NONE_FRAME_RETRY_INTERVAL = 0.05  # 取到空帧时的重试间隔（秒）

@@ -4,12 +4,11 @@
 同一 db_path 在整个进程生命周期内复用同一连接。
 """
 
+import logging
 import os
 import sqlite3
 import threading
 from typing import Optional
-
-import logging
 
 DEFAULT_DB_FILENAME = 'santokr.db'
 

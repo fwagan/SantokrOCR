@@ -8,27 +8,28 @@
 - mode='raw_data' — 从 DB 加载指定 session，禁用文件选择/ROI/处理
 """
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
 import os
-import time
-import cv2
 import sys
+import time
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Optional
 
+import cv2
+
 from core.video_extractor import VideoDigitExtractor
-from ui.data_table import DataTable
-from ui.async_worker import ProcessingThread
-from ui.frame_viewer import FrameViewer
-from utils.cache_manager import get_cache_manager
-from utils.screen_utils import center_window
-from utils.file_system import Paths, FileOperations, FileDialogs
-from data.sqlite.session_repo import SqliteSessionRepository
-from data.sqlite.result_repo import SqliteResultRepository
-from data.sqlite.event_repo import SqliteEventRepository
-from data.sqlite.session_writer import SessionWriter
 from data.serializers.slog import SlogSerializer
 from data.serializers.srlog import SrlogSerializer
+from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.session_writer import SessionWriter
+from ui.async_worker import ProcessingThread
+from ui.data_table import DataTable
+from ui.frame_viewer import FrameViewer
+from utils.cache_manager import get_cache_manager
+from utils.file_system import FileDialogs, FileOperations, Paths
+from utils.screen_utils import center_window
 
 
 class RecognitionWindow(tk.Toplevel):

@@ -12,12 +12,13 @@ ModbusReader — 通过 Modbus RTU 协议读取温度数据
   - 探头断开标志: 0x7FFF (32767)
 """
 
+import logging
 import threading
 import time
-import logging
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from utils.signal import Signal
+
 from .temperature_source import TemperatureDataSource
 
 logger = logging.getLogger(__name__)

@@ -4,10 +4,10 @@ Modbus 设备配置管理
 加载/保存 `config/modbus_devices.yaml`，自动扫描 COM 口，校验设备连接。
 """
 
+import logging
 import os
 import time
-import logging
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 import yaml
 
