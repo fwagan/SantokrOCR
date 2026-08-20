@@ -13,12 +13,11 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Optional
 
-from data.sqlite.bean_repo import SqliteBeanRepository
-from data.sqlite.session_repo import SqliteSessionRepository
 from data.types import BeanRecord
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.bean_repo import SqliteBeanRepository
 from ui.widgets.session_grid_widget import SessionGridWidget
 from utils.screen_utils import center_window
-
 
 class Dashboard(tk.Tk):
     """主仪表盘窗口"""

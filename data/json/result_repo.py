@@ -1,10 +1,11 @@
 """JsonResultRepository：识别结果存储"""
 
-import logging
 import os
 from typing import List, Optional
 
-from data.json._utils import atomic_write, json_lock, load_json, safe_serialize
+import logging
+
+from data.json._utils import json_lock, atomic_write, load_json, safe_serialize
 from data.types import ResultRecord
 
 logger = logging.getLogger(__name__)

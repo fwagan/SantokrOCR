@@ -9,9 +9,9 @@ SessionGridWidget — 烘焙会话筛选 + 列表组件
 """
 
 import re
-import tkinter as tk
 from datetime import datetime
-from tkinter import messagebox, ttk
+import tkinter as tk
+from tkinter import ttk, messagebox
 from typing import Callable, Dict, List, Optional
 
 from data.types import BeanRecord

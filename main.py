@@ -6,8 +6,8 @@ SantokrOCR GUI 主程序入口
 支持视频选择、ROI框选、异步处理、数据验证等功能。
 """
 
-import os
 import sys
+import os
 
 # ====== 限制 MKL 线程数（减少启动开销） ======
 os.environ['MKL_NUM_THREADS'] = '4'
@@ -32,7 +32,6 @@ def main():
         # 如果传入了 .slog 文件参数（文件关联双击），直接启动 SlogViewer
         if len(sys.argv) > 1 and sys.argv[1].lower().endswith('.slog'):
             import tkinter as tk
-
             from ui.slog_viewer import SlogViewer
 
             root = tk.Tk()

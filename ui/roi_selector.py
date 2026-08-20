@@ -5,16 +5,17 @@ ROI选择器 - 基于tkinter的矩形框选对话框
 使用ttk控件展示ROI状态和操作提示，图片上不叠加任何文字。
 """
 
-import tkinter as tk
-from tkinter import ttk
 from typing import Dict, Optional
 
+import tkinter as tk
+from tkinter import ttk
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from data.types import RoiEntry
 from utils.screen_utils import center_window
+from data.types import RoiEntry
+
 
 # ROI名称 → 中文标签映射
 ROI_LABELS = {

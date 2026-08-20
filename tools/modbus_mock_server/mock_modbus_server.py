@@ -30,8 +30,8 @@ import asyncio
 import random
 import socket
 import sys
-import threading
 import time
+import threading
 
 # pymodbus 3.6+ 的推荐 API（3.13 已验证）。若环境未安装先执行：
 #   pip install -r tools/modbus_mock_server/requirements_test.txt

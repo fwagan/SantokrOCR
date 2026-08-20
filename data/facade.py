@@ -5,17 +5,19 @@ CacheFacade：统一缓存接入层
 """
 
 import hashlib
-import logging
 import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import logging
+
+from data.types import EventRecord, ResultRecord, RoiConfig, VideoInfo
+
 from data.json.event_repo import JsonEventRepository
 from data.json.result_repo import JsonResultRepository
 from data.json.roi_repo import JsonRoiRepository
 from data.json.video_info_repo import JsonVideoInfoRepository
-from data.types import EventRecord, ResultRecord, RoiConfig, VideoInfo
 
 logger = logging.getLogger(__name__)
 

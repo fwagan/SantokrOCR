@@ -15,23 +15,22 @@ try:
 except Exception:
     pass
 
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
 import os
 import sys
-import tkinter as tk
-import warnings
-from tkinter import filedialog, messagebox, ttk
 
+import numpy as np
+from scipy.signal import savgol_filter
+from scipy.interpolate import interp1d
 import matplotlib
 import matplotlib.pyplot as plt
-import numpy as np
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
-from matplotlib.ticker import FuncFormatter
 from matplotlib.transforms import blended_transform_factory
-from scipy.interpolate import interp1d
-from scipy.signal import savgol_filter
-
+from matplotlib.ticker import FuncFormatter
+import warnings
 warnings.filterwarnings('ignore')
 
 
@@ -46,9 +45,9 @@ def _setup_path():
 _setup_path()
 
 from data.serializers.slog import SlogSerializer
-from data.sqlite.event_repo import SqliteEventRepository
-from data.sqlite.result_repo import SqliteResultRepository
 from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.event_repo import SqliteEventRepository
 
 # ====== 常量 ======
 MAX_SLOG_COUNT = 5

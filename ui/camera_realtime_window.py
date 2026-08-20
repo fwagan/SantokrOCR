@@ -8,51 +8,46 @@
 - 状态栏
 """
 
+import tkinter as tk
+import tkinter.font as tkfont
+from tkinter import ttk, messagebox, filedialog
+import cv2
+import time
 import os
 import queue
 import threading
-import time
-import tkinter as tk
-import tkinter.font as tkfont
 import traceback
-from tkinter import filedialog, messagebox, ttk
 from typing import Optional
-
-import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from core.camera_capture import CameraProcessingThread
-from core.checkpoint import build_checkpoints
-from core.ipc_server import IpcServer, load_ipc_config
-from core.modbus_config import (
-    auto_detect_device,
-    load_modbus_config,
-    probe_device,
-    resolve_device_port,
-    save_modbus_config,
-)
-from core.modbus_reader import ModbusReader
-from core.realtime_cache import RealTimeProcessCache
 from core.video_extractor import VideoDigitExtractor
-from data.serializers.slog import SlogSerializer
-from data.sqlite.bean_repo import SqliteBeanRepository
-from data.sqlite.event_repo import SqliteEventRepository
-from data.sqlite.result_repo import SqliteResultRepository
-from data.sqlite.session_repo import SqliteSessionRepository
-from data.sqlite.session_writer import SessionWriter
-from data.types import EventType
+from core.camera_capture import CameraProcessingThread
+from core.realtime_cache import RealTimeProcessCache
 from ui.data_table import DataTable
+from ui.statistics_panel import StatisticsPanel
 from ui.frame_viewer import FrameViewer
+from ui.slog_comparer import extract_valid_data, resample_data, smooth_data, compute_ror
+from utils.screen_utils import center_window
+from utils.cache_manager import get_cache_manager
+from utils.file_system import Paths, FileOperations
+from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.event_repo import SqliteEventRepository
+from data.sqlite.bean_repo import SqliteBeanRepository
+from data.sqlite.session_writer import SessionWriter
+from data.serializers.slog import SlogSerializer
 from ui.ideal_curve_dialog import IdealCurveDialog
 from ui.modbus_config_dialog import ModbusConfigDialog
-from ui.slog_comparer import compute_ror, extract_valid_data, resample_data, smooth_data
-from ui.statistics_panel import StatisticsPanel
-from utils.cache_manager import get_cache_manager
-from utils.file_system import FileOperations, Paths
-from utils.screen_utils import center_window
+from core.modbus_config import (load_modbus_config, save_modbus_config,
+                                 resolve_device_port, probe_device,
+                                 auto_detect_device)
+from core.modbus_reader import ModbusReader
+from core.ipc_server import IpcServer, load_ipc_config
 from web.backend.config import WebConfigError, main_app_base
 from web.backend.launcher import ensure_web_running
+from data.types import EventType
+from core.checkpoint import build_checkpoints
 
 # ── 常量 ──
 _PREVIEW_POLL_INTERVAL = 30       # 预览帧轮询间隔（ms）

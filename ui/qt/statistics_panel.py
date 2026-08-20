@@ -2,35 +2,24 @@
 统计面板 - 温度曲线和ROR分析（PySide6 Qt 嵌入版本）
 """
 
-import json
-import os
-import warnings
-
-import matplotlib
-import matplotlib.ticker
-import numpy as np
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
-from matplotlib.patches import Rectangle
-from matplotlib.transforms import blended_transform_factory
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QFileDialog,
-    QFrame,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QGroupBox, QLabel, QLineEdit,
+    QCheckBox, QPushButton, QFileDialog, QMessageBox, QFrame,
 )
-from scipy.interpolate import interp1d
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+import matplotlib
+import matplotlib.ticker
+from matplotlib.patches import Rectangle
+from matplotlib.transforms import blended_transform_factory
+import numpy as np
 from scipy.signal import savgol_filter
-
+from scipy.interpolate import interp1d
+import warnings
+import os
+import json
 warnings.filterwarnings('ignore')
 
 # --- ROR 非均匀 Y 轴配置 ---
@@ -883,9 +872,8 @@ class StatisticsPanel(QWidget):
 
 
 if __name__ == "__main__":
-    import sys
-
     from PySide6.QtWidgets import QApplication
+    import sys
 
     app = QApplication(sys.argv)
 

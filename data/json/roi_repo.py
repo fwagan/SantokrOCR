@@ -1,10 +1,11 @@
 """JsonRoiRepository：ROI 配置存储（含新旧格式兼容）"""
 
-import logging
 import os
 from typing import Any, Dict, Optional
 
-from data.json._utils import atomic_write, json_lock, load_json
+import logging
+
+from data.json._utils import json_lock, atomic_write, load_json
 from data.types import RoiConfig, RoiEntry
 
 logger = logging.getLogger(__name__)

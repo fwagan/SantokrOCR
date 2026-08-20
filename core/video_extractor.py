@@ -8,12 +8,11 @@
 4. 帧缓存和快速帧访问
 """
 
+import cv2
+from .digit_recognizer import DigitRecognizer
 import threading
 import time
 
-import cv2
-
-from .digit_recognizer import DigitRecognizer
 from .led_classifier import LEDDigitClassifier
 
 

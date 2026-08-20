@@ -1,7 +1,8 @@
 """SqliteBeanRepository：基于 SQLite 的咖啡豆信息存储"""
 
-import logging
 from typing import List, Optional
+
+import logging
 
 from data.sqlite.connection import execute_with_lock, get_default_db_path
 from data.sqlite.schema import ensure_schema

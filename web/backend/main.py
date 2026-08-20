@@ -18,16 +18,17 @@ import socket
 import sys
 import threading
 import tkinter as tk
-from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Optional
+from pathlib import Path
 
 import uvicorn
+from typing import Optional
 
 # 注意：必须用绝对导入（web.backend.*）。本文件既是包内模块
 # （python -m web.backend.main），也是 PyInstaller 入口脚本（作为 __main__ 运行，
 # 无父包，相对导入会 ImportError）。
-from web.backend.config import WebConfigError, load_web_config, save_web_config_port, web_exe_dir
+from web.backend.config import (WebConfigError, load_web_config,
+                                save_web_config_port, web_exe_dir)
 from web.backend.ipc_client import web_app_base
 from web.backend.server import app as fastapi_app
 

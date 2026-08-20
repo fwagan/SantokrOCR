@@ -5,17 +5,14 @@
 支持自动扫描 COM 口发现设备、手动配置、验证连接。
 """
 
-import logging
-import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk, messagebox
+import threading
+import logging
 
 from core.modbus_config import (
-    auto_detect_device,
-    load_modbus_config,
-    probe_device,
-    save_modbus_config,
-    scan_com_ports,
+    load_modbus_config, save_modbus_config,
+    scan_com_ports, probe_device, auto_detect_device,
 )
 
 logger = logging.getLogger(__name__)

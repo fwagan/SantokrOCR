@@ -12,10 +12,10 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from data.serializers.slog import SlogSerializer
-from data.sqlite.event_repo import SqliteEventRepository
-from data.sqlite.result_repo import SqliteResultRepository
 from data.sqlite.schema import ensure_schema
 from data.sqlite.session_repo import SqliteSessionRepository
+from data.sqlite.result_repo import SqliteResultRepository
+from data.sqlite.event_repo import SqliteEventRepository
 
 
 def _get_db_path() -> str:

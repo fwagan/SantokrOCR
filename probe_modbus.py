@@ -1,9 +1,8 @@
 """
 Modbus 温度读取 — PT100 已接好，验证读数
 """
-import time
-
 import serial
+import time
 
 PORT = "COM3"
 BAUD = 9600

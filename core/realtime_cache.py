@@ -6,13 +6,12 @@ saves frames as JPEG via background writer thread, and supports .srlog export.
 """
 
 import os
+import time
 import queue
 import random
-import shutil
 import string
+import shutil
 import threading
-import time
-
 import cv2
 
 from data.serializers.srlog import SrlogSerializer

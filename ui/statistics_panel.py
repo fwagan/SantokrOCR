@@ -9,23 +9,21 @@
 5. 鼠标追踪功能：显示精确度数
 """
 
-import json
-import math
-import os
 import tkinter as tk
-import warnings
 from tkinter import ttk
-
-import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal import savgol_filter
+from scipy.interpolate import interp1d
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+import matplotlib
 from matplotlib.patches import Rectangle
 from matplotlib.transforms import blended_transform_factory
-from scipy.interpolate import interp1d
-from scipy.signal import savgol_filter
-
+import warnings
+import os
+import json
+import math
 warnings.filterwarnings('ignore')
 
 # --- ROR 非均匀 Y 轴配置 ---

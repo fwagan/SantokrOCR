@@ -7,12 +7,12 @@
 更新：使用WhiteLEDRecognizer算法进行特征提取，专注于白色LED识别
 """
 
-from typing import Dict, List, Optional, Tuple
-
 import cv2
 import numpy as np
+from typing import Tuple, List, Dict, Optional
 
 from .white_led_recognizer import WhiteLEDRecognizer
+
 
 # 用户提供的正常和故障模式字典
 # 特征向量顺序: [a,b,c,d,e,f,g] = [上横,右上竖,右下竖,下横,左下竖,左上竖,中间横]

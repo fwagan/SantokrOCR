@@ -5,30 +5,19 @@
 迁移完成后此文件应移回 ui/ 并删除 tkinter 版。
 """
 
-import copy
-import json
 import os
+import json
+import copy
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView,
-    QCheckBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QGroupBox,
-    QHBoxLayout,
+    QDialog, QVBoxLayout, QHBoxLayout, QSplitter,
+    QTreeView, QGroupBox, QFormLayout, QLineEdit,
+    QCheckBox, QPushButton, QWidget, QLabel,
+    QDialogButtonBox, QMessageBox, QAbstractItemView,
     QHeaderView,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QPushButton,
-    QSplitter,
-    QTreeView,
-    QVBoxLayout,
-    QWidget,
 )
+from PySide6.QtGui import QStandardItemModel, QStandardItem, QBrush, QColor
 
 BEAN_FIELDS = [
     ('name', '名称:'),
