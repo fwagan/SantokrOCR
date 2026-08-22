@@ -8,6 +8,7 @@
 - 状态栏
 """
 
+import logging
 import os
 import queue
 import threading
@@ -28,7 +29,6 @@ from core.checkpoint import build_checkpoints
 from core.ipc_server import IpcServer, load_ipc_config
 from core.modbus_config import (
     load_modbus_config,
-    probe_device,
     resolve_device_port,
     save_modbus_config,
 )
@@ -54,6 +54,8 @@ from utils.screen_utils import center_window
 from web.backend.config import WebConfigError, main_app_base
 from web.backend.launcher import ensure_web_running
 
+logger = logging.getLogger(__name__)
+
 # ── 常量 ──
 _PREVIEW_POLL_INTERVAL = 30       # 预览帧轮询间隔（ms）
 _PREVIEW_DISCONNECT_THRESHOLD = 9  # 连续读取失败次数上限，超过则判定摄像头断开
@@ -61,6 +63,8 @@ _PREVIEW_READ_TIMEOUT = 0.5       # 帧读取超时阈值（秒）
 _PREVIEW_RETRY_INTERVAL = 0.1     # 读失败后的重试等待间隔（秒）
 _DEFAULT_SAMPLE_INTERVAL = 0.25    # 默认采样间隔（秒）
 _EXTRA_RECORD_SECONDS = 5.0       # 额外记录时长（秒）：滚动窗口大小 & 烘焙结束后延迟记录时长
+# 探测重试间隔：未识别到设备时后台退避等待，避免紧循环高频占用串口/浪费 CPU
+_PROBE_RETRY_INTERVAL = 2.0
 
 
 class CameraRealtimeWindow(tk.Toplevel):
@@ -132,7 +136,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._preview_lost = False
         self._preview_fail_count = 0
 
-        # Modbus 设备探测（非预览轮询）：仅在模式激活/配置关闭时触发，
+        # Modbus 设备探测：仅在模式激活/配置关闭时触发，
         # 未识别到设备时后台持续重试，识别成功后停止；结果经 after_idle 回主线程
         self._modbus_cfg = {}
         self._modbus_probe_stop = threading.Event()   # 后台探测线程停止标志
@@ -504,7 +508,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         仅在窗口进入 Modbus 模式 / 配置窗口关闭时调用。未识别到设备时
         后台线程持续重试（覆盖"先开窗口再插设备"），识别成功后自动退出。
-        阻塞的串口探测（resolve_device_port + probe_device）放后台线程，
+        阻塞的串口探测放后台线程，
         避免 COM 口不可用时阻塞 UI 主线程导致窗口假死。
         """
         source = self._get_active_source()
@@ -538,30 +542,28 @@ class CameraRealtimeWindow(tk.Toplevel):
                 if not ch.get('enabled', False):
                     break  # 通道未启用，等配置窗口关闭时重新触发
                 port = resolve_device_port(ch)
-                temp = None
-                if port:
-                    temp = probe_device(
-                        port, slave_id=ch.get('slave_id', 1),
-                        register=ch.get('register', 0),
-                        baudrate=ch.get('baudrate', 9600),
-                    )
                 if stop.is_set():
                     break  # 探测已被废弃（配置变更/窗口关闭），不再调度结果
                 try:
-                    self.after_idle(self._modbus_probe_tick, port, temp)
+                    self.after_idle(self._on_modbus_probe_result, port)
                     delivered = True
-                except Exception:
-                    # 主线程尚未进入事件循环（如窗口 __init__ 期间）时跨线程
-                    # after_idle 抛 RuntimeError，本轮无法交付，下一轮重试
+                except Exception as e:
+                    # 跨线程 after_idle 投递失败
+                    # 本轮不交付，下轮重试
+                    logger.warning(f"探测结果投递失败，本轮未交付: {e}")
                     delivered = False
                 if port is not None and delivered:
                     break  # 已识别到设备并成功交付，不再占用串口
             except Exception:
-                pass
-            stop.wait(2.0)  # 未识别到设备，间隔重试
+                logger.exception("Modbus 探测循环异常")
+            stop.wait(_PROBE_RETRY_INTERVAL)
 
-    def _modbus_probe_tick(self, port, temp):
-        """主线程：应用探测结果，更新状态面板与开始按钮"""
+    def _on_modbus_probe_result(self, port):
+        """主线程：应用探测结果，更新状态面板与开始按钮
+
+        探测为单次快照、确认连接即停止，故不显示温度读数（无时效性）；
+        实时温度由 ModbusReader 经 _update_modbus_status 读 _latest_result 显示。
+        """
         if not self.winfo_exists() or self._data_source.get() != "modbus":
             return  # 窗口已销毁或已切离 Modbus（过期结果）
         cfg = self._modbus_cfg or {}
@@ -579,12 +581,8 @@ class CameraRealtimeWindow(tk.Toplevel):
                 new_cfg.setdefault('channels', {}).setdefault('temp1', {})['port'] = port
                 save_modbus_config(new_cfg)
                 self._modbus_cfg = new_cfg
-            if temp is not None:
-                self._ch1_indicator.configure(foreground="#44bb44")
-                self._ch1_text.configure(text=f"已连接 (豆温) {temp:.1f}℃")
-            else:
-                self._ch1_indicator.configure(foreground="#ff4444")
-                self._ch1_text.configure(text="未连接 (豆温)")
+            self._ch1_indicator.configure(foreground="#44bb44")
+            self._ch1_text.configure(text="已连接 (豆温)")
         else:
             self._modbus_connected = False
             self._ch1_indicator.configure(foreground="#ff4444")
