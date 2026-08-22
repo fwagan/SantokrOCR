@@ -15,6 +15,7 @@ import time
 import tkinter as tk
 import tkinter.font as tkfont
 import traceback
+from copy import deepcopy
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
 
@@ -26,7 +27,6 @@ from core.camera_capture import CameraProcessingThread
 from core.checkpoint import build_checkpoints
 from core.ipc_server import IpcServer, load_ipc_config
 from core.modbus_config import (
-    auto_detect_device,
     load_modbus_config,
     probe_device,
     resolve_device_port,
@@ -132,9 +132,12 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._preview_lost = False
         self._preview_fail_count = 0
 
-        # Modbus 预览轮询 + 配置缓存
-        self._modbus_preview_after_id = None
+        # Modbus 设备探测（非预览轮询）：仅在模式激活/配置关闭时触发，
+        # 未识别到设备时后台持续重试，识别成功后停止；结果经 after_idle 回主线程
         self._modbus_cfg = {}
+        self._modbus_probe_stop = threading.Event()   # 后台探测线程停止标志
+        self._modbus_probe_thread = None              # 后台探测线程
+        self._modbus_connected = False                # 最近一次探测是否识别到设备（门控开始按钮）
 
         # 窗口设置（自适应屏幕90%，不超过3200x1900）
         self.title("实时识别 - 有线传输")
@@ -234,8 +237,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         # 默认隐藏，切换到 Modbus 时显示
         self._modbus_ctrl_frame.pack_forget()
 
-        ttk.Button(self._modbus_ctrl_frame, text="⚙ 设备配置",
-                   command=self._open_modbus_config).pack(side="left")
+        self._modbus_config_btn = ttk.Button(self._modbus_ctrl_frame, text="⚙ 设备配置",
+                                             command=self._open_modbus_config)
+        self._modbus_config_btn.pack(side="left")
 
         # Web 协作开关（仅 Modbus 模式；默认勾选由 web 主控烘焙会话，关闭保留原工作流）
         self._web_check = ttk.Checkbutton(self._modbus_ctrl_frame, text="Web事件标记",
@@ -342,7 +346,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.time_var = tk.StringVar(value="运行时长: 00:00")
         ttk.Label(status_bar, textvariable=self.time_var, padding=(8, 4)).pack(side="right")
 
-        # 初始状态：摄像头模式已选中
+        # 初始状态
         self._on_data_source_changed()
 
     # ═══════════════════════════════════════════════════════════
@@ -448,7 +452,8 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.data_table.set_view_frame_callback(self._on_view_frame)
             self.export_session_btn.configure(state="normal" if self.results else "disabled")
             self.title("实时识别 - 摄像头")
-            self._stop_modbus_preview()
+            self._stop_modbus_probe()
+            self._modbus_connected = False  # 切离 Modbus 时清空连接状态，避免切回后按钮提前放开
             self._start_preview()
         else:
             # 顶部工具栏：显示温度读取器控件
@@ -469,7 +474,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.title("实时识别 - 有线传输")
             self._modbus_cfg = load_modbus_config()
             self._update_modbus_status()
-            self._start_modbus_preview()
+            self._start_modbus_probe()
 
     def _build_modbus_status_panel(self, parent):
         """创建温度读取器状态面板（两行通道状态）"""
@@ -494,50 +499,115 @@ class CameraRealtimeWindow(tk.Toplevel):
                                     font=("", 14))
         self._ch2_text.pack(side="left")
 
-    def _start_modbus_preview(self):
-        """启动 Modbus 预览轮询：定时读取设备温度，更新状态面板"""
-        self._stop_modbus_preview()
-        self._modbus_preview_after_id = self.after(1000, self._modbus_preview_tick)
+    def _start_modbus_probe(self):
+        """启动 Modbus 设备探测：后台线程探测，结果经 after_idle 回主线程
 
-    def _stop_modbus_preview(self):
-        """停止 Modbus 预览轮询"""
-        if self._modbus_preview_after_id:
-            self.after_cancel(self._modbus_preview_after_id)
-            self._modbus_preview_after_id = None
+        仅在窗口进入 Modbus 模式 / 配置窗口关闭时调用。未识别到设备时
+        后台线程持续重试（覆盖"先开窗口再插设备"），识别成功后自动退出。
+        阻塞的串口探测（resolve_device_port + probe_device）放后台线程，
+        避免 COM 口不可用时阻塞 UI 主线程导致窗口假死。
+        """
+        source = self._get_active_source()
+        if source and not source.is_stopped():
+            return  # 识别运行中：reader 独占串口，不启动探测
+        self._stop_modbus_probe()
+        self._modbus_probe_stop = threading.Event()
+        # 探测结果未到前不允许开始识别（识别到设备前按钮保持禁用）
+        self._update_start_button()
+        self._modbus_probe_thread = threading.Thread(
+            target=self._modbus_probe_loop, daemon=True, name="ModbusProbe")
+        self._modbus_probe_thread.start()
 
-    def _modbus_preview_tick(self):
-        """轮询一次 Modbus 温度并更新状态面板"""
-        if self._data_source.get() != "modbus":
-            return
-        try:
-            cfg = self._modbus_cfg or {}
-            ch = cfg.get('channels', {}).get('temp1', {})
-            if ch.get('enabled', False):
-                # 端口解析：先试保存的端口，不通则扫描
+    def _stop_modbus_probe(self):
+        """停止 Modbus 设备探测（后台探测线程）"""
+        stop = getattr(self, '_modbus_probe_stop', None)
+        if stop is not None:
+            stop.set()
+        self._modbus_probe_thread = None
+
+    def _modbus_probe_loop(self):
+        """后台线程：探测 Modbus 设备，识别到后退出，未识别则持续重试
+
+        结果通过 after_idle 调度到主线程；通道未启用或识别到设备后 break。
+        """
+        stop = self._modbus_probe_stop
+        while not stop.is_set():
+            try:
+                cfg = self._modbus_cfg or {}
+                ch = cfg.get('channels', {}).get('temp1', {})
+                if not ch.get('enabled', False):
+                    break  # 通道未启用，等配置窗口关闭时重新触发
                 port = resolve_device_port(ch)
+                temp = None
                 if port:
-                    # 端口变化时自动更新配置
-                    if port != ch.get('port', ''):
-                        cfg['channels']['temp1']['port'] = port
-                        save_modbus_config(cfg)
-                        self._modbus_cfg = cfg
                     temp = probe_device(
                         port, slave_id=ch.get('slave_id', 1),
                         register=ch.get('register', 0),
                         baudrate=ch.get('baudrate', 9600),
                     )
-                    if temp is not None:
-                        self._ch1_indicator.configure(foreground="#44bb44")
-                        self._ch1_text.configure(text=f"已连接 (豆温) {temp:.1f}℃")
-                    else:
-                        self._ch1_indicator.configure(foreground="#ff4444")
-                        self._ch1_text.configure(text="未连接 (豆温)")
-                else:
-                    self._ch1_indicator.configure(foreground="#ff4444")
-                    self._ch1_text.configure(text="未连接 (豆温)")
-        except Exception:
-            pass
-        self._modbus_preview_after_id = self.after(1000, self._modbus_preview_tick)
+                if stop.is_set():
+                    break  # 探测已被废弃（配置变更/窗口关闭），不再调度结果
+                try:
+                    self.after_idle(self._modbus_probe_tick, port, temp)
+                    delivered = True
+                except Exception:
+                    # 主线程尚未进入事件循环（如窗口 __init__ 期间）时跨线程
+                    # after_idle 抛 RuntimeError，本轮无法交付，下一轮重试
+                    delivered = False
+                if port is not None and delivered:
+                    break  # 已识别到设备并成功交付，不再占用串口
+            except Exception:
+                pass
+            stop.wait(2.0)  # 未识别到设备，间隔重试
+
+    def _modbus_probe_tick(self, port, temp):
+        """主线程：应用探测结果，更新状态面板与开始按钮"""
+        if not self.winfo_exists() or self._data_source.get() != "modbus":
+            return  # 窗口已销毁或已切离 Modbus（过期结果）
+        cfg = self._modbus_cfg or {}
+        ch = cfg.get('channels', {}).get('temp1', {})
+        if not ch.get('enabled', False):
+            # 通道已被禁用（过期结果）：不写配置、不显示已连接
+            self._modbus_connected = False
+            self._ch1_indicator.configure(foreground="#888888")
+            self._ch1_text.configure(text="未启用 (豆温)")
+        elif port:
+            self._modbus_connected = True
+            # 端口变化时自动更新配置（写回 YAML，供 reader 直接使用）
+            if port != ch.get('port', ''):
+                new_cfg = deepcopy(cfg)
+                new_cfg.setdefault('channels', {}).setdefault('temp1', {})['port'] = port
+                save_modbus_config(new_cfg)
+                self._modbus_cfg = new_cfg
+            if temp is not None:
+                self._ch1_indicator.configure(foreground="#44bb44")
+                self._ch1_text.configure(text=f"已连接 (豆温) {temp:.1f}℃")
+            else:
+                self._ch1_indicator.configure(foreground="#ff4444")
+                self._ch1_text.configure(text="未连接 (豆温)")
+        else:
+            self._modbus_connected = False
+            self._ch1_indicator.configure(foreground="#ff4444")
+            self._ch1_text.configure(text="未连接 (豆温)")
+        self._update_start_button()
+
+    def _update_start_button(self):
+        """Modbus 模式：仅当通道启用且已识别到设备时才允许开始识别
+
+        按钮可用 ⇒ 后台探测线程已退出（识别成功后 break）⇒ 串口必已释放，
+        因此 reader 启动时不会与探测线程抢串口。
+        """
+        if self._data_source.get() != "modbus":
+            return
+        source = self._get_active_source()
+        if source and not source.is_stopped():
+            return  # 识别运行中，按钮状态由 _on_realtime_started 管理
+        cfg = self._modbus_cfg or {}
+        ch = cfg.get('channels', {}).get('temp1', {})
+        if ch.get('enabled', False) and self._modbus_connected:
+            self.start_btn.config(state="normal")
+        else:
+            self.start_btn.config(state="disabled")
 
     def _update_modbus_status(self):
         """更新温度读取器状态面板（双通道）"""
@@ -547,19 +617,6 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         cfg = self._modbus_cfg or {}
         channels = cfg.get('channels', {})
-
-        # 没有已启用通道时自动探测
-        if not any(ch.get('enabled', False) and ch.get('port', '')
-                   for ch in channels.values()):
-            try:
-                device = auto_detect_device()
-                if device:
-                    cfg.setdefault('channels', {})['temp1'] = device
-                    save_modbus_config(cfg)
-                    self._modbus_cfg = cfg
-                    channels = cfg.get('channels', {})
-            except Exception:
-                pass
 
         def update_channel(frame, indicator, text_label, key, label):
             """更新单个通道的状态显示"""
@@ -598,10 +655,15 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _open_modbus_config(self):
         """打开 Modbus 设备配置对话框（模态）"""
+        # 对话框内部自带串口探测（扫描/验证），先暂停后台自动探测避免抢串口
+        self._stop_modbus_probe()
         dlg = ModbusConfigDialog(self)
         self.wait_window(dlg)
         self._modbus_cfg = load_modbus_config()
+        # 配置可能变化，重置连接状态后用新配置重新探测
+        self._modbus_connected = False
         self._update_modbus_status()
+        self._start_modbus_probe()
     # 理想曲线
     # ═══════════════════════════════════════════════════════════
 
@@ -1381,15 +1443,16 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _on_realtime_started(self, interval, source_label):
         """开始实时识别后的UI更新，供两种模式共用"""
-        self._stop_modbus_preview()  # 释放 COM 口给 ModbusReader
+        self._stop_modbus_probe()  # 释放 COM 口给 ModbusReader
         self.start_btn.config(state="disabled")
         self.pause_btn.config(state="normal")
         self.stop_btn.config(state="normal")
         self.export_session_btn.config(state="disabled")
         self.save_db_btn.config(state="disabled")
-        # 运行中禁用数据源切换
+        # 运行中禁用数据源切换与设备配置（reader 独占串口，探测/配置都会与之冲突）
         self._camera_rb.configure(state="disabled")
         self._modbus_rb.configure(state="disabled")
+        self._modbus_config_btn.configure(state="disabled")
         self._start_time = time.time()
         self._update_elapsed_time()
         self._log(f"开始实时识别，数据源: {source_label}，间隔: {interval}s")
@@ -1440,7 +1503,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         if self._data_source.get() == "camera":
             self.start_btn.config(state="normal" if self.rois else "disabled")
         else:
-            self.start_btn.config(state="normal")
+            self._update_start_button()
         self.pause_btn.config(state="disabled", text="暂停")
         self.stop_btn.config(state="disabled")
         self.clear_btn.config(state="normal")   # 恢复清空按钮（Web 烘焙中被禁用，停止后恢复）
@@ -1449,9 +1512,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.export_session_btn.config(state="normal" if self.results else "disabled")
         else:
             self.export_session_btn.config(state="disabled")
-        # 停止后恢复数据源切换
+        # 停止后恢复数据源切换与设备配置
         self._camera_rb.configure(state="normal")
         self._modbus_rb.configure(state="normal")
+        self._modbus_config_btn.configure(state="normal")
         self.save_db_btn.config(state="normal" if self.results else "disabled")
 
     def _update_elapsed_time(self):
@@ -1678,7 +1742,8 @@ class CameraRealtimeWindow(tk.Toplevel):
             self.processing_thread = None
         else:
             self._modbus_reader = None
-            self._start_modbus_preview()  # 恢复预览轮询
+            self._update_modbus_status()
+            self._update_start_button()  # 设备未变，按上次探测结果恢复按钮，不重新探测
         self._source = None
         self._roast_state = "idle"
         self._reset_web_state()
@@ -2199,7 +2264,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             source.stop()
         # 预览线程清理
         self._stop_preview()
-        self._stop_modbus_preview()
+        self._stop_modbus_probe()
         if hasattr(self, '_cap') and self._cap is not None:
             try:
                 self._cap.release()
