@@ -50,6 +50,7 @@ from ui.slog_comparer import compute_ror, extract_valid_data, resample_data, smo
 from ui.statistics_panel import StatisticsPanel
 from utils.cache_manager import get_cache_manager
 from utils.file_system import FileOperations, Paths
+from utils.numeric import find_nearest_temperature
 from utils.screen_utils import center_window
 from web.backend.config import WebConfigError, main_app_base
 from web.backend.launcher import ensure_web_running
@@ -913,12 +914,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 查找事件时间的温度
         def find_temperature(ev_time):
-            rt = data['resampled_time']
-            st1 = data['smooth_temp1']
-            if rt is not None and st1 is not None and len(rt) > 0:
-                idx = np.abs(rt - ev_time).argmin()
-                if idx < len(st1):
-                    return f"{st1[idx]:.1f}℃"
+            temp = find_nearest_temperature(data['resampled_time'], data['smooth_temp1'], ev_time)
+            if temp is not None:
+                return f"{temp:.1f}℃"
             return ''
 
         lines = [

@@ -9,9 +9,8 @@ Checkpoint — 基于理想曲线派生 checkpoint 静态列表（纯函数）
 
 from typing import Any, Optional
 
-import numpy as np
-
 from data.types import EventType
+from utils.numeric import find_nearest_temperature
 
 # manual checkpoint 对应的事件（数值事件）；其余事件均为 auto
 _MANUAL_CHECKPOINT_EVENT_TYPES = frozenset({EventType.HEATER_ADJUST, EventType.FAN_ADJUST})
@@ -67,25 +66,14 @@ def build_checkpoints(ideal_data: Optional[dict[str, Any]]) -> Optional[list[dic
         else:
             value = ''
 
+        ev_temp = find_nearest_temperature(resampled_time, smooth_temp1, ev_time)
         checkpoints.append({
             'type': 'manual' if ev_type in _MANUAL_CHECKPOINT_EVENT_TYPES else 'auto',
             'event': ev_type,
-            'temp': _find_temp(resampled_time, smooth_temp1, ev_time),
+            'temp': round(ev_temp, 1) if ev_temp is not None else None,
             'value': value,
             'delta': delta,
         })
         prev_time = ev_time
 
     return checkpoints
-
-
-def _find_temp(resampled_time, smooth_temp1, ev_time: float) -> Optional[float]:
-    """smooth_temp1 上离 ev_time 最近点的温度，四舍五入 1 位；数据不足返回 None"""
-    if (resampled_time is None or smooth_temp1 is None
-            or len(resampled_time) == 0 or len(smooth_temp1) == 0
-            or len(resampled_time) != len(smooth_temp1)):
-        return None
-    idx = int(np.abs(np.asarray(resampled_time, dtype=float) - ev_time).argmin())
-    if idx >= len(smooth_temp1):
-        return None
-    return round(float(smooth_temp1[idx]), 1)

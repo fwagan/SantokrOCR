@@ -49,6 +49,7 @@ from data.serializers.slog import SlogSerializer
 from data.sqlite.event_repo import SqliteEventRepository
 from data.sqlite.result_repo import SqliteResultRepository
 from data.sqlite.session_repo import SqliteSessionRepository
+from utils.numeric import find_nearest_temperature
 
 # ====== 常量 ======
 MAX_SLOG_COUNT = 5
@@ -891,17 +892,16 @@ class SlogComparer(tk.Toplevel):
             if '豆温' in active_curve_types and slog['smooth_temp1'] is not None and slog['events']:
                 marker_x = []
                 marker_y = []
-                rt = slog['resampled_time']
                 for ev in slog['events']:
                     if ev.get('type', '') in ('调整火力', '调整风门'):
                         continue
                     ev_time = ev.get('time', 0)
                     if filter_mask is not None and (ev_time < filter_ct or ev_time > filter_dt):
                         continue
-                    idx = np.abs(rt - ev_time).argmin()
-                    if idx < len(slog['smooth_temp1']):
+                    temp = find_nearest_temperature(slog['resampled_time'], slog['smooth_temp1'], ev_time)
+                    if temp is not None:
                         marker_x.append(ev_time - align_time)
-                        marker_y.append(slog['smooth_temp1'][idx])
+                        marker_y.append(temp)
                 if marker_x:
                     ax.scatter(marker_x, marker_y, color=color_hex, s=50,
                               zorder=5, marker='o', alpha=alpha)
