@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 from scipy.interpolate import interp1d
 from scipy.signal import savgol_filter
 
+from utils.numeric import find_nearest_temperature
+
 warnings.filterwarnings('ignore')
 
 # --- ROR 非均匀 Y 轴配置 ---
@@ -394,16 +396,13 @@ class StatisticsPanel(QWidget):
 
     def get_event_markers(self):
         markers = []
-        if self.resampled_time is None or self.smooth_temp1 is None:
-            return markers
         for ev in self._events:
             ev_type = ev.get('type', '')
             if ev_type in ('调整火力', '调整风门'):
                 continue
             ev_time = ev.get('time', 0)
-            idx = np.abs(self.resampled_time - ev_time).argmin()
-            if idx < len(self.smooth_temp1):
-                temp = self.smooth_temp1[idx]
+            temp = find_nearest_temperature(self.resampled_time, self.smooth_temp1, ev_time)
+            if temp is not None:
                 markers.append((ev_time, temp, ev_type))
         return markers
 
