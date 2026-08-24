@@ -3,7 +3,7 @@
 
 布局：
 - 顶部控制栏：设备配置、Web事件标记、采样间隔
-- 主体 PanedWindow：左 温度读取器状态 + 底部实时状态栏；右 Notebook（Tab1 实时曲线 + Tab2 数据表格）
+- 主体 PanedWindow：左 指示灯 + 实时读数；右 Notebook（Tab1 理想曲线 + Tab2 实时曲线 + Tab3 数据表格）
 - 中部按钮栏：开始/暂停/停止
 - 状态栏
 """
@@ -203,27 +203,23 @@ class CameraRealtimeWindow(tk.Toplevel):
                                        command=self._save_to_database, state="disabled")
         self.save_db_btn.pack(side="left", padx=2)
 
-        # ── 主体：左侧预览/状态 + 右侧Notebook ──
+        # ── 主体：左侧状态 + 右侧Notebook ──
         main = ttk.PanedWindow(self, orient="horizontal")
         main.pack(fill="both", expand=True, padx=8, pady=4)
         self._main_pw = main
 
-        # ── 左侧：容器帧（温度读取器状态 + 底部实时状态栏）──
+        # ── 左侧：容器帧（指示灯 + 实时值）──
         self._left_container = ttk.Frame(main)
-        main.add(self._left_container, weight=45)
+        main.add(self._left_container, weight=10)
 
-        # 温度读取器状态面板（在 _left_container 内）
-        self._modbus_status_panel = ttk.LabelFrame(self._left_container, text="温度读取器", padding=4)
-        self._build_modbus_status_panel(self._modbus_status_panel)
-        self._modbus_status_panel.pack(fill="both", expand=True)
-
-        # 底部实时状态栏（豆温/风温/ROR，在 _left_container 底部）
-        self._realtime_status_frame = self._create_realtime_status(self._left_container)
-        self._realtime_status_frame.pack(side="bottom", fill="x", padx=4, pady=4)
+        # 左侧状态面板（指示灯 → 空行 → 豆温/风温/ROR 实时值）
+        self._left_status_panel = ttk.LabelFrame(self._left_container, text="温度读取器", padding=16)
+        self._build_left_status_panel(self._left_status_panel)
+        self._left_status_panel.pack(fill="both", expand=True)
 
         # 右侧：Notebook（曲线 + 数据表格）
         right_frame = ttk.Frame(main)
-        main.add(right_frame, weight=55)
+        main.add(right_frame, weight=90)
 
         self.notebook = ttk.Notebook(right_frame)
         self.notebook.pack(fill="both", expand=True)
@@ -266,55 +262,11 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._init_modbus_mode()
 
     # ═══════════════════════════════════════════════════════════
-    # 实时状态栏
+    # 实时状态
     # ═══════════════════════════════════════════════════════════
 
-    def _create_realtime_status(self, parent):
-        """创建底部实时状态条：豆温(蓝) 风温(橙) ROR(红) 加大字号"""
-        status_frame = ttk.Frame(parent)
-
-        # 配置三列等宽
-        status_frame.columnconfigure(0, weight=1)
-        status_frame.columnconfigure(1, weight=1)
-        status_frame.columnconfigure(2, weight=1)
-
-        title_font = tkfont.Font(size=12, weight="bold")
-        value_font = tkfont.Font(size=48, weight="bold")
-
-        # 豆温（蓝色 #4488ff）
-        f0 = ttk.Frame(status_frame)
-        f0.grid(row=0, column=0, sticky="nsew", padx=4, pady=2)
-        ttk.Label(f0, text="豆温(℃)", font=title_font,
-                  foreground="#4488ff", anchor="center").pack(pady=(6, 0))
-        self._bean_temp_var = tk.StringVar(value="--.-")
-        bean_lbl = ttk.Label(f0, textvariable=self._bean_temp_var,
-                             font=value_font, foreground="#4488ff", anchor="center")
-        bean_lbl.pack(expand=True, fill="both")
-
-        # 风温（橙色 #ff8844）
-        f1 = ttk.Frame(status_frame)
-        f1.grid(row=0, column=1, sticky="nsew", padx=4, pady=2)
-        ttk.Label(f1, text="风温(℃)", font=title_font,
-                  foreground="#ff8844", anchor="center").pack(pady=(6, 0))
-        self._air_temp_var = tk.StringVar(value="--.-")
-        air_lbl = ttk.Label(f1, textvariable=self._air_temp_var,
-                            font=value_font, foreground="#ff8844", anchor="center")
-        air_lbl.pack(expand=True, fill="both")
-
-        # ROR（红色 #ff4444）
-        f2 = ttk.Frame(status_frame)
-        f2.grid(row=0, column=2, sticky="nsew", padx=4, pady=2)
-        ttk.Label(f2, text="ROR(℃/min)", font=title_font,
-                  foreground="#ff4444", anchor="center").pack(pady=(6, 0))
-        self._ror_var = tk.StringVar(value="--.-")
-        ror_lbl = ttk.Label(f2, textvariable=self._ror_var,
-                            font=value_font, foreground="#ff4444", anchor="center")
-        ror_lbl.pack(expand=True, fill="both")
-
-        return status_frame
-
     def _update_realtime_status(self, result):
-        """更新底部实时状态：豆温、风温、ROR（异常/识别失败时保留上次有效值）"""
+        """更新实时状态：豆温、风温、ROR（异常/识别失败时保留上次有效值）"""
         # 豆温
         temp1 = result.get('temp1_full', '')
         if temp1 and '?' not in temp1 and result.get('abnormal_category') != 'temperature_diff':
@@ -343,7 +295,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             self._ror_var.set("--.-")
 
     def _reset_status_display(self):
-        """重置实时状态栏显示为初始值"""
+        """重置实时状态显示为初始值"""
         self._bean_temp_var.set("--.-")
         self._air_temp_var.set("--.-")
         self._ror_var.set("--.-")
@@ -359,28 +311,46 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._update_modbus_status()
         self._start_modbus_probe()
 
-    def _build_modbus_status_panel(self, parent):
-        """创建温度读取器状态面板（两行通道状态）"""
-        info_frame = ttk.Frame(parent, padding=24)
-        info_frame.pack(fill="both", expand=True)
+    def _build_left_status_panel(self, parent):
+        """创建左侧状态面板：豆温/风温指示灯 → 空行 → 豆温/风温/ROR 实时值"""
+        title_font = tkfont.Font(size=12, weight="bold")
+        value_font = tkfont.Font(size=44, weight="bold")
 
-        # 豆温通道状态行
-        self._ch1_frame = ttk.Frame(info_frame)
-        self._ch1_frame.pack(fill="x", pady=(0, 12))
-        self._ch1_indicator = ttk.Label(self._ch1_frame, text="●", font=("", 20))
+        # ── 指示灯行（连接状态）──
+        ch1_frame = ttk.Frame(parent)
+        ch1_frame.pack(fill="x", pady=(0, 6))
+        self._ch1_indicator = ttk.Label(ch1_frame, text="●", font=("", 20))
         self._ch1_indicator.pack(side="left", padx=(0, 12))
-        self._ch1_text = ttk.Label(self._ch1_frame, text="未启用 (豆温)",
-                                    font=("", 14))
+        self._ch1_text = ttk.Label(ch1_frame, text="未启用 (豆温)", font=("", 14))
         self._ch1_text.pack(side="left")
 
-        # 风温通道状态行
-        self._ch2_frame = ttk.Frame(info_frame)
-        self._ch2_frame.pack(fill="x")
-        self._ch2_indicator = ttk.Label(self._ch2_frame, text="●", font=("", 20))
+        ch2_frame = ttk.Frame(parent)
+        ch2_frame.pack(fill="x", pady=(0, 40))  # 与下方读数区的大间隔
+        self._ch2_indicator = ttk.Label(ch2_frame, text="●", font=("", 20))
         self._ch2_indicator.pack(side="left", padx=(0, 12))
-        self._ch2_text = ttk.Label(self._ch2_frame, text="未启用 (风温)",
-                                    font=("", 14))
+        self._ch2_text = ttk.Label(ch2_frame, text="未启用 (风温)", font=("", 14))
         self._ch2_text.pack(side="left")
+
+        # ── 实时值行（豆温蓝 / 风温橙 / ROR 红）──
+        _title_w_chars = max(
+            int(title_font.measure(t) / title_font.measure("0"))
+            for t in ("豆温(℃)", "风温(℃)", "ROR(℃/min)")
+        ) + 1
+
+        def _value_row(label_text, var, color):
+            row = ttk.Frame(parent)
+            row.pack(anchor="w", pady=(10, 2))
+            ttk.Label(row, text=label_text, font=title_font,
+                      foreground=color, anchor="e", width=_title_w_chars).pack(side="left")
+            ttk.Label(row, textvariable=var, font=value_font,
+                      foreground=color, anchor="center").pack(side="left", padx=(12, 0))
+
+        self._bean_temp_var = tk.StringVar(value="--.-")
+        _value_row("豆温(℃)", self._bean_temp_var, "#4488ff")
+        self._air_temp_var = tk.StringVar(value="--.-")
+        _value_row("风温(℃)", self._air_temp_var, "#ff8844")
+        self._ror_var = tk.StringVar(value="--.-")
+        _value_row("ROR(℃/min)", self._ror_var, "#ff4444")
 
     def _start_modbus_probe(self):
         """启动 Modbus 设备探测：后台线程探测，结果经 _enqueue_ui 回主线程
@@ -486,7 +456,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         cfg = self._modbus_cfg or {}
         channels = cfg.get('channels', {})
 
-        def update_channel(frame, indicator, text_label, key, label):
+        def update_channel(indicator, text_label, key, label):
             """更新单个通道的状态显示"""
             ch = channels.get(key, {})
             enabled = ch.get('enabled', False)
@@ -504,7 +474,7 @@ class CameraRealtimeWindow(tk.Toplevel):
                 if temp_str is not None:
                     # 有数据: 已连接
                     indicator.configure(foreground=_GREEN)
-                    text_label.configure(text=f"已连接 ({label}) {temp_str}℃")
+                    text_label.configure(text=f"已连接 ({label})")
                 else:
                     # 已启用但无数据: 未连接
                     indicator.configure(foreground=_RED)
@@ -512,14 +482,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             else:
                 # 未启用
                 indicator.configure(foreground=_GRAY)
-                text_label.configure(text=f"未启用 ({label}) ???.?")
+                text_label.configure(text=f"未启用 ({label})")
 
-            frame.pack(fill="x", pady=(0, 12) if key == 'temp1' else 0)
-
-        update_channel(self._ch1_frame, self._ch1_indicator, self._ch1_text,
-                       'temp1', '豆温')
-        update_channel(self._ch2_frame, self._ch2_indicator, self._ch2_text,
-                       'temp2', '风温')
+        update_channel(self._ch1_indicator, self._ch1_text, 'temp1', '豆温')
+        update_channel(self._ch2_indicator, self._ch2_text, 'temp2', '风温')
 
     def _open_modbus_config(self):
         """打开 Modbus 设备配置对话框（模态）"""
