@@ -2,7 +2,7 @@
 ModbusReader — 通过 Modbus RTU 协议读取温度数据
 
 实现 TemperatureDataSource 接口，从 USB Modbus 温度读取器（MAX31865 + PT100）
-获取温度值，输出与 CameraProcessingThread 兼容的 result_dict。
+获取温度值，输出统一的 result_dict（格式见 _build_result）。
 
 设备参数（已确认）：
   - 协议: Modbus RTU (9600 8N1)
@@ -245,7 +245,7 @@ class ModbusReader(TemperatureDataSource):
     def _build_result(self, timestamp: float,
                       temp1_value: Optional[float],
                       temp2_value: Optional[float]) -> dict:
-        """构建与 CameraProcessingThread 兼容的 result_dict"""
+        """构建统一的 result_dict"""
         # temp1 格式化
         if temp1_value is not None:
             temp1_full = f"{temp1_value:.1f}"
@@ -274,7 +274,7 @@ class ModbusReader(TemperatureDataSource):
         }
 
     def _check_anomaly(self, result: dict):
-        """温差异常检测（复用 CameraProcessingThread 逻辑）"""
+        """温差异常检测（帧率归一化：连续无效帧越多，允许温差越大）"""
         try:
             curr_temp = float(result['temp1_full'])
             if self._last_valid_temp1 is not None:
