@@ -1,7 +1,7 @@
 """
 统一的 Signal 类 + 线程安全调度
 
-取代 core/camera_capture.py 和 ui/async_worker.py 中重复的 Signal 实现。
+取代 ui/async_worker.py 中重复的 Signal 实现。
 """
 
 import threading

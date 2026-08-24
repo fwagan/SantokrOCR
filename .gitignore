@@ -8,5 +8,6 @@ dist/
 .superpowers/
 config/*
 !config/*.example
-docs/
+docs/*
+!docs/agent-tracking/
 ruff.toml

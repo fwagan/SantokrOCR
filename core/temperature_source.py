@@ -1,7 +1,7 @@
 """
 TemperatureDataSource — 温度数据源抽象接口
 
-定义实时温度读取的统一契约，供 CameraProcessingThread 和 ModbusReader 实现。
+定义实时温度读取的统一契约，供 ModbusReader 实现。
 """
 
 from abc import ABC, abstractmethod
