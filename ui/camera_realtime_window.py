@@ -66,6 +66,7 @@ _DEFAULT_SAMPLE_INTERVAL = 0.25    # 默认采样间隔（秒）
 _EXTRA_RECORD_SECONDS = 5.0       # 额外记录时长（秒）：滚动窗口大小 & 烘焙结束后延迟记录时长
 # 探测重试间隔：未识别到设备时后台退避等待，避免紧循环高频占用串口/浪费 CPU
 _PROBE_RETRY_INTERVAL = 2.0
+_UI_QUEUE_DRAIN_BATCH = 20   # 单次 drain 回调最多处理的 UI 任务条数（防模态阻塞后积压导致硬冻结）
 
 
 class CameraRealtimeWindow(tk.Toplevel):
@@ -73,6 +74,10 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def __init__(self, parent):
         super().__init__(parent)
+
+        self._ui_queue = queue.Queue()
+        self._ui_queue_polling = True
+        self.after(50, self._drain_ui_queue)
 
         self.parent = parent
 
@@ -138,7 +143,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._preview_fail_count = 0
 
         # Modbus 设备探测：仅在模式激活/配置关闭时触发，
-        # 未识别到设备时后台持续重试，识别成功后停止；结果经 after_idle 回主线程
+        # 未识别到设备时后台持续重试，识别成功后停止；结果经 _enqueue_ui 回主线程
         self._modbus_cfg = {}
         self._modbus_probe_stop = threading.Event()   # 后台探测线程停止标志
         self._modbus_probe_thread = None              # 后台探测线程
@@ -505,7 +510,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._ch2_text.pack(side="left")
 
     def _start_modbus_probe(self):
-        """启动 Modbus 设备探测：后台线程探测，结果经 after_idle 回主线程
+        """启动 Modbus 设备探测：后台线程探测，结果经 _enqueue_ui 回主线程
 
         仅在窗口进入 Modbus 模式 / 配置窗口关闭时调用。未识别到设备时
         后台线程持续重试（覆盖"先开窗口再插设备"），识别成功后自动退出。
@@ -533,7 +538,7 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _modbus_probe_loop(self):
         """后台线程：探测 Modbus 设备，识别到后退出，未识别则持续重试
 
-        结果通过 after_idle 调度到主线程；通道未启用或识别到设备后 break。
+        结果通过 _enqueue_ui 调度到主线程；通道未启用或识别到设备后 break。
         """
         stop = self._modbus_probe_stop
         while not stop.is_set():
@@ -545,16 +550,9 @@ class CameraRealtimeWindow(tk.Toplevel):
                 port = resolve_device_port(ch)
                 if stop.is_set():
                     break  # 探测已被废弃（配置变更/窗口关闭），不再调度结果
-                try:
-                    self.after_idle(self._on_modbus_probe_result, port)
-                    delivered = True
-                except Exception as e:
-                    # 跨线程 after_idle 投递失败
-                    # 本轮不交付，下轮重试
-                    logger.warning(f"探测结果投递失败，本轮未交付: {e}")
-                    delivered = False
-                if port is not None and delivered:
-                    break  # 已识别到设备并成功交付，不再占用串口
+                self._enqueue_ui(self._on_modbus_probe_result, port)
+                if port is not None:
+                    break  # 已识别到设备并成功入队，不再占用串口
             except Exception:
                 logger.exception("Modbus 探测循环异常")
             stop.wait(_PROBE_RETRY_INTERVAL)
@@ -1528,9 +1526,36 @@ class CameraRealtimeWindow(tk.Toplevel):
     # 信号处理
     # ═══════════════════════════════════════════════════════════
 
+    def _enqueue_ui(self, func, *args):
+        """从后台线程安全地把一次 UI 调用排入主线程队列（替代 after_idle）"""
+        q = self._ui_queue
+        if q is None:
+            return  # 窗口已销毁，丢弃
+        q.put((func, args))
+
+    def _drain_ui_queue(self):
+        """主线程轮询：取出并执行后台线程排入的 UI 任务"""
+        if not self._ui_queue_polling:
+            return
+        try:
+            # 每次回调分配处理，未清空则立即续排，
+            # 避免单个回调清空积压导致长时间不返回事件循环（模态弹窗阻塞后的硬冻结）。
+            for _ in range(_UI_QUEUE_DRAIN_BATCH):
+                func, args = self._ui_queue.get_nowait()
+                try:
+                    func(*args)
+                except Exception:
+                    self._log(f"UI 调度任务异常: {traceback.format_exc()}")
+        except queue.Empty:
+            pass
+        if not self._ui_queue.empty():
+            self.after(0, self._drain_ui_queue)
+            return
+        self.after(50, self._drain_ui_queue)
+
     def _on_result(self, result):
         """处理识别结果（由后台线程触发，调度到主线程）"""
-        self.after_idle(self._on_result_ui, result)
+        self._enqueue_ui(self._on_result_ui, result)
 
     def _on_result_ui(self, result):
         """在主线程中执行识别结果处理
@@ -1714,7 +1739,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _on_status(self, message):
         """处理状态更新（由后台线程触发，调度到主线程）"""
-        self.after_idle(self._on_status_ui, message)
+        self._enqueue_ui(self._on_status_ui, message)
 
     def _on_status_ui(self, message):
         """在主线程中执行状态更新"""
@@ -1725,7 +1750,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _on_finished(self, success, message):
         """处理完成信号（由后台线程触发，调度到主线程）"""
-        self.after_idle(self._on_finished_ui, success, message)
+        self._enqueue_ui(self._on_finished_ui, success, message)
 
     def _on_finished_ui(self, success, message):
         """在UI线程中执行完成清理"""
@@ -1767,10 +1792,14 @@ class CameraRealtimeWindow(tk.Toplevel):
         """IPC 端口绑定失败（在 IpcServer 线程中调用）"""
         # 先捕获 port 到局部变量，避免窗口关闭后 _ipc_server 已置 None 时空引用
         port = self._ipc_server.port if self._ipc_server is not None else '?'
-        self.after_idle(lambda: messagebox.showerror(
+        self._enqueue_ui(self._show_ipc_bind_error, port, exc)
+
+    def _show_ipc_bind_error(self, port, exc):
+        """主线程执行：弹窗提示 IPC 端口绑定失败"""
+        messagebox.showerror(
             "IPC 服务启动失败",
             f"无法监听端口 {port}（可能被占用）：\n{exc}",
-            parent=self))
+            parent=self)
 
     def _stop_ipc_server(self):
         if self._ipc_server is not None:
@@ -1808,7 +1837,7 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _ipc_handler(self, cmd):
         """IPC 命令分发（在 IpcServer 后台线程中调用）
 
-        返回响应 dict；这里只做分发与基础校验，UI 更新通过 after_idle 调度到主线程。
+        返回响应 dict；这里只做分发与基础校验，UI 更新通过 _enqueue_ui 调度到主线程。
         """
         if not isinstance(cmd, dict):
             return {"ok": False, "error": "invalid command"}
@@ -1920,7 +1949,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         for name, val in (('heater_initial', heater), ('fan_initial', fan)):
             if val is not None and not (0 <= val <= 100):
                 return {"ok": False, "error": f"{name} 必须在 0-100 之间"}
-        self.after_idle(self._apply_charge_start, heater, fan)
+        self._enqueue_ui(self._apply_charge_start, heater, fan)
         return {"ok": True}
 
     def _ipc_add_event(self, cmd):
@@ -1947,7 +1976,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         except (TypeError, ValueError):
             return {"ok": False, "error": "offset 必须是数值"}
         roast_time = _EXTRA_RECORD_SECONDS + offset
-        self.after_idle(self._apply_end_from_web, roast_time)
+        self._enqueue_ui(self._apply_end_from_web, roast_time)
         return {"ok": True}
 
     def _handle_ipc_event(self, cmd, is_value_event):
@@ -1995,10 +2024,10 @@ class CameraRealtimeWindow(tk.Toplevel):
             self._recent_event_keys = self._recent_event_keys[-100:]
 
         roast_time = _EXTRA_RECORD_SECONDS + offset
-        self.after_idle(self._add_event_from_web, ev_type, roast_time, value)
+        self._enqueue_ui(self._add_event_from_web, ev_type, roast_time, value)
         return {"ok": True}
 
-    # ── 主线程执行的操作（after_idle 调度） ──
+    # ── 主线程执行的操作（_enqueue_ui 调度） ──
 
     def _apply_charge_start(self, heater, fan):
         """cmd:start 的主线程处理：设置初始值，标记入豆待定"""
@@ -2254,6 +2283,9 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def destroy(self):
         """重写 destroy：缓存ROI，释放摄像头/Modbus/IPC"""
+        # 停止后台线程 → 主线程 UI 调度轮询
+        self._ui_queue_polling = False
+        self._ui_queue = None
         # 停止数据源
         source = self._get_active_source()
         if source and not source.is_stopped():
