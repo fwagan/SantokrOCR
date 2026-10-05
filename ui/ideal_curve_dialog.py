@@ -35,7 +35,7 @@ class IdealCurveDialog(tk.Toplevel):
         ph = parent.winfo_height()
         px = parent.winfo_x()
         py = parent.winfo_y()
-        w, h = 750, 480
+        w, h = 938, 480  # 938 = 750 × 1.25（原宽度加宽 25%）
         self.geometry(f'{w}x{h}+{px + (pw - w) // 2}+{py + (ph - h) // 2}')
 
         # 加载豆信息

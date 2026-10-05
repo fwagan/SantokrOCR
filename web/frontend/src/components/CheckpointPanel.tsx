@@ -3,7 +3,7 @@
 // 布局（自上而下）：pass(es) 折叠区 → next 恒显(+countdown) → incoming 滚动区
 // 数据由 App 经 deriveCheckpoints 派生后传入；本组件不计算达成/时间，仅渲染。
 import type { CheckpointState } from '../checkpoint'
-import { formatCountdown } from '../checkpoint'
+import { formatCountdown, formatMmSs } from '../checkpoint'
 import { EVENT_TYPES } from '../api'
 
 interface CheckpointPanelProps {
@@ -62,6 +62,9 @@ export default function CheckpointPanel({
             <span className={boxClass(nextRow, true)} />
             <span className="checkpoint-event">{nextRow.cp.event}</span>
             {nextRow.cp.temp != null && <span className="checkpoint-temp">{nextRow.cp.temp}℃</span>}
+            {nextRow.cp.dev_seconds != null && (
+              <span className="checkpoint-value">({formatMmSs(nextRow.cp.dev_seconds)})</span>
+            )}
             {nextRow.cp.value !== '' && <span className="checkpoint-value">({nextRow.cp.value})</span>}
           </button>
           {countdownText != null && (
@@ -77,6 +80,9 @@ export default function CheckpointPanel({
               <span className={boxClass(r, false)} />
               <span className="checkpoint-event">{r.cp.event}</span>
               {r.cp.temp != null && <span className="checkpoint-temp">{r.cp.temp}℃</span>}
+              {r.cp.dev_seconds != null && (
+                <span className="checkpoint-value">({formatMmSs(r.cp.dev_seconds)})</span>
+              )}
               {r.cp.value !== '' && <span className="checkpoint-value">({r.cp.value})</span>}
             </div>
           ))}
