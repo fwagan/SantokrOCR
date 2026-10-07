@@ -5,6 +5,25 @@ from typing import Any, Optional
 import numpy as np
 
 
+def try_float(value: Any) -> Optional[float]:
+    """尽力将 value 转为 float
+
+    None / 空串 / 纯空白 / 无法解析 → None。
+
+    Args:
+        value: 待转换的值（可以是数字、字符串或 None）
+
+    Returns:
+        float，无法转换时 None。
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def find_nearest_temperature(
     times: Any, temps: Any, query_time: float
 ) -> Optional[float]:

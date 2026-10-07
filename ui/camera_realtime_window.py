@@ -40,6 +40,7 @@ from data.types import EventType
 from ui.data_table import DataTable
 from ui.ideal_curve_dialog import IdealCurveDialog
 from ui.modbus_config_dialog import ModbusConfigDialog
+from ui.session_info_dialog import SessionInfoDialog
 from ui.slog_comparer import compute_ror, extract_valid_data, resample_data, smooth_data
 from ui.statistics_panel import StatisticsPanel
 from utils.numeric import find_nearest_temperature
@@ -577,6 +578,7 @@ class CameraRealtimeWindow(tk.Toplevel):
             data.get('heater_initial', 60.0),
             data.get('fan_initial', 50.0),
             source_name=os.path.basename(path),
+            bean_name=data.get('bean_name', ''),
         )
         if ideal_data is None:
             return
@@ -609,11 +611,20 @@ class CameraRealtimeWindow(tk.Toplevel):
         events = self._event_repo.load(session_id) or []
 
         display_name = self._session_repo.get_display_name(session_id)
+
+        bean_name = ''
+        bean_id = session.get('bean_id')
+        if bean_id is not None:
+            bean = SqliteBeanRepository().get_by_id(bean_id)
+            if bean:
+                bean_name = bean.get('name', '')
+
         ideal_data = self._build_ideal_data(
             results, events,
             session.get('heater_initial', 60.0),
             session.get('fan_initial', 50.0),
             source_name=display_name,
+            bean_name=bean_name,
         )
         if ideal_data is None:
             return
@@ -636,11 +647,14 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._apply_ideal_curve()
 
     def _build_ideal_data(self, results, events, heater_initial, fan_initial,
-                          source_name='') -> Optional[dict]:
+                          source_name='', bean_name='') -> Optional[dict]:
         """从原始结果和事件构建 ideal_data 字典
 
         核心处理流程：提取→重采样→平滑→ROR→对齐事件→构建dict。
         被 _load_ideal_slog 和 _load_ideal_session 共用。
+
+        Args:
+            bean_name: 该曲线对应的生豆名，用于保存会话时预选生豆
 
         Returns:
             ideal_data dict，数据不足时返回 None
@@ -685,6 +699,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         return {
             'name': source_name,
+            'bean_name': bean_name,
             'resampled_time': resampled_time,
             'smooth_temp1': smooth_temp1,
             'smooth_temp2': smooth_temp2,
@@ -1525,53 +1540,61 @@ class CameraRealtimeWindow(tk.Toplevel):
     # ═══════════════════════════════════════════════════════════
 
     def _save_to_database(self):
-        """保存当前会话到数据库（is_raw_data=True）"""
+        """弹窗填写 session info 后保存当前会话到数据库"""
         if not self.results:
             messagebox.showwarning("警告", "没有数据可保存", parent=self)
             return
 
-        from datetime import datetime
-        from tkinter import simpledialog
-
-        default_name = datetime.now().strftime('%Y%m%d_%H%M%S')
-        name = simpledialog.askstring(
-            "保存到数据库",
-            "请输入本次烘焙的名称:",
-            parent=self,
-            initialvalue=default_name,
-        )
-        if not name:
-            return
-
-        # 准备数据
         from data.sqlite.session_repo import next_session_id
-        sid = next_session_id(self._session_repo.db_path)
-        events = self.stats_panel.events if hasattr(self.stats_panel, 'events') else []
 
-        # 保存会话元信息
-        session = {
-            'session_id': sid,
-            'is_raw_data': True,
-            'notes': name,
-            'heater_initial': (self.stats_panel.heater_initial
-                               if hasattr(self.stats_panel, 'heater_initial') else 0),
-            'fan_initial': (self.stats_panel.fan_initial
-                            if hasattr(self.stats_panel, 'fan_initial') else 0),
-        }
-        # 原子写入（单个事务）
         writer = SessionWriter(session_repo=self._session_repo,
                                result_repo=self._result_repo,
                                event_repo=self._event_repo)
-        try:
-            writer.save_full(sid, session, self.results, events)
-        except Exception as e:
-            self._log(f"保存到数据库失败: {e}")
-            messagebox.showerror("保存失败", f"数据库写入错误:\n{e}", parent=self)
+        sid = ''
+
+        def _do_save(info):
+            """写库动作；抛异常即视为失败，弹窗保持打开"""
+            nonlocal sid
+            sid = next_session_id(self._session_repo.db_path)
+            events = (self.stats_panel.events
+                      if hasattr(self.stats_panel, 'events') else [])
+            session = {
+                'session_id': sid,
+                'is_raw_data': info['is_raw_data'],
+                'bean_id': info['bean_id'],
+                'density_override': info['density_override'],
+                'moisture_override': info['moisture_override'],
+                'roast_date': info['roast_date'],
+                'roast_time': info['roast_time'],
+                'roast_no': info['roast_no'],
+                'roast_total': info['roast_total'],
+                'green_weight': info['green_weight'],
+                'roasted_weight': info['roasted_weight'],
+                'notes': info['notes'],
+                'heater_initial': (self.stats_panel.heater_initial
+                                   if hasattr(self.stats_panel, 'heater_initial') else 0),
+                'fan_initial': (self.stats_panel.fan_initial
+                                if hasattr(self.stats_panel, 'fan_initial') else 0),
+            }
+            try:
+                writer.save_full(sid, session, self.results, events)
+            except Exception as e:
+                # 报错弹窗由 SessionInfoDialog 负责，这里只补主窗口日志
+                self._log(f"保存到数据库失败: {e}")
+                raise
+
+        default_bean = self.ideal_data.get('bean_name', '') if self.ideal_data else ''
+        dlg = SessionInfoDialog(self, SqliteBeanRepository(), on_save=_do_save,
+                                default_bean_name=default_bean)
+        if not dlg.show():
             return
 
         self.save_db_btn.config(state="disabled")
         self._log(f"已保存到数据库: {sid}")
-        messagebox.showinfo("保存成功", f"会话已保存到数据库\n{sid}: {name}", parent=self)
+        messagebox.showinfo(
+            "保存成功",
+            f"会话已保存到数据库\n{sid}: {self._session_repo.get_display_name(sid)}",
+            parent=self)
 
     def _log(self, message):
         """记录日志（转发到父窗口的log方法）"""
