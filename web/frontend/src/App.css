@@ -307,11 +307,22 @@
 .checkpoint-collapse {
   color: var(--text-dim);
   font-size: 14px;
+  flex-shrink: 0;
 }
 .checkpoint-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--text);
+  flex-shrink: 0;
+}
+/* 曲线名：紧跟标题，窄屏下省略而非撑破布局 */
+.checkpoint-name {
+  font-size: 13px;
+  color: var(--text-dim);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .checkpoint-passed {
   border-top: 1px solid var(--border);

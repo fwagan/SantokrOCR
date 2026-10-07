@@ -559,6 +559,7 @@ export default function App() {
       {derived != null && derived.rows.length > 0 && (
         <CheckpointPanel
           rows={derived.rows}
+          curveName={cachedCurveName}
           nextIndex={derived.nextIndex}
           countdownText={nextCountdownText}
           countdownColorClass={nextCountdownColor}

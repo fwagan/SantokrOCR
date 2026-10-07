@@ -8,6 +8,8 @@ import { EVENT_TYPES } from '../api'
 
 interface CheckpointPanelProps {
   rows: CheckpointState[]
+  /** 当前列表对应的理想曲线名；空串 = 无（不渲染） */
+  curveName: string
   /** 第一个未达成 checkpoint 的 index；null = 全部达成 */
   nextIndex: number | null
   /** next 的 countdown 显示文本（如 "-01:30"）；null = 不显示 */
@@ -22,6 +24,7 @@ interface CheckpointPanelProps {
 
 export default function CheckpointPanel({
   rows,
+  curveName,
   nextIndex,
   countdownText,
   countdownColorClass,
@@ -40,6 +43,7 @@ export default function CheckpointPanel({
       <div className="checkpoint-header" onClick={onToggleExpanded}>
         <span className="checkpoint-collapse">{expanded ? '▼' : '▲'}</span>
         <span className="checkpoint-title">Checkpoints</span>
+        {curveName !== '' && <span className="checkpoint-name">{curveName}</span>}
       </div>
 
       {expanded && (
