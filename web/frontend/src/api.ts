@@ -31,6 +31,8 @@ export interface Checkpoint {
   value: string
   /** 与上一 checkpoint 的理想时间差（秒）；countdown = 上一达成时刻 + delta。首条（入豆）为 null */
   delta: number | null
+  /** 发展时间（秒）：仅「烘焙结束」在理想曲线含一爆开始、不含一爆结束时非 null；其余恒为 null */
+  dev_seconds: number | null
 }
 
 // 事件类型（与 data/types.py EventType 对齐）

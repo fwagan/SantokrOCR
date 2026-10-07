@@ -157,7 +157,8 @@ export function countdownColorClass(remaining: number): string {
   return 'cd-yellow'
 }
 
-function formatMmSs(seconds: number): string {
+/** 时长格式化为 mm:ss（负数按 0 处理） */
+export function formatMmSs(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds))
   const m = Math.floor(s / 60)
   return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`

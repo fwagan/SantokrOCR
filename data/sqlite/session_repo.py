@@ -188,7 +188,7 @@ class SqliteSessionRepository:
         return execute_with_lock(self.db_path, _list)
 
     def get_display_name(self, session_id: str) -> str:
-        """获取会话的友好显示名称 [yyyy-mm-dd hh:mm bean_name]"""
+        """获取会话的友好显示名称 [bean_name yyyy-mm-dd hh:mm]"""
         def _get(conn):
             row = conn.execute(
                 "SELECT rs.roast_date, rs.roast_time, rs.notes, "
@@ -200,9 +200,9 @@ class SqliteSessionRepository:
             ).fetchone()
             if not row:
                 return session_id
-            parts = [p for p in (row['roast_date'] or '',
-                                 row['roast_time'] or '',
-                                 row['bean_name'] or '') if p]
+            parts = [p for p in (row['bean_name'] or '',
+                                 row['roast_date'] or '',
+                                 row['roast_time'] or '') if p]
             return f"[{' '.join(parts)}]" if parts else (row['notes'] or session_id)
         return execute_with_lock(self.db_path, _get)
 

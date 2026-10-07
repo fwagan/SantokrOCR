@@ -3,11 +3,13 @@
 // 布局（自上而下）：pass(es) 折叠区 → next 恒显(+countdown) → incoming 滚动区
 // 数据由 App 经 deriveCheckpoints 派生后传入；本组件不计算达成/时间，仅渲染。
 import type { CheckpointState } from '../checkpoint'
-import { formatCountdown } from '../checkpoint'
+import { formatCountdown, formatMmSs } from '../checkpoint'
 import { EVENT_TYPES } from '../api'
 
 interface CheckpointPanelProps {
   rows: CheckpointState[]
+  /** 当前列表对应的理想曲线名；空串 = 无（不渲染） */
+  curveName: string
   /** 第一个未达成 checkpoint 的 index；null = 全部达成 */
   nextIndex: number | null
   /** next 的 countdown 显示文本（如 "-01:30"）；null = 不显示 */
@@ -22,6 +24,7 @@ interface CheckpointPanelProps {
 
 export default function CheckpointPanel({
   rows,
+  curveName,
   nextIndex,
   countdownText,
   countdownColorClass,
@@ -40,6 +43,7 @@ export default function CheckpointPanel({
       <div className="checkpoint-header" onClick={onToggleExpanded}>
         <span className="checkpoint-collapse">{expanded ? '▼' : '▲'}</span>
         <span className="checkpoint-title">Checkpoints</span>
+        {curveName !== '' && <span className="checkpoint-name">{curveName}</span>}
       </div>
 
       {expanded && (
@@ -62,6 +66,9 @@ export default function CheckpointPanel({
             <span className={boxClass(nextRow, true)} />
             <span className="checkpoint-event">{nextRow.cp.event}</span>
             {nextRow.cp.temp != null && <span className="checkpoint-temp">{nextRow.cp.temp}℃</span>}
+            {nextRow.cp.dev_seconds != null && (
+              <span className="checkpoint-value">({formatMmSs(nextRow.cp.dev_seconds)})</span>
+            )}
             {nextRow.cp.value !== '' && <span className="checkpoint-value">({nextRow.cp.value})</span>}
           </button>
           {countdownText != null && (
@@ -77,6 +84,9 @@ export default function CheckpointPanel({
               <span className={boxClass(r, false)} />
               <span className="checkpoint-event">{r.cp.event}</span>
               {r.cp.temp != null && <span className="checkpoint-temp">{r.cp.temp}℃</span>}
+              {r.cp.dev_seconds != null && (
+                <span className="checkpoint-value">({formatMmSs(r.cp.dev_seconds)})</span>
+              )}
               {r.cp.value !== '' && <span className="checkpoint-value">({r.cp.value})</span>}
             </div>
           ))}
