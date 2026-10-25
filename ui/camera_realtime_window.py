@@ -78,6 +78,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._roast_state = "idle"
         self._interval = _DEFAULT_SAMPLE_INTERVAL  # 当前采样间隔（秒）
         self._rolling_window = []            # 等待入豆期间的滚动窗口（5s 数据）
+        self._invalid_frame_count = 0        # 等待入豆期间连续无效帧计数（超阈值清窗）
         self._charged_pending = False        # cmd:start 已到达，等待下一采样帧作入豆帧
         self._charge_shift = 0.0             # 入豆后时间轴偏移（烘焙时间 = 原始 - shift）
         self._end_pending_after_id = None    # 烘焙结束后的自动停止定时器
@@ -984,13 +985,19 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._update_realtime_status(result)
 
         if result.get('comm_disconnected'):
-            # 断连期间窗口会冻结，重连后不能被当作入豆前 5s 的有效数据
+            # 断连期间窗口会冻结，重连后不能被当作入豆前 5s 的有效数据。
+            # 单次瞬时失败不清窗；连续无效帧超过窗口容量的 1/3 才清空。
             if self._roast_state == "waiting_charge":
-                self._rolling_window = []
+                self._invalid_frame_count += 1
+                max_frames = max(1, int(round(
+                    _EXTRA_RECORD_SECONDS / max(self._interval, 0.001))))
+                if self._invalid_frame_count > max_frames / 3:
+                    self._rolling_window = []
             self._update_modbus_status()
             return
 
         if self._roast_state == "waiting_charge":
+            self._invalid_frame_count = 0
             if self._charged_pending:
                 self._process_charge(result)
             else:
@@ -1490,6 +1497,7 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _reset_web_state(self):
         """重置 Web 端相关的临时状态"""
         self._rolling_window = []
+        self._invalid_frame_count = 0
         self._charged_pending = False
         self._charge_shift = 0.0
         self._turnaround_offset = None

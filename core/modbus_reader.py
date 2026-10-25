@@ -34,6 +34,21 @@ _PAUSE_CHECK_INTERVAL = 0.1          # 暂停循环检查间隔
 _MIN_RECONNECT_INTERVAL = 0.5        # 重连尝试最小间隔（秒）
 _COMM_FAILURE_THRESHOLD = 3          # 连续通信失败多少次判定连接断开
 
+_PYMODBUS_LOGGER = logging.getLogger("pymodbus.logging")
+_PYMODBUS_SAVED_LEVEL: Optional[int] = None
+
+
+def _set_pymodbus_quiet(quiet: bool) -> None:
+    """断连期间屏蔽 pymodbus 内部的逐次错误日志，恢复后还原原级别"""
+    global _PYMODBUS_SAVED_LEVEL
+    if quiet:
+        if _PYMODBUS_SAVED_LEVEL is None:
+            _PYMODBUS_SAVED_LEVEL = _PYMODBUS_LOGGER.level
+        _PYMODBUS_LOGGER.setLevel(logging.CRITICAL)
+    elif _PYMODBUS_SAVED_LEVEL is not None:
+        _PYMODBUS_LOGGER.setLevel(_PYMODBUS_SAVED_LEVEL)
+        _PYMODBUS_SAVED_LEVEL = None
+
 
 class ModbusReader(TemperatureDataSource):
     """Modbus 温度读取器
@@ -102,6 +117,7 @@ class ModbusReader(TemperatureDataSource):
         if self._stop_event.is_set():
             return
         self._stop_event.set()
+        _set_pymodbus_quiet(False)
         threading.Thread(target=self._close_clients, daemon=True,
                          name="ModbusReaderClose").start()
         self.status_signal.emit("温度读取器已停止")
@@ -149,12 +165,11 @@ class ModbusReader(TemperatureDataSource):
                 timestamp = time.time() - self._start_time
 
                 # 未连接：到点后尝试重建（仅保存端口，不扫描）
+                # 建连成功只代表串口可打开；等首个读取成功再宣告恢复
                 if (self._client1 is None
                         and not self._stop_event.is_set()
                         and time.time() >= self._next_reconnect_at):
-                    if self._connect():
-                        self._on_reconnected()
-                    else:
+                    if not self._connect():
                         self._next_reconnect_at = (
                             time.time() + self._reconnect_interval
                         )
@@ -168,6 +183,8 @@ class ModbusReader(TemperatureDataSource):
                     )
                     if comm_ok:
                         self._comm_failures = 0
+                        if self._disconnected:
+                            self._on_reconnected()
                         result = self._build_result(timestamp, value)
                     else:
                         self._comm_failures += 1
@@ -196,6 +213,7 @@ class ModbusReader(TemperatureDataSource):
             self.status_signal.emit(f"温度读取错误: {e}")
             self.finished_signal.emit(False, f"温度读取错误: {e}")
         finally:
+            _set_pymodbus_quiet(False)
             self._close_clients()
 
     def _resolve_initial_port(self):
@@ -223,6 +241,7 @@ class ModbusReader(TemperatureDataSource):
         if self._disconnected:
             return
         self._disconnected = True
+        _set_pymodbus_quiet(True)
         if initial:
             logger.warning("温度读取器未连接，正在重试")
             self.status_signal.emit("温度读取器未连接，正在重试")
@@ -234,6 +253,7 @@ class ModbusReader(TemperatureDataSource):
         """重连成功；只在状态转换时提示一次"""
         self._comm_failures = 0
         self._disconnected = False
+        _set_pymodbus_quiet(False)
         logger.warning("温度读取器已重新连接")
         self.status_signal.emit("温度读取器已重新连接")
 
