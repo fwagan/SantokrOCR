@@ -267,6 +267,12 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _update_realtime_status(self, result):
         """更新实时状态：豆温、风温、ROR（异常/识别失败时保留上次有效值）"""
+        if result.get('comm_disconnected'):
+            self._bean_temp_var.set("--.-")
+            self._air_temp_var.set("--.-")
+            self._ror_var.set("--.-")
+            return
+
         # 豆温
         temp1 = result.get('temp1_full', '')
         if temp1 and '?' not in temp1 and result.get('abnormal_category') != 'temperature_diff':
@@ -973,11 +979,16 @@ class CameraRealtimeWindow(tk.Toplevel):
         - waiting_charge：不记录，维持滚动窗口；收到入豆命令后下一帧作入豆帧
         - roasting：记录到表格/曲线（时间轴映射到烘焙时间）
         - 其他（Web 协作关闭时 state 停在 idle）：原有直接记录行为
+        - comm_disconnected：只更新状态显示，不写入任何结果数据
         """
         if not self.winfo_exists():
             return
         self._latest_result = result
         self._update_realtime_status(result)
+
+        if result.get('comm_disconnected'):
+            self._update_modbus_status()
+            return
 
         if self._roast_state == "waiting_charge":
             if self._charged_pending:
