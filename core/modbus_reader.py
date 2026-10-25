@@ -150,6 +150,7 @@ class ModbusReader(TemperatureDataSource):
 
                 # 未连接：到点后尝试重建（仅保存端口，不扫描）
                 if (self._client1 is None
+                        and not self._stop_event.is_set()
                         and time.time() >= self._next_reconnect_at):
                     if self._connect():
                         self._on_reconnected()
@@ -223,14 +224,17 @@ class ModbusReader(TemperatureDataSource):
             return
         self._disconnected = True
         if initial:
+            logger.warning("温度读取器未连接，正在重试")
             self.status_signal.emit("温度读取器未连接，正在重试")
         else:
+            logger.warning("温度读取器连接断开，正在重连")
             self.status_signal.emit("温度读取器连接断开，正在重连")
 
     def _on_reconnected(self) -> None:
         """重连成功；只在状态转换时提示一次"""
         self._comm_failures = 0
         self._disconnected = False
+        logger.warning("温度读取器已重新连接")
         self.status_signal.emit("温度读取器已重新连接")
 
     def _create_client(self, config: dict):
@@ -253,7 +257,8 @@ class ModbusReader(TemperatureDataSource):
             client.close()
             return None
         except Exception as e:
-            logger.error(f"创建 Modbus 客户端失败: {e}")
+            # 无限重连期间逐次只记 debug，断连/恢复由状态转换各记一条
+            logger.debug(f"创建 Modbus 客户端失败: {e}")
             return None
 
     def _read_temperature(self, client,
@@ -288,7 +293,7 @@ class ModbusReader(TemperatureDataSource):
             return (raw - 65536) / 10.0, True
 
         except Exception as e:
-            logger.warning(f"温度读取失败: {e}")
+            logger.debug(f"温度读取失败: {e}")
             return None, False
 
     def _build_result(self, timestamp: float,

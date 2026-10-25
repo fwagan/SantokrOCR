@@ -56,8 +56,3 @@ class TemperatureDataSource(ABC):
     @abstractmethod
     def is_stopped(self) -> bool:
         """返回是否已停止"""
-
-    # ── 可选重写 ──
-
-    def reset_temperature_tracking(self) -> None:
-        """重置温差异常检测状态（默认空实现）"""

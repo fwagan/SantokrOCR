@@ -275,7 +275,7 @@ class CameraRealtimeWindow(tk.Toplevel):
 
         # 豆温
         temp1 = result.get('temp1_full', '')
-        if temp1 and '?' not in temp1 and result.get('abnormal_category') != 'temperature_diff':
+        if temp1 and '?' not in temp1:
             try:
                 v = float(temp1)
                 self._bean_temp_var.set(f"{v:.1f}")
@@ -912,9 +912,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.clear_data()
         self.save_db_btn.config(state="disabled")
         self._reset_web_state()
-        source = self._get_active_source()
-        if source and not source.is_stopped():
-            source.reset_temperature_tracking()
         self._reset_status_display()
 
     def _reset_buttons(self):
@@ -979,7 +976,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         - waiting_charge：不记录，维持滚动窗口；收到入豆命令后下一帧作入豆帧
         - roasting：记录到表格/曲线（时间轴映射到烘焙时间）
         - 其他（Web 协作关闭时 state 停在 idle）：原有直接记录行为
-        - comm_disconnected：只更新状态显示，不写入任何结果数据
+        - comm_disconnected：只更新状态显示，不写入任何结果数据；等待入豆时清空滚动窗口
         """
         if not self.winfo_exists():
             return
@@ -987,6 +984,9 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._update_realtime_status(result)
 
         if result.get('comm_disconnected'):
+            # 断连期间窗口会冻结，重连后不能被当作入豆前 5s 的有效数据
+            if self._roast_state == "waiting_charge":
+                self._rolling_window = []
             self._update_modbus_status()
             return
 
