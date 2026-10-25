@@ -977,7 +977,8 @@ class CameraRealtimeWindow(tk.Toplevel):
         - waiting_charge：不记录，维持滚动窗口；收到入豆命令后下一帧作入豆帧
         - roasting：记录到表格/曲线（时间轴映射到烘焙时间）
         - 其他（Web 协作关闭时 state 停在 idle）：原有直接记录行为
-        - comm_disconnected：只更新状态显示，不写入任何结果数据；等待入豆时清空滚动窗口
+        - comm_disconnected：只更新状态显示，不写入任何结果数据；等待入豆时
+          连续无效帧超过窗口容量 1/3 才清空滚动窗口
         """
         if not self.winfo_exists():
             return
@@ -1034,21 +1035,33 @@ class CameraRealtimeWindow(tk.Toplevel):
         入豆帧为收到 cmd:start 后的下一次采样帧，位于烘焙时间轴 _EXTRA_RECORD_SECONDS。
         滚动窗口不足 _EXTRA_RECORD_SECONDS（入豆过早）时，前面空缺的时间轴用
         首个有效帧温度填充，保证时间轴始终从 0 开始、入豆帧恒在 _EXTRA_RECORD_SECONDS
-        （edge case）。
+        （edge case）。窗口按帧数保留，断连期间无效帧不占槽位，窗口跨度可能超过
+        _EXTRA_RECORD_SECONDS；早于入豆前 _EXTRA_RECORD_SECONDS 的旧帧会被丢弃。
         """
-        window = list(self._rolling_window)
-        self._rolling_window = []
-        self._charged_pending = False
-
         # 烘焙时间轴偏移：入豆帧 → 额外记录时长，则 烘焙时间 = 原始时间 - 偏移
         charge_real = charge_result['timestamp']
         shift = charge_real - _EXTRA_RECORD_SECONDS
         self._charge_shift = shift
 
+        # 断连期间无效帧不占窗口槽位，窗口实际跨度可能超过 5s；
+        # 丢弃早于入豆前 5s 的旧帧，避免重映射后负时间被 clamp 成重复时间戳。
+        window = [
+            f for f in self._rolling_window
+            if f['timestamp'] >= shift
+        ]
+        self._rolling_window = []
+        self._charged_pending = False
+
         # 组装帧：填充帧 + 窗口数据 + 入豆帧
         interval = max(self._interval, 0.001)
         full_window_frames = max(1, int(round(_EXTRA_RECORD_SECONDS / interval)))
-        fill_count = full_window_frames - len(window)
+        if window:
+            # 按首个保留帧的实际烘焙时间计算前缀填充数，避免与保留帧撞时间
+            first_ts = max(0.0, window[0]['timestamp'] - shift)
+            fill_count = min(full_window_frames,
+                             int(round(first_ts / interval)))
+        else:
+            fill_count = full_window_frames
 
         frames = []
         if fill_count > 0:
