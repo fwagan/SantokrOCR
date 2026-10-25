@@ -78,6 +78,7 @@ class CameraRealtimeWindow(tk.Toplevel):
         self._roast_state = "idle"
         self._interval = _DEFAULT_SAMPLE_INTERVAL  # 当前采样间隔（秒）
         self._rolling_window = []            # 等待入豆期间的滚动窗口（5s 数据）
+        self._invalid_frame_count = 0        # 等待入豆期间连续无效帧计数（超阈值清窗）
         self._charged_pending = False        # cmd:start 已到达，等待下一采样帧作入豆帧
         self._charge_shift = 0.0             # 入豆后时间轴偏移（烘焙时间 = 原始 - shift）
         self._end_pending_after_id = None    # 烘焙结束后的自动停止定时器
@@ -267,9 +268,15 @@ class CameraRealtimeWindow(tk.Toplevel):
 
     def _update_realtime_status(self, result):
         """更新实时状态：豆温、风温、ROR（异常/识别失败时保留上次有效值）"""
+        if result.get('comm_disconnected'):
+            self._bean_temp_var.set("--.-")
+            self._air_temp_var.set("--.-")
+            self._ror_var.set("--.-")
+            return
+
         # 豆温
         temp1 = result.get('temp1_full', '')
-        if temp1 and '?' not in temp1 and result.get('abnormal_category') != 'temperature_diff':
+        if temp1 and '?' not in temp1:
             try:
                 v = float(temp1)
                 self._bean_temp_var.set(f"{v:.1f}")
@@ -906,9 +913,6 @@ class CameraRealtimeWindow(tk.Toplevel):
         self.stats_panel.clear_data()
         self.save_db_btn.config(state="disabled")
         self._reset_web_state()
-        source = self._get_active_source()
-        if source and not source.is_stopped():
-            source.reset_temperature_tracking()
         self._reset_status_display()
 
     def _reset_buttons(self):
@@ -973,13 +977,28 @@ class CameraRealtimeWindow(tk.Toplevel):
         - waiting_charge：不记录，维持滚动窗口；收到入豆命令后下一帧作入豆帧
         - roasting：记录到表格/曲线（时间轴映射到烘焙时间）
         - 其他（Web 协作关闭时 state 停在 idle）：原有直接记录行为
+        - comm_disconnected：只更新状态显示，不写入任何结果数据；等待入豆时
+          连续无效帧超过窗口容量 1/3 才清空滚动窗口
         """
         if not self.winfo_exists():
             return
         self._latest_result = result
         self._update_realtime_status(result)
 
+        if result.get('comm_disconnected'):
+            # 断连期间窗口会冻结，重连后不能被当作入豆前 5s 的有效数据。
+            # 单次瞬时失败不清窗；连续无效帧超过窗口容量的 1/3 才清空。
+            if self._roast_state == "waiting_charge":
+                self._invalid_frame_count += 1
+                max_frames = max(1, int(round(
+                    _EXTRA_RECORD_SECONDS / max(self._interval, 0.001))))
+                if self._invalid_frame_count > max_frames / 3:
+                    self._rolling_window = []
+            self._update_modbus_status()
+            return
+
         if self._roast_state == "waiting_charge":
+            self._invalid_frame_count = 0
             if self._charged_pending:
                 self._process_charge(result)
             else:
@@ -1016,21 +1035,33 @@ class CameraRealtimeWindow(tk.Toplevel):
         入豆帧为收到 cmd:start 后的下一次采样帧，位于烘焙时间轴 _EXTRA_RECORD_SECONDS。
         滚动窗口不足 _EXTRA_RECORD_SECONDS（入豆过早）时，前面空缺的时间轴用
         首个有效帧温度填充，保证时间轴始终从 0 开始、入豆帧恒在 _EXTRA_RECORD_SECONDS
-        （edge case）。
+        （edge case）。窗口按帧数保留，断连期间无效帧不占槽位，窗口跨度可能超过
+        _EXTRA_RECORD_SECONDS；早于入豆前 _EXTRA_RECORD_SECONDS 的旧帧会被丢弃。
         """
-        window = list(self._rolling_window)
-        self._rolling_window = []
-        self._charged_pending = False
-
         # 烘焙时间轴偏移：入豆帧 → 额外记录时长，则 烘焙时间 = 原始时间 - 偏移
         charge_real = charge_result['timestamp']
         shift = charge_real - _EXTRA_RECORD_SECONDS
         self._charge_shift = shift
 
+        # 断连期间无效帧不占窗口槽位，窗口实际跨度可能超过 5s；
+        # 丢弃早于入豆前 5s 的旧帧，避免重映射后负时间被 clamp 成重复时间戳。
+        window = [
+            f for f in self._rolling_window
+            if f['timestamp'] >= shift
+        ]
+        self._rolling_window = []
+        self._charged_pending = False
+
         # 组装帧：填充帧 + 窗口数据 + 入豆帧
         interval = max(self._interval, 0.001)
         full_window_frames = max(1, int(round(_EXTRA_RECORD_SECONDS / interval)))
-        fill_count = full_window_frames - len(window)
+        if window:
+            # 按首个保留帧的实际烘焙时间计算前缀填充数，避免与保留帧撞时间
+            first_ts = max(0.0, window[0]['timestamp'] - shift)
+            fill_count = min(full_window_frames,
+                             int(round(first_ts / interval)))
+        else:
+            fill_count = full_window_frames
 
         frames = []
         if fill_count > 0:
@@ -1479,6 +1510,7 @@ class CameraRealtimeWindow(tk.Toplevel):
     def _reset_web_state(self):
         """重置 Web 端相关的临时状态"""
         self._rolling_window = []
+        self._invalid_frame_count = 0
         self._charged_pending = False
         self._charge_shift = 0.0
         self._turnaround_offset = None
