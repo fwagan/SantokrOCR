@@ -174,8 +174,8 @@ compress, or reformat any findings. Paste the complete text as-is.
 - Matching comment snippet: `- comm_disconnected：只更新状态显示，不写入任何结果数据；等待入豆时清空滚动窗口`
 - Issue description: docstring describes unconditional clearing; HEAD clears only after the 1/3-window threshold. Reported as finding 2 of this report.
 - Flagged commit: `705b883`
-- Status: resolved（修复已应用，commit 待生成）
-- Resolved commit: 下一提交
+- Status: resolved（`c1713da`）
+- Resolved commit: `c1713da`
 
 ## Address Findings
 
@@ -184,13 +184,3 @@ compress, or reformat any findings. Paste the complete text as-is.
 | 1 | 容忍瞬时断连后入豆产生重复时间戳 / NaN | FIX | 入豆时丢弃早于 `charge_real - _EXTRA_RECORD_SECONDS` 的窗口帧，并按首个保留帧的实际烘焙时间重算前缀填充数，避免填充帧与保留帧撞时间；新增 `test_process_charge_drops_stale_window_frames` 与 `test_process_charge_empty_window_fills_full_prefix` |
 | 2 | `_on_result_ui` docstring 与阈值逻辑不符 | FIX | 改为“等待入豆时连续无效帧超过窗口容量 1/3 才清空滚动窗口” |
 | 3 | `_PYMODBUS_SAVED_LEVEL` 保存/恢复非原子 | ACCEPT | 概率极小，仅影响 pymodbus 内部日志，不引入全局锁 |
-
-(Review #2 recorded no open comment issues.)
-
-## Address Findings
-
-| Issue # | Issue Short Description | User Decision | Details |
-| ------- | ----------------------- | ------------- | ------- |
-| 1 | 容忍瞬时断连后入豆产生重复时间戳，scipy interp1d 返回 NaN 并扩散到平滑曲线 |  |  |
-| 2 | `_on_result_ui` docstring 仍写“等待入豆时清空滚动窗口”，未反映 1/3 阈值 |  |  |
-| 3 | `_PYMODBUS_SAVED_LEVEL` 保存/设置非原子，`stop()` 交错时可能永久把 pymodbus 日志级别留在 CRITICAL |  |  |
